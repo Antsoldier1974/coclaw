@@ -288,7 +288,6 @@ export default {
 					if (result.code === 'BINDING_SUCCESS') {
 						console.debug('[add-bot] bind success, bot=%s', result.bot?.id);
 						this.botsStore?.addOrUpdateBot(result.bot);
-						this.notify.success(this.$t('bots.bindSuccess'));
 						this.clearBindingCodeBlock();
 						this.$router.push('/bots');
 						return;

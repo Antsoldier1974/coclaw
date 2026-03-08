@@ -5,7 +5,7 @@
 				<h1 class="text-lg font-medium">{{ $t('layout.manageBots') }}</h1>
 				<div class="flex items-center gap-2">
 					<UButton class="cc-icon-btn" color="primary" variant="ghost" size="md" icon="i-lucide-refresh-cw" :loading="loading" @click="loadBots" />
-					<UButton color="primary" variant="soft" size="sm" @click="$router.push('/bots/add')">
+					<UButton color="primary" variant="soft" @click="$router.push('/bots/add')">
 						{{ $t('bots.addBot') }}
 					</UButton>
 				</div>
@@ -96,6 +96,7 @@ export default {
 			}
 		},
 		async onUnbindByUser(botId) {
+			if (this.unbindingId) return;
 			console.debug('[bots-manage] unbinding id=%s', botId);
 			this.unbindingId = String(botId);
 			try {

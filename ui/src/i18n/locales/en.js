@@ -148,8 +148,6 @@ export const enMessages = {
 		expiryLeft: 'Expires in {time}',
 		loadFailed: 'Failed to load bot status',
 		genFailed: 'Failed to generate binding code',
-		bindSuccess: 'Bound successfully',
-		rebindSuccess: 'Rebound successfully',
 		regenCode: 'Regenerate',
 		copyCommand: 'Copy command',
 		commandCopied: 'Copied',
