@@ -3,12 +3,7 @@
 		<MobilePageHeader :title="$t('bots.addBot')" />
 	<main class="flex-1 px-4 pt-4 pb-8 lg:px-5">
 		<section class="mx-auto flex w-full max-w-3xl flex-col gap-4">
-			<div class="hidden items-center justify-between gap-3 md:flex">
-				<h1 class="text-lg font-medium">{{ $t('bots.addBot') }}</h1>
-				<UButton color="primary" :loading="creatingCode" @click="generateCode">
-					{{ bindingCode ? $t('bots.regenCode') : $t('bots.genCode') }}
-				</UButton>
-			</div>
+			<h1 class="hidden text-lg font-medium md:block">{{ $t('bots.addBot') }}</h1>
 
 			<!-- bot name 输入暂时隐藏；将来绑定非 OpenClaw bot 时可启用 -->
 			<div v-if="false">
@@ -16,65 +11,9 @@
 				<UInput v-model="botName" :placeholder="$t('bots.botNamePlaceholder')" />
 			</div>
 
-			<!-- 生成并绑定 -->
+			<!-- 步骤一：安装或升级插件 -->
 			<div>
-				<div class="flex items-center justify-between">
-					<h2 class="text-base font-medium">{{ $t('bots.sectionBind') }}</h2>
-					<UButton class="md:hidden" size="sm" color="primary" :loading="creatingCode" @click="generateCode">
-						{{ bindingCode ? $t('bots.regenCode') : $t('bots.genCode') }}
-					</UButton>
-				</div>
-				<div v-if="bindingCode" class="mt-2 rounded-lg border border-accented bg-default p-3">
-					<p class="text-sm text-dimmed">{{ $t('bots.bindingCode') }}</p>
-					<p class="mt-1 text-2xl font-semibold tracking-widest">{{ bindingCode }}</p>
-					<p class="mt-2 text-sm text-muted">{{ expiryText }}</p>
-
-					<div class="rounded-lg bg-elevated overflow-hidden mt-3">
-						<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-dimmed">
-							<span>{{ $t('bots.bindViaChat') }}</span>
-							<UButton
-								v-if="copiedKey !== 'chat'"
-								class="cc-icon-btn"
-								color="primary"
-								variant="ghost"
-								size="md"
-								icon="i-lucide-copy"
-								@click="copyToClipboard('chat')"
-							/>
-							<span v-else class="flex shrink-0 items-center gap-1 text-sm text-success">
-								<UIcon name="i-lucide-check" class="size-4" />
-								{{ $t('bots.commandCopied') }}
-							</span>
-						</div>
-						<code class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">/coclaw bind {{ bindingCode }}{{ serverSuffix }}</code>
-					</div>
-
-					<div class="rounded-lg bg-elevated overflow-hidden mt-2">
-						<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-dimmed">
-							<span>{{ $t('bots.bindViaShell') }}</span>
-							<UButton
-								v-if="copiedKey !== 'shell'"
-								class="cc-icon-btn"
-								color="primary"
-								variant="ghost"
-								size="md"
-								icon="i-lucide-copy"
-								@click="copyToClipboard('shell')"
-							/>
-							<span v-else class="flex shrink-0 items-center gap-1 text-sm text-success">
-								<UIcon name="i-lucide-check" class="size-4" />
-								{{ $t('bots.commandCopied') }}
-							</span>
-						</div>
-						<code class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">openclaw coclaw bind {{ bindingCode }}{{ serverSuffix }}</code>
-					</div>
-				</div>
-				<p v-else class="mt-1 text-sm text-muted">{{ $t('bots.genHint') }}</p>
-			</div>
-
-			<!-- 安装或升级插件 -->
-			<div>
-				<h2 class="text-base font-medium">{{ $t('bots.sectionPlugin') }}</h2>
+				<h2 class="text-base font-medium">{{ $t('bots.step1') }}{{ $t('bots.sectionPlugin') }}</h2>
 				<p class="mt-0.5 text-sm text-dimmed">{{ $t('bots.pluginHint') }}</p>
 
 				<!-- 终端安装命令 -->
@@ -140,6 +79,62 @@
 					<pre class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">{{ $t('bots.installPrompt') }}</pre>
 				</div>
 			</div>
+
+			<!-- 步骤二：绑定 -->
+			<div>
+				<div class="flex items-center justify-between">
+					<h2 class="text-base font-medium">{{ $t('bots.step2') }}{{ $t('bots.sectionBind') }}</h2>
+					<UButton size="md" color="primary" :loading="creatingCode" @click="generateCode">
+						{{ bindingCode ? $t('bots.regenCode') : $t('bots.genCode') }}
+					</UButton>
+				</div>
+				<div v-if="bindingCode" class="mt-2 rounded-lg border border-accented bg-default p-3">
+					<p class="text-sm text-dimmed">{{ $t('bots.bindingCode') }}</p>
+					<p class="mt-1 text-2xl font-semibold tracking-widest">{{ bindingCode }}</p>
+					<p class="mt-2 text-sm text-muted">{{ expiryText }}</p>
+
+					<div class="rounded-lg bg-elevated overflow-hidden mt-3">
+						<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-dimmed">
+							<span>{{ $t('bots.bindViaChat') }}</span>
+							<UButton
+								v-if="copiedKey !== 'chat'"
+								class="cc-icon-btn"
+								color="primary"
+								variant="ghost"
+								size="md"
+								icon="i-lucide-copy"
+								@click="copyToClipboard('chat')"
+							/>
+							<span v-else class="flex shrink-0 items-center gap-1 text-sm text-success">
+								<UIcon name="i-lucide-check" class="size-4" />
+								{{ $t('bots.commandCopied') }}
+							</span>
+						</div>
+						<code class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">/coclaw bind {{ bindingCode }}{{ serverSuffix }}</code>
+					</div>
+
+					<div class="rounded-lg bg-elevated overflow-hidden mt-2">
+						<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-dimmed">
+							<span>{{ $t('bots.bindViaShell') }}</span>
+							<UButton
+								v-if="copiedKey !== 'shell'"
+								class="cc-icon-btn"
+								color="primary"
+								variant="ghost"
+								size="md"
+								icon="i-lucide-copy"
+								@click="copyToClipboard('shell')"
+							/>
+							<span v-else class="flex shrink-0 items-center gap-1 text-sm text-success">
+								<UIcon name="i-lucide-check" class="size-4" />
+								{{ $t('bots.commandCopied') }}
+							</span>
+						</div>
+						<code class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">openclaw coclaw bind {{ bindingCode }}{{ serverSuffix }}</code>
+					</div>
+				</div>
+				<p v-else class="mt-1 text-sm text-muted">{{ $t('bots.genHint') }}</p>
+			</div>
 		</section>
 	</main>
 	</div>
@@ -154,7 +149,7 @@ import { useBotsStore } from '../stores/bots.store.js';
 const DEFAULT_SERVER = 'https://app.coclaw.net';
 
 const INSTALL_COMMAND = 'openclaw plugins install @coclaw/openclaw-coclaw';
-const UPDATE_COMMAND = 'openclaw plugins update coclaw';
+const UPDATE_COMMAND = 'openclaw plugins update openclaw-coclaw';
 
 export default {
 	name: 'AddBotPage',

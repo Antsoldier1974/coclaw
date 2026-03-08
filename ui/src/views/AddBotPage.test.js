@@ -45,17 +45,19 @@ function createWrapper() {
 						'bots.addBot': '添加机器人',
 						'bots.genCode': '生成绑定码',
 						'bots.regenCode': '重新生成',
-						'bots.sectionBind': '生成并绑定',
+						'bots.sectionBind': '绑定',
 						'bots.sectionPlugin': '安装或升级插件',
 						'bots.pluginHint': '首次使用时安装，有新版本时升级',
 						'bots.installViaShell': '安装 — 在宿主机终端执行：',
 						'bots.updateViaShell': '升级 — 在宿主机终端执行：',
 						'bots.installViaChat': '或在 OpenClaw 对话中发送：',
-						'bots.installPrompt': '帮我运行 CLI 命令 openclaw plugins update coclaw 或 openclaw plugins install @coclaw/openclaw-coclaw 升级或安装插件',
+						'bots.installPrompt': '帮我运行 CLI 命令 openclaw plugins update openclaw-coclaw 或 openclaw plugins install @coclaw/openclaw-coclaw 升级或安装插件',
 						'bots.genHint': '点击"生成绑定码"，然后在 OpenClaw 侧执行绑定命令。',
 						'bots.bindViaChat': '在 OpenClaw 对话中输入：',
 						'bots.bindViaShell': '或在宿主机终端执行：',
 						'bots.commandCopied': '已复制',
+						'bots.step1': '第1步：',
+						'bots.step2': '第2步：',
 					};
 					return map[key] ?? key;
 				},
@@ -70,8 +72,8 @@ test('should render onboarding steps and generate button', async () => {
 
 	expect(wrapper.text()).toContain('添加机器人');
 	expect(wrapper.text()).toContain('生成绑定码');
-	expect(wrapper.text()).toContain('生成并绑定');
-	expect(wrapper.text()).toContain('安装或升级插件');
+	expect(wrapper.text()).toContain('第1步：安装或升级插件');
+	expect(wrapper.text()).toContain('第2步：绑定');
 });
 
 test('should show install and update commands', async () => {
@@ -81,7 +83,7 @@ test('should show install and update commands', async () => {
 	const pres = wrapper.findAll('pre');
 	expect(pres.length).toBeGreaterThanOrEqual(3);
 	expect(pres[0].text()).toContain('openclaw plugins install @coclaw/openclaw-coclaw');
-	expect(pres[1].text()).toContain('openclaw plugins update coclaw');
+	expect(pres[1].text()).toContain('openclaw plugins update openclaw-coclaw');
 });
 
 test('should show install-via-chat prompt with update and install', async () => {
@@ -89,7 +91,7 @@ test('should show install-via-chat prompt with update and install', async () => 
 	await vi.dynamicImportSettled();
 
 	const pres = wrapper.findAll('pre');
-	expect(pres[2].text()).toContain('openclaw plugins update coclaw');
+	expect(pres[2].text()).toContain('openclaw plugins update openclaw-coclaw');
 	expect(pres[2].text()).toContain('openclaw plugins install @coclaw/openclaw-coclaw');
 	expect(wrapper.text()).toContain('或在 OpenClaw 对话中发送：');
 });
