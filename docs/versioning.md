@@ -57,7 +57,7 @@ pnpm changeset
 
 ### 发布时
 
-见 `/release` skill 或执行 `pnpm changeset:version` → `pnpm changeset:publish`。
+见 `/release` skill。插件实际发布使用 `plugins/openclaw` 下的 `pnpm pub:release`。
 
 ## 配置文件
 
