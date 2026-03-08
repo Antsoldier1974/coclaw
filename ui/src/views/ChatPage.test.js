@@ -79,9 +79,10 @@ vi.mock('../services/gateway.ws.js', () => ({
 	createGatewayRpcClient: vi.fn(() => Promise.resolve(mockRpc)),
 }));
 
+const mockBotsItems = [{ id: 'bot-1', online: true }];
 vi.mock('../stores/bots.store.js', () => ({
 	useBotsStore: () => ({
-		items: [{ id: 'bot-1', online: true }],
+		get items() { return mockBotsItems; },
 		loadBots: vi.fn(() => [{ id: 'bot-1', online: true }]),
 	}),
 }));
@@ -124,9 +125,10 @@ const i18nMap = {
 	'chat.botThinking': 'Thinking',
 	'chat.newChatFailed': 'New chat failed',
 	'chat.botOffline': 'Bot is offline',
+	'chat.botUnbound': 'Bot has been unbound',
 };
 
-const mockRouter = { push: vi.fn() };
+const mockRouter = { push: vi.fn(), replace: vi.fn() };
 
 function createWrapper(sessionId = 'sess-1') {
 	return mount(ChatPage, {
@@ -1369,5 +1371,58 @@ describe('ChatPage chatTitle', () => {
 		const wrapper = createWrapper('');
 		await flushPromises();
 		expect(wrapper.vm.chatTitle).toBe('');
+	});
+});
+
+describe('ChatPage currentBotId watcher', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.useFakeTimers();
+		mockSessionsItems.length = 0;
+		mockBotsItems.length = 0;
+		mockBotsItems.push({ id: 'bot-1', online: true });
+		mockRpc.request.mockImplementation((method) => {
+			if (method === 'nativeui.sessions.listAll') {
+				return Promise.resolve({ items: [] });
+			}
+			if (method === 'nativeui.sessions.get') {
+				return Promise.resolve({ messages: [] });
+			}
+			return Promise.resolve({});
+		});
+		vi.stubGlobal('crypto', { randomUUID: () => 'test-uuid' });
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		mockSessionsItems.length = 0;
+		mockBotsItems.length = 0;
+		mockBotsItems.push({ id: 'bot-1', online: true });
+	});
+
+	test('bot 离线导致 sessions 清空时不应提示"已解绑"', async () => {
+		mockSessionsItems.push({ sessionId: 'sess-1', botId: 'bot-1' });
+		const wrapper = createWrapper('sess-1');
+		await flushPromises();
+
+		// bot 仍在 store 中但离线 — 直接触发 watcher handler
+		mockBotsItems[0] = { id: 'bot-1', online: false };
+		wrapper.vm.$options.watch.currentBotId.call(wrapper.vm, null, 'bot-1');
+
+		expect(mockNotify.warning).not.toHaveBeenCalled();
+		expect(mockRouter.replace).not.toHaveBeenCalled();
+	});
+
+	test('bot 真正解绑时应提示"已解绑"并跳转', async () => {
+		mockSessionsItems.push({ sessionId: 'sess-1', botId: 'bot-1' });
+		const wrapper = createWrapper('sess-1');
+		await flushPromises();
+
+		// bot 从 store 中移除（真正解绑）
+		mockBotsItems.length = 0;
+		wrapper.vm.$options.watch.currentBotId.call(wrapper.vm, null, 'bot-1');
+
+		expect(mockNotify.warning).toHaveBeenCalledWith('Bot has been unbound');
+		expect(mockRouter.replace).toHaveBeenCalled();
 	});
 });

@@ -215,8 +215,15 @@ export default {
 			}
 		},
 		currentBotId(newVal, oldVal) {
-			// session 被清理（bot 解绑）：从有值变为 null，且仍在 chat 路由上
+			// session 被清理且仍在 chat 路由上：区分"真正解绑"与"离线导致 sessions 清空"
 			if (oldVal && !newVal && this.currentSessionId) {
+				const botStillExists = this.botsStore?.items?.some(
+					(b) => String(b.id) === String(oldVal),
+				);
+				if (botStillExists) {
+					// bot 仍在（只是离线），不提示解绑；isBotOffline watcher 会处理
+					return;
+				}
 				this.clearStreamingState();
 				this.rpcClient?.close?.();
 				this.rpcClient = null;
