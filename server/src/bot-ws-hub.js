@@ -166,6 +166,7 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 	const currentName = bot.name ?? null;
 	if (currentName !== latestName) {
 		await updateBotName(bot.id, latestName).catch(() => {});
+		botStatusEmitter.emit('nameUpdated', { botId: key, name: latestName });
 	}
 	return latestName;
 }

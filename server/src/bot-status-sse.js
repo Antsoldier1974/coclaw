@@ -71,3 +71,23 @@ botStatusEmitter.on('status', async ({ botId, online }) => {
 		// 静默忽略，避免 SSE 推送失败影响主流程
 	}
 });
+
+botStatusEmitter.on('nameUpdated', async ({ botId, name }) => {
+	if (!hasSseClients()) {
+		return;
+	}
+	try {
+		const bot = await findBotById(BigInt(botId));
+		if (!bot) {
+			return;
+		}
+		sendToUser(String(bot.userId), {
+			event: 'bot.nameUpdated',
+			botId: String(botId),
+			name,
+		});
+	}
+	catch {
+		// 静默忽略
+	}
+});

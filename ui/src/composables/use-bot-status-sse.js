@@ -30,6 +30,9 @@ export function useBotStatusSse(botsStore) {
 				if (data.event === 'bot.status') {
 					botsStore.updateBotOnline(data.botId, data.online);
 				}
+				else if (data.event === 'bot.nameUpdated') {
+					botsStore.addOrUpdateBot({ id: data.botId, name: data.name });
+				}
 				else if (data.event === 'bot.bound') {
 					botsStore.addOrUpdateBot(data.bot);
 				}

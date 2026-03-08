@@ -73,6 +73,16 @@ describe('useBotStatusSse', () => {
 		expect(store.updateBotOnline).toHaveBeenCalledWith('42', true);
 	});
 
+	test('should handle bot.nameUpdated event by updating bot name in store', () => {
+		useBotStatusSse(store);
+
+		esInstance.onmessage({
+			data: JSON.stringify({ event: 'bot.nameUpdated', botId: '42', name: '小点' }),
+		});
+
+		expect(store.addOrUpdateBot).toHaveBeenCalledWith({ id: '42', name: '小点' });
+	});
+
 	test('should handle bot.bound event by adding bot to store', () => {
 		useBotStatusSse(store);
 
