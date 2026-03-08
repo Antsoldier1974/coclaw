@@ -5,6 +5,7 @@ import os from 'node:os';
 import test from 'node:test';
 
 import { clearConfig, getBindingsPath, readConfig, writeConfig } from './config.js';
+import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
 
 function resetEnv() {
@@ -111,11 +112,11 @@ test('readConfig should treat empty file as empty object', async () => {
 test('readConfig should migrate from openclaw.json channels.coclaw (file)', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
 	// 不存在的 home 和 cwd，避免 legacy 文件干扰
-	process.env.HOME = nodePath.join(dir, 'home-empty');
+	setHomedir(nodePath.join(dir, 'home-empty'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -147,18 +148,17 @@ test('readConfig should migrate from openclaw.json channels.coclaw (file)', asyn
 		assert.equal(openclawAfter.channels.coclaw, undefined);
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('readConfig should migrate from openclaw.json channels.coclaw (runtime)', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	process.env.HOME = nodePath.join(dir, 'home-empty');
+	setHomedir(nodePath.join(dir, 'home-empty'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -191,18 +191,17 @@ test('readConfig should migrate from openclaw.json channels.coclaw (runtime)', a
 		assert.equal(writtenCfg.channels.coclaw, undefined);
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('readConfig should migrate from legacy .coclaw-tunnel.json', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	process.env.HOME = nodePath.join(dir, 'home-empty');
+	setHomedir(nodePath.join(dir, 'home-empty'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -230,18 +229,17 @@ test('readConfig should migrate from legacy .coclaw-tunnel.json', async () => {
 		assert.deepEqual(legacyAfter, {});
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('clearConfig should remove account and delete file when empty', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	process.env.HOME = nodePath.join(dir, 'home-empty');
+	setHomedir(nodePath.join(dir, 'home-empty'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -264,18 +262,17 @@ test('clearConfig should remove account and delete file when empty', async () =>
 		await assert.rejects(() => fs.access(bindingsPath), { code: 'ENOENT' });
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('clearConfig should also clean old openclaw.json channels.coclaw', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	process.env.HOME = nodePath.join(dir, 'home-empty');
+	setHomedir(nodePath.join(dir, 'home-empty'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -297,18 +294,17 @@ test('clearConfig should also clean old openclaw.json channels.coclaw', async ()
 		assert.equal(openclawAfter.channels.coclaw, undefined);
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('clearConfig via runtime should clean channels.coclaw and legacy files', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	process.env.HOME = dir;
+	setHomedir(dir);
 	process.chdir(dir);
 
 	const mockCfg = {
@@ -341,18 +337,17 @@ test('clearConfig via runtime should clean channels.coclaw and legacy files', as
 		assert.deepEqual(legacyAfter, {});
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('readConfig should not migrate when old location has no token', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	process.env.HOME = nodePath.join(dir, 'home-empty');
+	setHomedir(nodePath.join(dir, 'home-empty'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -369,18 +364,17 @@ test('readConfig should not migrate when old location has no token', async () =>
 		await assert.rejects(() => fs.access(bindingsPath), { code: 'ENOENT' });
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('cleanOldLocations should skip when openclaw.json has no channels.coclaw (no runtime)', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	process.env.HOME = nodePath.join(dir, 'home-empty');
+	setHomedir(nodePath.join(dir, 'home-empty'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -398,18 +392,17 @@ test('cleanOldLocations should skip when openclaw.json has no channels.coclaw (n
 		assert.deepEqual(openclawAfter, { meta: { v: 1 } });
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('cleanOldLocations via runtime should skip when no channels.coclaw', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	process.env.HOME = nodePath.join(dir, 'home-empty');
+	setHomedir(nodePath.join(dir, 'home-empty'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -431,18 +424,17 @@ test('cleanOldLocations via runtime should skip when no channels.coclaw', async 
 		assert.equal(writeCount, 0);
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('clearConfig should keep other accounts when clearing one', async () => {
 	resetEnv();
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	process.env.HOME = nodePath.join(dir, 'home-empty');
+	setHomedir(nodePath.join(dir, 'home-empty'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -463,7 +455,6 @@ test('clearConfig should keep other accounts when clearing one', async () => {
 		assert.equal(raw.secondary.token, 't2');
 	} finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });

@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { refreshRealtimeBridge, startRealtimeBridge, stopRealtimeBridge } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
+import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
 
 class FakeWebSocket {
@@ -91,10 +92,10 @@ test('realtime-bridge should log warning when token exists but WebSocket is unav
 
 test('realtime-bridge should handle rpc/unbound/close/send-fail branches', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	FakeWebSocket.instances.length = 0;
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -190,8 +191,7 @@ test('realtime-bridge should handle rpc/unbound/close/send-fail branches', async
 		globalThis.WebSocket = oldWs;
 		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 

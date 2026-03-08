@@ -6,6 +6,7 @@ import os from 'node:os';
 import test from 'node:test';
 
 import { bindBot, unbindBot } from './bot-binding.js';
+import { saveHomedir, setHomedir, restoreHomedir } from '../homedir-mock.helper.js';
 import { setRuntime } from '../runtime.js';
 
 async function withServer(handler) {
@@ -119,9 +120,9 @@ test('bindBot should show unknown when already bound without botId', async () =>
 
 test('unbindBot should validate token and support UNAUTHORIZED cleanup', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-unbind-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -156,16 +157,15 @@ test('unbindBot should validate token and support UNAUTHORIZED cleanup', async (
 	}
 	finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 	}
 });
 
 test('unbindBot should throw non-UNAUTHORIZED server errors', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-unbind-err-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -183,17 +183,16 @@ test('unbindBot should throw non-UNAUTHORIZED server errors', async () => {
 	}
 	finally {
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 		await server.close();
 	}
 });
 
 test('bind/unbind should support env and config server url fallbacks', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-fallback-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -223,8 +222,7 @@ test('bind/unbind should support env and config server url fallbacks', async () 
 	finally {
 		process.env.COCLAW_SERVER_URL = oldServer;
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 		await server.close();
 	}
 });

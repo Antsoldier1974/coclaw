@@ -100,7 +100,7 @@ function extractRawTextFromContent(content) {
 }
 
 function findFirstUserRawText(filePath, logger) {
-	const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+	const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
 	for (const line of lines) {
 		if (!line) continue;
 		try {
@@ -249,7 +249,7 @@ export function createSessionManager(options = {}) {
 		if (!file) throw new Error(`session transcript not found: ${sessionId}`);
 
 		const all = [];
-		for (const line of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
+		for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean)) {
 			try {
 				all.push(JSON.parse(line));
 			}

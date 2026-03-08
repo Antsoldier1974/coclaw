@@ -42,6 +42,25 @@ function createMockSpawn(opts = {}) {
 	return { spawn, calls };
 }
 
+test('callGatewayMethod should pass shell:true to spawn for Windows .cmd compatibility', async () => {
+	let capturedOpts;
+	const spawn = (cmd, args, opts) => {
+		capturedOpts = opts;
+		const child = new EventEmitter();
+		child.stdout = new EventEmitter();
+		child.stderr = new EventEmitter();
+		child.kill = () => {};
+		process.nextTick(() => {
+			child.stdout.emit('data', '{"status":"ok"}');
+			child.emit('close', 0);
+		});
+		return child;
+	};
+
+	await callGatewayMethod('coclaw.refreshBridge', spawn);
+	assert.equal(capturedOpts.shell, true);
+});
+
 test('callGatewayMethod should resolve ok with status field from result payload', async () => {
 	// openclaw gateway call --json 直接输出 method 的 result payload
 	const { spawn, calls } = createMockSpawn({

@@ -187,3 +187,40 @@ test('listAll/get should normalize bad inputs and missing dirs', async () => {
 	assert.equal(get1.messages.length, 0);
 	assert.equal(get1.nextCursor, null);
 });
+
+test('get should handle CRLF line endings in JSONL files', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	// 模拟 Windows 风格的 CRLF 换行
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'crlf.jsonl'),
+		'{"type":"message","message":{"role":"user","content":"hello"}}\r\n{"type":"message","message":{"role":"assistant","content":"hi"}}\r\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.get({ sessionId: 'crlf' });
+	assert.equal(res.total, 2);
+	assert.equal(res.messages[0].type, 'message');
+	assert.equal(res.messages[0].message.content, 'hello');
+	assert.equal(res.messages[1].message.content, 'hi');
+});
+
+test('listAll should derive title from CRLF line ending files', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'crlf2.jsonl'),
+		'{"type":"message","message":{"role":"user","content":"CRLF title test"}}\r\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.listAll({});
+	const item = res.items.find((it) => it.sessionId === 'crlf2');
+	assert.equal(item?.derivedTitle, 'CRLF title test');
+});

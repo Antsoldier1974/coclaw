@@ -6,6 +6,7 @@ import os from 'node:os';
 import test from 'node:test';
 
 import { main } from './cli.js';
+import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { createMockServer } from './mock-server.helper.js';
 import { setRuntime } from './runtime.js';
 
@@ -54,7 +55,7 @@ async function writeBindings(dir, data) {
 
 test('cli should print help and support bind/unbind flow', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const logs = [];
 	const errors = [];
 	const oldLog = console.log;
@@ -64,7 +65,7 @@ test('cli should print help and support bind/unbind flow', async () => {
 
 	const mock = await createMockServer();
 	const dir = await setupDir('coclaw-cli-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -86,8 +87,7 @@ test('cli should print help and support bind/unbind flow', async () => {
 		console.log = oldLog;
 		console.error = oldErr;
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 		await mock.close();
 	}
 });
@@ -172,7 +172,7 @@ test('cli bind success should warn when gateway notify fails', async () => {
 
 test('cli unbind success should notify gateway via RPC', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const logs = [];
 	const oldLog = console.log;
 	const oldWarn = console.warn;
@@ -181,7 +181,7 @@ test('cli unbind success should notify gateway via RPC', async () => {
 
 	const mock = await createMockServer();
 	const dir = await setupDir('coclaw-cli-unbind-notify-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -201,15 +201,14 @@ test('cli unbind success should notify gateway via RPC', async () => {
 		console.log = oldLog;
 		console.warn = oldWarn;
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 		await mock.close();
 	}
 });
 
 test('cli unbind success should warn when gateway notify fails', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const logs = [];
 	const warns = [];
 	const oldLog = console.log;
@@ -219,7 +218,7 @@ test('cli unbind success should warn when gateway notify fails', async () => {
 
 	const mock = await createMockServer();
 	const dir = await setupDir('coclaw-cli-unbind-notify-fail-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -240,8 +239,7 @@ test('cli unbind success should warn when gateway notify fails', async () => {
 		console.log = oldLog;
 		console.warn = oldWarn;
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 		await mock.close();
 	}
 });

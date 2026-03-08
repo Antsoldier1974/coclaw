@@ -29,6 +29,7 @@ export function callGatewayMethod(method, spawnFn, opts) {
 		try {
 			child = doSpawn('openclaw', ['gateway', 'call', method, '--json'], {
 				stdio: ['ignore', 'pipe', 'pipe'],
+				shell: true, // Windows 上 npm 全局安装生成 .cmd，需经 shell 解析
 			});
 		} catch {
 			resolve({ ok: false, error: 'spawn_failed' });
@@ -45,7 +46,7 @@ export function callGatewayMethod(method, spawnFn, opts) {
 			settled = true;
 			clearTimeout(timeoutTimer);
 			clearTimeout(graceTimer);
-			try { child.kill(); } catch {} // eslint-disable-line no-empty
+			try { child.kill(); } catch {}
 			resolve(result);
 		};
 

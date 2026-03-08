@@ -6,6 +6,7 @@ import os from 'node:os';
 import test from 'node:test';
 
 import { registerCoclawCli } from './cli-registrar.js';
+import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { createMockServer } from './mock-server.helper.js';
 import { setRuntime } from './runtime.js';
 
@@ -95,14 +96,14 @@ test('registerCoclawCli should register coclaw command with bind/unbind subcomma
 
 test('bind action should call bindBot and notify gateway', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const logs = [];
 	const oldLog = console.log;
 	console.log = (...args) => logs.push(args.join(' '));
 
 	const mock = await createMockServer();
 	const dir = await setupDir('coclaw-cli-reg-bind-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -123,8 +124,7 @@ test('bind action should call bindBot and notify gateway', async () => {
 	} finally {
 		console.log = oldLog;
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 		await mock.close();
 	}
 });
@@ -188,14 +188,14 @@ test('bind action should handle generic errors', async () => {
 
 test('unbind action should call unbindBot and notify gateway', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const logs = [];
 	const oldLog = console.log;
 	console.log = (...args) => logs.push(args.join(' '));
 
 	const mock = await createMockServer();
 	const dir = await setupDir('coclaw-cli-reg-unbind-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -218,8 +218,7 @@ test('unbind action should call unbindBot and notify gateway', async () => {
 	} finally {
 		console.log = oldLog;
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 		await mock.close();
 	}
 });
@@ -282,14 +281,14 @@ test('unbind action should handle generic errors', async () => {
 
 test('serverUrl should resolve from config when --server not provided', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const logs = [];
 	const oldLog = console.log;
 	console.log = (...args) => logs.push(args.join(' '));
 
 	const mock = await createMockServer();
 	const dir = await setupDir('coclaw-cli-reg-cfgurl-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -315,15 +314,14 @@ test('serverUrl should resolve from config when --server not provided', async ()
 	} finally {
 		console.log = oldLog;
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 		await mock.close();
 	}
 });
 
 test('gateway notify failure should warn', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = process.env.HOME;
+	const prevHome = saveHomedir();
 	const logs = [];
 	const warns = [];
 	const oldLog = console.log;
@@ -331,7 +329,7 @@ test('gateway notify failure should warn', async () => {
 
 	const mock = await createMockServer();
 	const dir = await setupDir('coclaw-cli-reg-restart-fail-');
-	process.env.HOME = nodePath.join(dir, 'home');
+	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
@@ -349,8 +347,7 @@ test('gateway notify failure should warn', async () => {
 	} finally {
 		console.log = oldLog;
 		process.chdir(prevCwd);
-		if (prevHome === undefined) delete process.env.HOME;
-		else process.env.HOME = prevHome;
+		restoreHomedir(prevHome);
 		await mock.close();
 	}
 });
