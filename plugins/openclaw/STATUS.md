@@ -4,7 +4,7 @@
 
 - 插件工作区：`plugins/openclaw`，已稳定运行。
 - 对外标识：
-  - npm 包名：`@coclaw/openclaw-coclaw`；plugin id：`coclaw`
+  - npm 包名：`@coclaw/openclaw-coclaw`；plugin id：`openclaw-coclaw`
   - channel：`coclaw`
   - CLI 子命令：`coclaw`（`openclaw coclaw bind/unbind`）
 - 单一入口 `index.js` 同时注册：
@@ -50,7 +50,7 @@
 
 ### 命名定稿 & npm 发布（2026-03-07）
 - npm 包名：`@coclaw/openclaw-coclaw`（scoped to `@coclaw`）。
-- plugin id：`coclaw`（`openclaw.plugin.json` 中的 `id`，优先于从包名派生的 `idHint`）。
+- plugin id：`openclaw-coclaw`（与 npm 包名去 scope 后一致，避免 idHint mismatch 警告）。
 - 以源码形式发布。
 
 ### bot 命名策略（2026-02-28）

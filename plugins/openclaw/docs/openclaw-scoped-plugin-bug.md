@@ -72,8 +72,7 @@ openclaw plugins update coclaw
 openclaw plugins uninstall coclaw
 ```
 
-> 注：我们已将 `openclaw.plugin.json` 的 `id` 从 `openclaw-coclaw` 改为 `coclaw`。
-> OpenClaw 优先使用 manifest id 作为 plugin ID，因此实际 plugin ID 为 `coclaw`。
+> 注：plugin ID 已改回 `openclaw-coclaw`，与 npm 包名去 scope 后一致，避免 idHint mismatch 警告。
 
 ## 补充：plugin ID 确定优先级
 

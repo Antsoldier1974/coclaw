@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OPENCLAW_BIN="${OPENCLAW_BIN:-openclaw}"
-PLUGIN_ID="coclaw"
+PLUGIN_ID="openclaw-coclaw"
 PKG_NAME="@coclaw/openclaw-coclaw"
 CFG="${CFG:-$HOME/.openclaw/openclaw.json}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/.openclaw/backups}"
@@ -120,10 +120,10 @@ from pathlib import Path
 
 cfg = json.loads((Path.home() / '.openclaw' / 'openclaw.json').read_text())
 plugins = cfg.get('plugins') or {}
-entry = (plugins.get('entries') or {}).get('coclaw')
-install = (plugins.get('installs') or {}).get('coclaw')
-print(f'[INFO] plugins.entries.coclaw = {entry}')
-print(f'[INFO] plugins.installs.coclaw = {install}')
+entry = (plugins.get('entries') or {}).get('openclaw-coclaw')
+install = (plugins.get('installs') or {}).get('openclaw-coclaw')
+print(f'[INFO] plugins.entries.openclaw-coclaw = {entry}')
+print(f'[INFO] plugins.installs.openclaw-coclaw = {install}')
 
 if not (entry or {}).get('enabled'):
     print('[WARN] 插件未启用！')

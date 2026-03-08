@@ -47,7 +47,7 @@ function respondError(respond, err) {
 
 /* c8 ignore start */
 const plugin = {
-	id: 'coclaw',
+	id: 'openclaw-coclaw',
 	name: 'CoClaw',
 	description: 'OpenClaw CoClaw channel plugin for remote chat',
 	register(api) {

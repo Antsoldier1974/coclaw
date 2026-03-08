@@ -1,4 +1,4 @@
-# Session Manager（@coclaw/openclaw-coclaw 子模块，plugin id: coclaw）
+# Session Manager（@coclaw/openclaw-coclaw 子模块，plugin id: openclaw-coclaw）
 
 提供最小会话管理网关方法（位于 `src/session-manager/`）：
 - `nativeui.sessions.listAll`

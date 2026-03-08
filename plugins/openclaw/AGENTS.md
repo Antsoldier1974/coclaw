@@ -35,7 +35,7 @@
     }
   }
   ```
-- 禁止将绑定信息写入 `openclaw.json` 的 `channels.coclaw` 或 `plugins.entries.coclaw.config`。
+- 禁止将绑定信息写入 `openclaw.json` 的 `channels.coclaw` 或 `plugins.entries.openclaw-coclaw.config`。
 - `config.js` 是读写绑定信息的唯一入口，禁止在其他模块中直接操作 bindings 文件。
 - 环境变量 `COCLAW_SERVER_URL` 可覆盖 serverUrl（运行时覆盖，不影响存储）。
 

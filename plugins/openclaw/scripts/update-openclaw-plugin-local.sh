@@ -67,17 +67,17 @@ from pathlib import Path
 cfg = json.loads(Path('/home/xhx/.openclaw/openclaw.json').read_text())
 plugins = cfg.get('plugins') or {}
 paths = ((plugins.get('load') or {}).get('paths') or [])
-entry = (plugins.get('entries') or {}).get('coclaw')
-install = (plugins.get('installs') or {}).get('coclaw')
+entry = (plugins.get('entries') or {}).get('openclaw-coclaw')
+install = (plugins.get('installs') or {}).get('openclaw-coclaw')
 print('[INFO] plugins.load.paths =', paths)
-print('[INFO] plugins.entries.coclaw =', entry)
-print('[INFO] plugins.installs.coclaw =', install)
+print('[INFO] plugins.entries.openclaw-coclaw =', entry)
+print('[INFO] plugins.installs.openclaw-coclaw =', install)
 if '/home/xhx/.openclaw/workspace/coclaw/plugins/openclaw' not in paths:
     raise SystemExit('[ERROR] linked source path missing in plugins.load.paths')
 if not (entry or {}).get('enabled'):
-    raise SystemExit('[ERROR] plugins.entries.coclaw.enabled is not true')
+    raise SystemExit('[ERROR] plugins.entries.openclaw-coclaw.enabled is not true')
 if (install or {}).get('source') != 'path':
-    raise SystemExit('[ERROR] plugins.installs.coclaw.source is not path')
+    raise SystemExit('[ERROR] plugins.installs.openclaw-coclaw.source is not path')
 PY
 
 echo "[STEP] verify expected updated code markers in linked source"

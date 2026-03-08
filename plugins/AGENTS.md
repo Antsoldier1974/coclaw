@@ -23,10 +23,9 @@
 ## 命名与 ID 体系
 
 - **npm 包名**：`@coclaw/openclaw-coclaw`（scoped，发布到 npm）。
-- **Plugin ID**：`coclaw`，用于 `plugins.entries` / `plugins.installs`、`openclaw.plugin.json` 的 `id`。
+- **Plugin ID**：`openclaw-coclaw`，用于 `plugins.entries` / `plugins.installs`、`openclaw.plugin.json` 的 `id`。与 npm 包名去 scope 后一致，避免 idHint mismatch 警告。
 - **Channel ID**：`coclaw`，用于 channel 注册、消息路由、state 子目录。
 - **Command 名**：`coclaw`，用于 CLI（`openclaw coclaw bind`）和 IM 命令（`/coclaw bind`）。
-- OpenClaw 从 npm 包名派生 `idHint`（`unscopedPackageName(name)` → `openclaw-coclaw`），但 `openclaw.plugin.json` 的 `id`（`coclaw`）优先级更高，最终 plugin ID 为 `coclaw`。
 - 修改插件命名策略时，必须同步检查：
   - `openclaw.plugin.json`（id）
   - `package.json`（name）

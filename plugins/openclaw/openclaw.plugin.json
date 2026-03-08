@@ -1,5 +1,5 @@
 {
-  "id": "coclaw",
+  "id": "openclaw-coclaw",
   "name": "CoClaw",
   "description": "OpenClaw CoClaw channel plugin for remote chat",
   "channels": ["coclaw"],

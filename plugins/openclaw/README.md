@@ -1,6 +1,6 @@
 # @coclaw/openclaw-coclaw
 
-CoClaw 的 OpenClaw 插件（npm: `@coclaw/openclaw-coclaw`，plugin id: `coclaw`），包含：
+CoClaw 的 OpenClaw 插件（npm: `@coclaw/openclaw-coclaw`，plugin id: `openclaw-coclaw`），包含：
 
 - **transport bridge** — CoClaw server 与 OpenClaw gateway 之间的实时消息桥接
 - **session-manager** — 会话列表/读取能力（`nativeui.sessions.listAll` / `nativeui.sessions.get`）

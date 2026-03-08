@@ -20,8 +20,8 @@ openclaw plugins doctor
 
 初始化后，配置应满足：
 - `plugins.load.paths` 包含 `/home/xhx/.openclaw/workspace/coclaw/plugins/openclaw`
-- `plugins.entries.coclaw.enabled = true`
-- `plugins.installs.coclaw.source = "path"`
+- `plugins.entries.openclaw-coclaw.enabled = true`
+- `plugins.installs.openclaw-coclaw.source = "path"`
 
 ## 日常开发更新
 
