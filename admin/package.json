@@ -1,0 +1,21 @@
+{
+  "name": "@coclaw/admin",
+  "version": "0.1.1",
+  "private": true,
+  "description": "CoClaw admin panel (reserved)",
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coclaw/coclaw.git",
+    "directory": "admin"
+  },
+  "scripts": {
+    "dev": "echo \"TODO: start admin dev server\"",
+    "build": "echo \"TODO: build admin\"",
+    "lint": "eslint \"**/*.{js,mjs,cjs}\" --no-error-on-unmatched-pattern",
+    "typecheck": "echo \"No typecheck configured yet (admin)\"",
+    "test": "node --test",
+    "coverage": "c8 --check-coverage --lines 70 --functions 70 --branches 60 --statements 70 --reporter=text --reporter=lcov node --test"
+  }
+}
