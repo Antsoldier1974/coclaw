@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.1.6
+
+### Patch Changes
+
+- fix: unbind 时无论 server 通知是否成功，都清理本地绑定信息，避免用户陷入无法 unbind 也无法 bind 的死锁状态
+
 ## 0.1.5
 
 ### Patch Changes
