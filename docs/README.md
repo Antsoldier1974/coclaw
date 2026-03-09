@@ -27,14 +27,8 @@ Deployment, configuration, and operational guides.
 
 ## OpenClaw Research
 
-OpenClaw 平台机制研究与技术调查。
+OpenClaw 平台机制研究与 CoClaw 集成经验。
 
-- [Channel Plugin Deep Analysis](openclaw-research/channel-plugin-deep-analysis.md) - Channel 插件机制、Session Key 命名、dmScope
-- [IM Channel Interaction](openclaw-research/im-channel-interaction.md) - 队列模式、流式推送、typing、Gateway 架构
-- [RPC & Session](openclaw-research/rpc-and-session.md) - Session Key/ID 概念、chat.send vs agent 协议、cron key
-- [Session Format](openclaw-research/session-format.md) - JSONL transcript 格式与 content block 类型
-- [Gateway Attachment Support](openclaw-research/gateway-attachment-support.md) - RPC 附件处理链路分析
-- [Orphan Session Resume](openclaw-research/orphan-session-resume.md) - Orphan 续聊实现方案
-- [Detect SessionId Change](openclaw-research/detect-sessionid-change.md) - SessionId 变更检测
-- [Ensure Main Session Key Bootstrap](openclaw-research/ensure-main-session-key-bootstrap.md) - 主会话 key bootstrap
-- [Image Silent Discard](openclaw-research/image-silent-discard-non-vision-model.md) - 非 vision 模型图片静默丢弃
+- [核心架构与 Session 机制](openclaw-research/core-architecture.md) - 三层模型、Channel 插件、Session Key/ID/dmScope、Gateway 架构
+- [Gateway 通信协议与交互机制](openclaw-research/gateway-protocols.md) - RPC 协议（chat.send vs agent）、队列/流式、Transcript 格式、附件处理
+- [集成要点与已知限制](openclaw-research/integration-notes.md) - 主会话 bootstrap、orphan 续聊、session 滚动检测、附件/vision 限制
