@@ -153,8 +153,14 @@ RPC 请求（agent / chat.send）
 
 ### 3. 执行模式
 
-- **Main session**：事件注入主 session 的心跳队列
-- **Isolated**：独立 session `cron:<jobId>`，每次新 sessionId（无上下文延续）
+- **Main session**：作为 system event 注入 Agent 的主会话（`agent:<agentId>:<mainKey>`，通常为 `agent:main:main`），在下一次心跳时执行，共享主会话的完整对话上下文
+- **Isolated**（默认）：独立 session `agent:<agentId>:cron:<jobId>`，每次新 sessionId（无历史上下文延续）
+
+### 3.1 Cron 不区分创建来源
+
+无论 Cron 任务是由哪个渠道、哪个用户的对话触发 AI 创建的，任务一旦创建就与来源无关——它们统一挂在对应 Agent 下，存储在 `~/.openclaw/cron/jobs.json` 中。执行时使用的 session 是 Cron 自己的 session（isolated）或 Agent 的主会话（main），不会使用创建者的 per-peer/per-channel-peer session。
+
+任务结果的投递目标需要在创建时通过 `delivery` 显式指定（向哪个 channel/recipient 发送），与创建者的渠道身份没有自动关联。
 
 ### 4. 投递模式
 
@@ -210,7 +216,8 @@ CoClaw 使用 `agent` RPC 的 `assistant` 事件流，获取的是**完整替换
 
 ### 1. 机制
 
-- Gateway 定期在主 session 中触发 agent turn（默认 30 分钟间隔）
+- Gateway 定期在 Agent 的**主会话**（`agent:<agentId>:<mainKey>`，通常为 `agent:main:main`）中触发 agent turn（默认 30 分钟间隔）
+- 注意：这里的"主会话"与 dmScope 无关——即使 dmScope 为 `per-channel-peer` 产生了多个独立的渠道 session，心跳仍然只在 `agent:main:main` 中执行
 - 不需要用户消息，agent 自行检查 `HEARTBEAT.md` 并决定是否需要行动
 - 若 agent 回复以 `HEARTBEAT_OK` 开头且长度 ≤ 300 字符，回复被抑制（不投递）
 
@@ -223,8 +230,12 @@ CoClaw 使用 `agent` RPC 的 `assistant` 事件流，获取的是**完整替换
 
 ### 3. 与 Cron 的区别
 
-- Heartbeat：主 session 内的周期性自检，有上下文延续
-- Cron：独立 session 的定时任务，每次无上下文延续
+| 维度 | 心跳 | Cron（isolated） | Cron（main） |
+|------|------|-----------------|-------------|
+| 执行 session | `agent:main:main` | `agent:main:cron:<jobId>` | `agent:main:main` |
+| 上下文延续 | 有（共享主会话历史） | 无（每次全新） | 有（共享主会话历史） |
+| 触发方式 | 固定间隔自动触发 | 按 schedule 触发 | 注入心跳队列 |
+| 区分来源 | 不区分 | 不区分 | 不区分 |
 
 ---
 
