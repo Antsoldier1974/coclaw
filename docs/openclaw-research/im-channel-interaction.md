@@ -30,7 +30,7 @@
 
 ### 防抖（Debounce）
 
-- 用户快速连发的文本消息会被合并（默认 2s 窗口）
+- 用户快速连发的文本消息会被合并（默认 1s 窗口）
 - 媒体/附件绕过防抖立即处理
 - 控制命令（如 `/new`）也绕过防抖
 
@@ -63,10 +63,10 @@
 
 ### 2. Block Streaming（分块流式推送）
 
-- 配置项：`blockStreamingDefault: "on"`
+- 配置项：`blockStreamingDefault`（可选，未指定时默认关闭）
 - Agent 生成文本时，按完成的 block（段落/段）实时推送
 - 分块策略：按段落 → 换行 → 句号 → 空格的优先级智能断句
-- 控制参数：`minChars: 200`、`maxChars: 1000`
+- 控制参数：`minChars: 200`、`maxChars: 800`（Telegram 默认值）
 - 模拟人类节奏：`humanDelay: "natural"`（800-2500ms 间隔）
 
 ### 3. Preview Streaming（Telegram 特有）
@@ -214,7 +214,7 @@ CoClaw 作为 OpenClaw 的远程 Channel 实现，需要注意以下几点：
       "drop": "summarize"
     },
     "inbound": {
-      "debounceMs": 2000
+      "debounceMs": 1000
     }
   },
   "agents": {
@@ -231,11 +231,11 @@ CoClaw 作为 OpenClaw 的远程 Channel 实现，需要注意以下几点：
 {
   "agents": {
     "defaults": {
-      "blockStreamingDefault": "on",
+      "blockStreamingDefault": true,
       "blockStreamingBreak": "text_end",
       "blockStreamingChunk": {
         "minChars": 200,
-        "maxChars": 1000
+        "maxChars": 800
       },
       "humanDelay": "natural"
     }

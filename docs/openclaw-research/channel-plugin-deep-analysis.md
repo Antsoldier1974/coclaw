@@ -80,7 +80,7 @@ Agent 生成回复
 
 ## 三、Session Key 命名规则
 
-源码位于 `src/routing/session-key.ts:120-167`，核心函数是 `buildAgentPeerSessionKey()`。
+源码位于 `src/routing/session-key.ts:127-174`，核心函数是 `buildAgentPeerSessionKey()`。
 
 ### 1. DM（直接消息）— 受 dmScope 控制
 
@@ -159,7 +159,7 @@ Agent 生成回复
 - Telegram: `agent:main:direct:alice`
 - WhatsApp: `agent:main:direct:alice`（相同，合并了）
 
-Identity Links 的实现逻辑位于 `src/routing/session-key.ts:169-213` 的 `resolveLinkedPeerId()` 函数。匹配规则：
+Identity Links 的实现逻辑位于 `src/routing/session-key.ts:176-220` 的 `resolveLinkedPeerId()` 函数。匹配规则：
 
 1. 尝试匹配 `peerId` 本身（不带 channel 前缀）
 2. 尝试匹配 `<channel>:<peerId>`（带 channel 前缀）

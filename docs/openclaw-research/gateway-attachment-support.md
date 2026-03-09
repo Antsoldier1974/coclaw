@@ -100,7 +100,7 @@ images: parsedImages.length > 0 ? parsedImages : undefined,
 
 两条 Gateway RPC 路径（`agent` / `chat.send`）都汇聚到 `parseMessageWithAttachments`，该函数只处理 image 类型附件，非图片一律静默丢弃（带 warn 日志）。
 
-OpenClaw 的音频处理能力（`audio-transcription-runner.ts`、`audio-preflight.ts` 等）存在于 channel 消息管道，尚未接入 gateway RPC 路径。
+OpenClaw 的音频处理能力存在于 channel 消息管道（media-understanding 模块），尚未接入 gateway RPC 路径。
 
 ## 可能的解决方向
 
@@ -116,4 +116,4 @@ OpenClaw 的音频处理能力（`audio-transcription-runner.ts`、`audio-prefli
 - 附件解析（瓶颈）：`openclaw-repo/src/gateway/chat-attachments.ts`
 - Agent 处理器：`openclaw-repo/src/gateway/server-methods/agent.ts`
 - Chat 处理器：`openclaw-repo/src/gateway/server-methods/chat.ts`
-- 音频转写能力：`openclaw-repo/src/media-understanding/audio-transcription-runner.ts`
+- 音频处理能力：`openclaw-repo/src/media-understanding/`
