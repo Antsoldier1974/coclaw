@@ -102,9 +102,11 @@ git push --follow-tags
 - 代码已推送到 GitHub
 - 确定发布版本号
 
-### 1. 确定版本
+### 1. Bump workspace 版本并同步根版本
 
-如果根 `package.json` 需要 bump，手动更新并提交推送。
+按需 patch bump 各 workspace（server / ui / admin）的版本号（插件版本由 npm 发布流程单独管理，此处不动）。
+
+**根版本号约定**：根 `package.json` 的 `version` 始终保持为所有 workspace（含 plugins）中最高的版本号。bump 完各 workspace 后，取最高版本写入根 `package.json`，一并提交推送。
 
 ### 2. 创建 Release
 
