@@ -2,6 +2,7 @@
 	<UModal
 		v-model:open="openProxy"
 		:title="$t('settings.title')"
+		description=" "
 		:fullscreen="isMobile"
 		:ui="isMobile ? safeAreaUi : undefined"
 		@after:leave="$emit('after:leave')"
