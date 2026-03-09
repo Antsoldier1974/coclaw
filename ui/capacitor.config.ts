@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'net.coclaw.app',
+  appId: 'net.coclaw.im',
   appName: 'CoClaw',
   webDir: 'dist',
   server: {

@@ -7,11 +7,15 @@
 <script>
 import { isMobileViewport } from './utils/layout.js';
 import { useUiStore } from './stores/ui.store.js';
+import { useNotify } from './composables/use-notify.js';
+import { setGlobalErrorNotify } from './utils/global-error-handler.js';
 
 export default {
 	name: 'AppRoot',
 
 	setup() {
+		const notify = useNotify();
+		setGlobalErrorNotify((msg) => notify.error({ title: msg }));
 		return {
 			uiStore: useUiStore(),
 		};

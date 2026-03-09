@@ -3,6 +3,7 @@
 		v-model:open="openProxy"
 		:title="$t('settings.title')"
 		:fullscreen="isMobile"
+		:ui="isMobile ? safeAreaUi : undefined"
 		@after:leave="$emit('after:leave')"
 	>
 		<template #body>
@@ -13,6 +14,7 @@
 
 <script>
 import UserSettingsPanel from './UserSettingsPanel.vue';
+import { popDialogState } from '../../utils/dialog-history.js';
 
 export default {
 	name: 'UserSettingsDialog',
@@ -30,6 +32,10 @@ export default {
 		return {
 			isMobile: false,
 			mediaQuery: null,
+			safeAreaUi: {
+				header: 'pt-[max(0.25rem,env(safe-area-inset-top))]',
+				body: 'pb-[env(safe-area-inset-bottom)]',
+			},
 		};
 	},
 	computed: {
@@ -40,6 +46,11 @@ export default {
 			set(val) {
 				this.$emit('update:open', val);
 			},
+		},
+	},
+	watch: {
+		open(val) {
+			if (!val) popDialogState();
 		},
 	},
 	mounted() {

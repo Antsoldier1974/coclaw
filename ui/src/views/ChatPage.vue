@@ -445,10 +445,11 @@ export default {
 			}
 			catch (err) {
 				console.error('[chat] sendViaAgent error:', err);
-				// 已通过 timeout 或 lifecycle:end 处理时，忽略 WS 关闭产生的尾巴错误
-				if (!(this.__agentSettled && err?.code === 'WS_CLOSED')) {
-					this.notify.error(err?.message || this.$t('chat.orphanSendFailed'));
+				// lifecycle:end 已完成清理，WS 关闭产生的尾巴错误直接忽略
+				if (this.__agentSettled && err?.code === 'WS_CLOSED') {
+					return;
 				}
+				this.notify.error(err?.message || this.$t('chat.orphanSendFailed'));
 				this.clearStreamingState();
 				this.sending = false;
 

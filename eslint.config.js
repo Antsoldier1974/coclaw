@@ -5,7 +5,8 @@ export default [
 			'**/dist/**',
 			'**/build/**',
 			'**/coverage/**',
-			'**/.run/**'
+			'**/.run/**',
+			'**/android/**'
 		]
 	},
 	{

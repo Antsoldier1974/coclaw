@@ -1,10 +1,10 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace = "net.coclaw.app"
+    namespace = "net.coclaw.im"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "net.coclaw.app"
+        applicationId "net.coclaw.im"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

@@ -24,8 +24,10 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.2.0",
+    "@capacitor/app": "^8.0.1",
     "@capacitor/cli": "^8.2.0",
     "@capacitor/core": "^8.2.0",
+    "@capacitor/status-bar": "^8.0.1",
     "@iktakahiro/markdown-it-katex": "^4.0.1",
     "@nuxt/ui": "^4.4.0",
     "axios": "^1.13.5",

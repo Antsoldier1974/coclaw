@@ -1,4 +1,4 @@
-package net.coclaw.app;
+package net.coclaw.im;
 
 import com.getcapacitor.BridgeActivity;
 

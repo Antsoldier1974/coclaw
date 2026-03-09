@@ -9,7 +9,7 @@
 
 			<section
 				class="flex min-h-screen min-w-0 flex-1 flex-col"
-				:class="showMobileNav ? 'pb-13 md:pb-0' : ''"
+				:class="sectionClasses"
 			>
 				<router-view />
 				<MobileBottomTabs v-if="showMobileNav" :current-path="$route.path" />
@@ -43,6 +43,17 @@ export default {
 	computed: {
 		showMobileNav() {
 			return !this.$route.meta.hideMobileNav;
+		},
+		isTopPage() {
+			return !!this.$route.meta.isTopPage;
+		},
+		sectionClasses() {
+			const cls = [];
+			// 顶级页面无 MobilePageHeader，需要为状态栏留出安全距离
+			if (this.isTopPage) cls.push('pt-[env(safe-area-inset-top)] md:pt-0');
+			// 底部导航可见时为其留出空间
+			if (this.showMobileNav) cls.push('pb-[calc(3.25rem+env(safe-area-inset-bottom))] md:pb-0');
+			return cls.join(' ');
 		},
 	},
 	async mounted() {
