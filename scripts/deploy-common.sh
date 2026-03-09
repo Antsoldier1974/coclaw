@@ -4,9 +4,9 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPLOY_DIR="$PROJECT_ROOT/deploy"
 
-: "${DEPLOY_HOST:=coclaw.net}"
+: "${DEPLOY_HOST:=im.coclaw.net}"
 : "${DEPLOY_REMOTE_DIR:=~/coclaw}"
-: "${DEPLOY_DOMAIN:=coclaw.qidianchat.com}"
+: "${DEPLOY_DOMAIN:=im.coclaw.net}"
 
 if [[ -z "${SSH_AUTH_SOCK:-}" && -S "$HOME/.ssh/agent.sock" ]]; then
 	export SSH_AUTH_SOCK="$HOME/.ssh/agent.sock"
