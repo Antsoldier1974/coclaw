@@ -23,6 +23,9 @@
     "verify": "pnpm check && pnpm test && pnpm coverage"
   },
   "dependencies": {
+    "@capacitor/android": "^8.2.0",
+    "@capacitor/cli": "^8.2.0",
+    "@capacitor/core": "^8.2.0",
     "@iktakahiro/markdown-it-katex": "^4.0.1",
     "@nuxt/ui": "^4.4.0",
     "axios": "^1.13.5",

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">CoClaw</string>
+    <string name="title_activity_main">CoClaw</string>
+    <string name="package_name">net.coclaw.app</string>
+    <string name="custom_url_scheme">net.coclaw.app</string>
+</resources>

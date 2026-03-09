@@ -156,6 +156,14 @@ pnpm changeset:version  # 消费 changeset，bump 版本
 pnpm changeset:publish  # 发布 npm 包（实际发布插件使用 plugins/openclaw 下的 pnpm pub:release）
 ```
 
+## 移动端与桌面端
+
+- **移动端（Android / iOS）**：Capacitor —— 将 `ui` 的 Vite 构建产物打包为原生 App
+- **桌面端（Windows / macOS）**：Tauri v2（待后续启动）
+- 决策详情见 `docs/decisions/adr-mobile-desktop-framework.md`
+- Android 开发规范与命令见 `capacitor-android` skill
+- 前端代码与 Web 端完全共用，不维护多套 UI
+
 ## 部署执行约定（内部）
 
 - 涉及部署时，优先使用 `scripts/deploy-*.sh`，避免临时手敲分散命令。
