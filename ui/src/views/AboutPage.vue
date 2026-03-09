@@ -3,7 +3,7 @@
 		<MobilePageHeader :title="$t('about.title')" />
 	<main class="flex-1 overflow-auto px-4 pt-5 pb-[max(2rem,env(safe-area-inset-bottom))] lg:px-5">
 		<div class="mx-auto w-full max-w-3xl">
-			<img :src="logoSrc" alt="CoClaw" class="mx-auto size-20 rounded-xl" />
+			<img :src="logoSrc" alt="CoClaw" class="mx-auto mb-5 size-20 rounded-xl" />
 			<h1 v-if="false" class="hidden text-center text-xl font-semibold md:block">{{ $t('about.title') }}</h1>
 			<p class="text-center text-base text-toned md:mt-4">{{ $t('about.intro') }}</p>
 

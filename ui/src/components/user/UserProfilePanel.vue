@@ -2,7 +2,7 @@
 	<div class="grid gap-4">
 		<div class="flex flex-col items-center gap-3 pb-4">
 			<span class="flex size-16 shrink-0 items-center justify-center rounded-full bg-primary text-2xl font-medium text-white">{{ displayName.slice(0, 1).toUpperCase() }}</span>
-			<p class="text-base font-medium">{{ displayName }}</p>
+			<p class="text-xs text-dimmed">{{ authStore.user?.id }}</p>
 		</div>
 
 		<UserInfoRows :user="authStore.user" editable @edit-name="openNameModal = true" @copy-login-name="onCopyLoginName" />

@@ -4,7 +4,7 @@
 			<UButton
 				size="xl"
 				variant="ghost"
-				color="primary"
+				color="neutral"
 				class="cc-icon-btn-lg"
 				icon="i-lucide-arrow-left"
 				@click="goBack"

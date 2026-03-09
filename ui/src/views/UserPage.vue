@@ -2,11 +2,13 @@
 	<main class="flex-1 overflow-auto">
 		<div class="mx-auto w-full max-w-3xl">
 			<div class="flex items-center gap-4 px-4 py-5">
-				<span class="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary text-base font-medium text-white">{{ displayName.slice(0, 1).toUpperCase() }}</span>
+				<span
+					class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-full bg-primary text-base font-medium text-white transition-transform hover:scale-110"
+					@click="userDialogs.openProfileDialog()"
+				>{{ displayName.slice(0, 1).toUpperCase() }}</span>
 				<div class="min-w-0 flex-1">
-					<p class="text-base font-medium">{{ displayName }}</p>
-					<p class="text-sm text-muted">{{ $t('user.role') }}</p>
-					<p class="text-xs text-dimmed">{{ loginName }}</p>
+					<p class="text-base font-medium">{{ loginName }}</p>
+					<p class="text-xs text-dimmed">{{ userId }}</p>
 				</div>
 			</div>
 
@@ -46,7 +48,10 @@ export default {
 			return getUserDisplayName(this.authStore.user);
 		},
 		loginName() {
-			return getUserLoginName(this.authStore.user) || '-';
+			return getUserLoginName(this.authStore.user) || this.displayName;
+		},
+		userId() {
+			return this.authStore.user?.id || '-';
 		},
 		menuItems() {
 			return getUserMenuItems(this.$t);
