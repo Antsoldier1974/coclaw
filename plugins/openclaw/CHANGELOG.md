@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.1.5
+
+### Patch Changes
+
+- Fix server URL resolution: correct plugin entries key, default to im.coclaw.net, unbind and realtime-bridge use bindings.json as authoritative source
+
 ## 0.1.4
 
 ### Patch Changes
