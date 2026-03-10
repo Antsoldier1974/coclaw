@@ -16,3 +16,8 @@ description: Capacitor Android 开发规范与约束。当进行 Android App 构
 - 环境变量（`JAVA_HOME`、`ANDROID_HOME`）已配置在 `~/.bashrc`
 - 网络受限时使用本机代理（参见 `local-proxy` skill）
 - WSL2 环境，无法直接使用 Android 模拟器
+
+## 何时需要 build APK
+
+- 仅当修改了 Capacitor 原生层代码（如 `ui/android/` 下的文件、Capacitor 配置、原生插件等）时才需要重新 build APK
+- 仅修改 Web 层代码（Vue 组件、JS、CSS 等）时不需要 build APK——Web 部分通过 `vite build` 产物更新即可
