@@ -1,5 +1,15 @@
 # @coclaw/openclaw-coclaw
 
+## 0.1.7
+
+### Patch Changes
+
+- - fix: prevent bot.unbound race condition and fix bridge reconnect after rebind
+  - feat: auto-rebind on bind and add request timeouts
+  - fix: strip operator-configured policy prefix in derivedTitle
+  - fix: enhance derivedTitle cleaning for cron time and untrusted context
+  - refactor: architecture cleanup before auto-upgrade feature
+
 ## 0.1.6
 
 ### Patch Changes
