@@ -15,7 +15,8 @@ import {
 } from '../repos/bot-binding-code.repo.js';
 import { genBotId } from './id.svc.js';
 
-const BINDING_CODE_EXPIRE_MS = 30 * 60 * 1000;
+const BINDING_CODE_EXPIRE_MS =
+	(Number(process.env.BINDING_CODE_EXPIRE_MINUTES) || 30) * 60 * 1000;
 
 function isNonEmptyString(value) {
 	return typeof value === 'string' && value.trim() !== '';
