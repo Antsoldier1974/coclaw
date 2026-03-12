@@ -10,7 +10,7 @@ import { createMockServer } from './mock-server.helper.js';
 import { setRuntime } from './runtime.js';
 import { getBindingsPath, readConfig } from './config.js';
 
-test('standalone mode: bind then unbind should succeed', async () => {
+test('standalone mode: bind then unbind should succeed', { skip: 'standalone 模式已弃用，保留代码备查' }, async () => {
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-tunnel-standalone-'));
