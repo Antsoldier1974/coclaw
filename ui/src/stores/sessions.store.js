@@ -22,11 +22,13 @@ export const useSessionsStore = defineStore('sessions', {
 		async loadAllSessions() {
 			// 已有加载中的请求，合流等待
 			if (_loadingPromise) {
+				console.debug('[sessions] loadAll: coalesced with pending request');
 				return _loadingPromise;
 			}
 			const botsStore = useBotsStore();
 			const bots = botsStore.items ?? [];
 			if (!bots.length) {
+				console.debug('[sessions] loadAll: skipped (no bots)');
 				this.items = [];
 				return;
 			}
@@ -37,6 +39,7 @@ export const useSessionsStore = defineStore('sessions', {
 				return conn && conn.state === 'connected';
 			});
 			if (!connectedBots.length) {
+				console.debug('[sessions] loadAll: skipped (no connected bots, total=%d)', bots.length);
 				this.items = [];
 				return;
 			}

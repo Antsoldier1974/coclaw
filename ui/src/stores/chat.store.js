@@ -38,10 +38,13 @@ export const useChatStore = defineStore('chat', {
 		/**
 		 * 激活（切换到）指定 session，加载消息
 		 * @param {string} sessionId
+		 * @param {object} [opts]
+		 * @param {boolean} [opts.force] - 强制重新激活（跳过 id 去重）
 		 */
-		async activateSession(sessionId) {
+		async activateSession(sessionId, { force = false } = {}) {
 			const id = typeof sessionId === 'string' ? sessionId.trim() : '';
-			if (id === this.sessionId) return;
+			if (!force && id === this.sessionId) return;
+			console.debug('[chat] activateSession id=%s force=%s', id, force);
 			// 切换前清理上一个 session 的 streaming
 			this.__cleanupStreaming();
 			this.sessionId = id;
@@ -50,9 +53,15 @@ export const useChatStore = defineStore('chat', {
 			this.sending = false;
 			// 解析 botId
 			this.botId = this.__resolveBotId(id);
-			if (id) {
-				await this.loadMessages();
+			console.debug('[chat] resolved botId=%s for session=%s', this.botId, id);
+			if (!id) return;
+			// botId 尚未解析（bots 未就绪）→ 保持 loading，等待 retry
+			if (!this.botId) {
+				console.debug('[chat] activateSession: awaiting bots, stay loading');
+				this.loading = true;
+				return;
 			}
+			await this.loadMessages();
 		},
 
 		/**
@@ -69,10 +78,18 @@ export const useChatStore = defineStore('chat', {
 			}
 			const conn = this.__getConnection();
 			if (!conn) {
+				console.debug('[chat] loadMessages: no connection for botId=%s', this.botId);
 				if (!silent) this.errorText = 'Bot not connected';
 				this.loading = false;
 				return false;
 			}
+			// 连接存在但尚未就绪 → 保持 loading，等待 retry
+			if (conn.state !== 'connected') {
+				console.debug('[chat] loadMessages: connection not ready state=%s botId=%s', conn.state, this.botId);
+				if (!silent) this.loading = true;
+				return false;
+			}
+			console.debug('[chat] loadMessages sessionId=%s botId=%s', this.sessionId, this.botId);
 			if (!silent) {
 				this.loading = true;
 				this.errorText = '';
@@ -97,9 +114,11 @@ export const useChatStore = defineStore('chat', {
 					cursor: 0,
 				});
 				this.messages = Array.isArray(result?.messages) ? result.messages : [];
+				console.debug('[chat] loadMessages ok count=%d', this.messages.length);
 				return true;
 			}
 			catch (err) {
+				console.debug('[chat] loadMessages failed: %s', err?.message);
 				if (!silent) {
 					this.messages = [];
 					this.errorText = err?.message || 'Failed to load messages';
@@ -126,6 +145,7 @@ export const useChatStore = defineStore('chat', {
 				throw new Error('Bot not connected');
 			}
 
+			console.debug('[chat] sendMessage sessionId=%s files=%d', this.sessionId, files?.length ?? 0);
 			this.sending = true;
 			this.streamingRunId = null;
 			this.__agentSettled = false;
@@ -219,6 +239,7 @@ export const useChatStore = defineStore('chat', {
 				const final = await Promise.race([
 					conn.request('agent', agentParams, {
 						onAccepted: (payload) => {
+							console.debug('[chat] agent accepted runId=%s', payload?.runId);
 							this.__accepted = true;
 							this.streamingRunId = payload?.runId ?? null;
 							// 切换到 post-acceptance 120s 超时
@@ -317,6 +338,7 @@ export const useChatStore = defineStore('chat', {
 			if (!match) return;
 
 			const { stream, data } = payload;
+			console.debug('[chat] agent event stream=%s phase=%s', stream, data?.phase ?? '-');
 
 			if (stream === 'assistant' && data?.text != null) {
 				const entry = this.__findStreamingBotEntry();
@@ -376,6 +398,7 @@ export const useChatStore = defineStore('chat', {
 			}
 			else if (stream === 'lifecycle') {
 				if (data?.phase === 'end') {
+					console.debug('[chat] agent lifecycle:end runId=%s', this.streamingRunId);
 					this.__agentSettled = true;
 					this.sending = false;
 					this.__cleanupTimersAndListeners();
@@ -383,6 +406,7 @@ export const useChatStore = defineStore('chat', {
 					this.__reconcileMessages();
 				}
 				else if (data?.phase === 'error') {
+					console.debug('[chat] agent lifecycle:error runId=%s', this.streamingRunId);
 					this.__agentSettled = true;
 					this.__cleanupStreaming();
 					this.sending = false;

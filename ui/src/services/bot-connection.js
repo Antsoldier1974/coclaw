@@ -70,12 +70,14 @@ export class BotConnection {
 	/** 建立连接（幂等） */
 	connect() {
 		if (this.__ws) return;
+		console.debug('[BotConn] connect botId=%s', this.botId);
 		this.__intentionalClose = false;
 		this.__doConnect();
 	}
 
 	/** 主动断开，不再自动重连 */
 	disconnect() {
+		console.debug('[BotConn] disconnect botId=%s', this.botId);
 		this.__intentionalClose = true;
 		this.__clearReconnect();
 		this.__cleanup();
@@ -150,7 +152,9 @@ export class BotConnection {
 
 	__setState(newState) {
 		if (this.__state === newState) return;
+		const prev = this.__state;
 		this.__state = newState;
+		console.debug('[BotConn] state %s→%s botId=%s', prev, newState, this.botId);
 		this.__emit('state', newState);
 	}
 
@@ -170,6 +174,7 @@ export class BotConnection {
 
 		ws.addEventListener('open', () => {
 			if (this.__ws !== ws) return;
+			console.debug('[BotConn] ws open botId=%s', this.botId);
 			this.__setState('connected');
 			this.__reconnectDelay = INITIAL_RECONNECT_MS;
 			this.__startHeartbeat();
@@ -181,8 +186,9 @@ export class BotConnection {
 			this.__onMessage(event);
 		});
 
-		ws.addEventListener('close', () => {
+		ws.addEventListener('close', (ev) => {
 			if (this.__ws !== ws) return;
+			console.debug('[BotConn] ws close botId=%s code=%d reason=%s', this.botId, ev.code, ev.reason);
 			this.__clearHeartbeat();
 			this.__rejectAllPending('connection closed');
 			this.__ws = null;
@@ -193,7 +199,7 @@ export class BotConnection {
 		});
 
 		ws.addEventListener('error', () => {
-			// close 事件会随后触发，此处不额外处理
+			console.debug('[BotConn] ws error botId=%s', this.botId);
 		});
 	}
 
@@ -208,6 +214,7 @@ export class BotConnection {
 
 		// session 过期（server 侧主动通知，预留）
 		if (payload?.type === 'session.expired') {
+			console.debug('[BotConn] session.expired botId=%s', this.botId);
 			this.__emit('session-expired');
 			this.disconnect();
 			return;
@@ -215,6 +222,7 @@ export class BotConnection {
 
 		// bot 解绑
 		if (payload?.type === 'bot.unbound') {
+			console.debug('[BotConn] bot.unbound botId=%s', this.botId);
 			this.__emit('bot-unbound', payload);
 			this.__intentionalClose = true;
 			this.__clearReconnect();

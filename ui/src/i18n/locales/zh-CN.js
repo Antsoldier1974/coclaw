@@ -190,6 +190,7 @@ export const zhCNMessages = {
 		unknownRpcStatus: '收到未知的响应状态: {status}，请反馈给开发者',
 		botOffline: '机器人已离线',
 		botUnbound: '机器人已解绑',
+		sessionNotFound: '会话已不存在',
 		newChatFailed: '新建对话失败',
 		botThinking: '思考中',
 		thinkingFor: '思考中 {time}',

@@ -19,6 +19,7 @@ export function useBotStatusSse(botsStore) {
 		es = new EventSource('/api/v1/bots/status-stream');
 
 		es.onopen = () => {
+			console.debug('[SSE] connected');
 			connected.value = true;
 			// 重连后立即全量同步，以捕获断开期间错过的变化
 			botsStore.loadBots().catch(() => {});
@@ -27,6 +28,7 @@ export function useBotStatusSse(botsStore) {
 		es.onmessage = (evt) => {
 			try {
 				const data = JSON.parse(evt.data);
+				console.debug('[SSE] event=%s', data.event, data);
 				if (data.event === 'bot.status') {
 					botsStore.updateBotOnline(data.botId, data.online);
 				}
@@ -45,6 +47,7 @@ export function useBotStatusSse(botsStore) {
 		};
 
 		es.onerror = () => {
+			console.debug('[SSE] error/disconnected');
 			connected.value = false;
 		};
 	}

@@ -238,4 +238,54 @@ describe('loadBots', () => {
 		await expect(store.loadBots()).rejects.toThrow('network error');
 		expect(store.loading).toBe(false);
 	});
+
+	test('registers state listener on non-connected connections and triggers loadAllSessions on connected', async () => {
+		const store = useBotsStore();
+		const sessionsStore = useSessionsStore();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+
+		// 模拟一个处于 connecting 状态的连接
+		let stateCallback;
+		const fakeConn = {
+			state: 'connecting',
+			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
+			off: vi.fn(),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+
+		await store.loadBots();
+
+		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
+
+		// 模拟 WS 连接就绪
+		stateCallback('connected');
+
+		expect(fakeConn.off).toHaveBeenCalledWith('state', stateCallback);
+		expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+	});
+
+	test('skips listener for already-connected connections', async () => {
+		const store = useBotsStore();
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+
+		await store.loadBots();
+
+		expect(fakeConn.on).not.toHaveBeenCalled();
+	});
+
+	test('does not register duplicate listeners for the same botId', async () => {
+		const store = useBotsStore();
+		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+
+		await store.loadBots();
+		await store.loadBots();
+
+		// on should be called only once for the same botId
+		expect(fakeConn.on).toHaveBeenCalledTimes(1);
+	});
 });
