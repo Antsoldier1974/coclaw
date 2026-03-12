@@ -4,7 +4,7 @@
 
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
-> **The world's first native [OpenClaw](https://github.com/openclaw/openclaw) IM application.**
+> **The world's first native [OpenClaw](https://github.com/openclaw/openclaw) IM flagship application.**
 
 Slogan: Manage your AI Agents with CoClaw.CoClaw 
 
