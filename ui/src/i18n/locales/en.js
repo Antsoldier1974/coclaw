@@ -190,6 +190,7 @@ export const enMessages = {
 		unknownRpcStatus: 'Unknown response status: {status}, please report to developers',
 		botOffline: 'Bot is offline',
 		botUnbound: 'Bot has been unbound',
+		sessionNotFound: 'Session no longer exists',
 		newChatFailed: 'Failed to start new chat',
 		botThinking: 'Thinking',
 		thinkingFor: 'Thinking {time}',

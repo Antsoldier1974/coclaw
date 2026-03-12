@@ -56,3 +56,23 @@ export async function typeText(locator, text) {
 	await locator.click();
 	await locator.pressSequentially(text, { delay: 20 });
 }
+
+// --- Pinia Store 操作 ---
+
+/**
+ * 在浏览器上下文中访问 Pinia store 并执行操作
+ * @param {import('@playwright/test').Page} page
+ * @param {string} storeId - store ID（如 'bots', 'sessions', 'chat'）
+ * @param {string} fnBody - 以 `store` 为参数的函数体字符串
+ * @returns {Promise<*>}
+ */
+export function evalStore(page, storeId, fnBody) {
+	return page.evaluate(([id, body]) => {
+		const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
+		if (!pinia) throw new Error('Pinia not found');
+		const store = pinia._s.get(id);
+		if (!store) throw new Error(`Store "${id}" not found`);
+		const fn = new Function('store', body);
+		return fn(store);
+	}, [storeId, fnBody]);
+}

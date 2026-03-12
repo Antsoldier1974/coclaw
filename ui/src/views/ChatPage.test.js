@@ -76,6 +76,7 @@ const i18nMap = {
 	'chat.newChatFailed': 'New chat failed',
 	'chat.botOffline': 'Bot is offline',
 	'chat.botUnbound': 'Bot has been unbound',
+	'chat.sessionNotFound': 'Session no longer exists',
 };
 
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
@@ -439,17 +440,16 @@ describe('ChatPage watchers', () => {
 
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		botsStore.fetched = true;
 		await wrapper.vm.$nextTick();
 
-		// bot 从列表移除（模拟解绑）
-		botsStore.removeBotById('bot-1');
-		// 手动更新 chatStore.botId 为空（模拟 store 清理行为）
-		chatStore.botId = '';
+		// bot 从列表移除（模拟解绑）→ __retryActivation 检测到 bot 不存在 → __exitChat
+		botsStore.setBots([]);
 		await wrapper.vm.$nextTick();
 
 		expect(cleanupSpy).toHaveBeenCalled();
 		expect(mockNotify.warning).toHaveBeenCalledWith('Bot has been unbound');
-		expect(mockRouter.replace).toHaveBeenCalled();
+		expect(mockRouter.replace).toHaveBeenCalledWith('/');
 	});
 
 	test('messages 变化触发滚动', async () => {

@@ -22,6 +22,7 @@ class BotConnectionManager {
 		const key = String(botId);
 		const existing = this.__connections.get(key);
 		if (existing) return existing;
+		console.debug('[BotConnMgr] connect botId=%s', key);
 		const conn = new BotConnection(key, options);
 		this.__connections.set(key, conn);
 		conn.connect();
@@ -36,6 +37,7 @@ class BotConnectionManager {
 		const key = String(botId);
 		const conn = this.__connections.get(key);
 		if (!conn) return;
+		console.debug('[BotConnMgr] disconnect botId=%s', key);
 		conn.disconnect();
 		this.__connections.delete(key);
 	}
@@ -55,6 +57,7 @@ class BotConnectionManager {
 	 */
 	syncConnections(botIds) {
 		const desired = new Set(botIds.map(String));
+		console.debug('[BotConnMgr] sync desired=%o current=%o', [...desired], [...this.__connections.keys()]);
 		// 断开不再需要的
 		for (const key of [...this.__connections.keys()]) {
 			if (!desired.has(key)) {
@@ -71,6 +74,7 @@ class BotConnectionManager {
 
 	/** 断开所有连接 */
 	disconnectAll() {
+		console.debug('[BotConnMgr] disconnectAll count=%d', this.__connections.size);
 		for (const key of [...this.__connections.keys()]) {
 			this.disconnect(key);
 		}

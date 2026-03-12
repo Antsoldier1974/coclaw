@@ -134,6 +134,17 @@ describe('useChatStore', () => {
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
+		test('botId 无法解析时保持 loading 状态，不设 errorText', async () => {
+			// bots 和 sessions 均为空 → 模拟页面刷新时数据未就绪
+			const store = useChatStore();
+			await store.activateSession('sess-1');
+
+			expect(store.sessionId).toBe('sess-1');
+			expect(store.botId).toBe('');
+			expect(store.loading).toBe(true);
+			expect(store.errorText).toBe('');
+		});
+
 		test('从已有 session 切换到空字符串时清空消息但不加载', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
@@ -206,6 +217,21 @@ describe('useChatStore', () => {
 			expect(ok).toBe(false);
 			expect(store.errorText).toBe('Bot not connected');
 			expect(store.loading).toBe(false);
+		});
+
+		test('连接存在但未就绪时保持 loading 状态，不设 errorText', async () => {
+			const conn = mockConn({ state: 'connecting' });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+
+			const ok = await store.loadMessages();
+			expect(ok).toBe(false);
+			expect(store.loading).toBe(true);
+			expect(store.errorText).toBe('');
+			expect(conn.request).not.toHaveBeenCalled();
 		});
 
 		test('silent 模式下不设置 loading 状态', async () => {

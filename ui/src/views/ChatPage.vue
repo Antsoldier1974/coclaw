@@ -94,6 +94,8 @@ export default {
 		return {
 			notify: useNotify(),
 			chatStore: useChatStore(),
+			botsStore: useBotsStore(),
+			sessionsStore: useSessionsStore(),
 		};
 	},
 	data() {
@@ -130,9 +132,6 @@ export default {
 			}
 			return this.$t('chat.sessionTitle', { id: this.currentSessionId });
 		},
-		detailRoutePrefix() {
-			return this.$route.path.startsWith('/topics/') ? '/topics' : '/home';
-		},
 		chatMessages() {
 			return groupSessionMessages(this.chatStore.messages);
 		},
@@ -146,24 +145,20 @@ export default {
 				this.chatStore.activateSession(typeof newId === 'string' ? newId.trim() : '');
 			},
 		},
+		// 数据异步就绪 → 重试或做终态判定
+		'botsStore.items': {
+			deep: true,
+			handler() { this.__retryActivation(); },
+		},
+		'sessionsStore.items'() {
+			this.__retryActivation();
+		},
 		isBotOffline(offline) {
 			if (offline) {
 				this.chatStore.cancelSend();
 			}
 			else {
 				this.chatStore.loadMessages();
-			}
-		},
-		// bot 被解绑且从列表中消失：通知并跳转
-		'chatStore.botId'(newVal, oldVal) {
-			if (oldVal && !newVal && this.currentSessionId) {
-				const botStillExists = useBotsStore().items.some(
-					(b) => String(b.id) === String(oldVal),
-				);
-				if (botStillExists) return;
-				this.chatStore.cleanup();
-				this.notify.warning(this.$t('chat.botUnbound'));
-				this.$router.replace(this.detailRoutePrefix === '/topics' ? '/topics' : '/');
 			}
 		},
 		'chatStore.messages.length'() {
@@ -212,6 +207,57 @@ export default {
 		},
 		onCancelSend() {
 			this.chatStore.cancelSend();
+		},
+		/**
+		 * 两阶段重试：
+		 * 1) 数据未就绪 → 继续等待（保持 loading）
+		 * 2) 数据已就绪 → 终态判定：不可恢复则 notify + 跳转，否则重试
+		 */
+		__retryActivation() {
+			if (!this.currentSessionId) return;
+
+			// 阶段 1：数据未就绪，继续等待
+			if (!this.botsStore.fetched) return;
+
+			// 阶段 2：数据已就绪，做终态判定
+			const bots = this.botsStore.items;
+
+			// 无任何 bot
+			if (!bots.length) {
+				return this.__exitChat(this.$t('chat.botUnbound'));
+			}
+
+			// 运行时 bot 被解绑：chatStore 中已记录 botId 但该 bot 已不在列表中
+			const currentBotId = this.chatStore.botId;
+			if (currentBotId && !bots.some((b) => String(b.id) === currentBotId)) {
+				return this.__exitChat(this.$t('chat.botUnbound'));
+			}
+
+			// 当前 session 对应的 bot 检查
+			const session = this.sessionsStore.items.find(
+				(s) => s.sessionId === this.currentSessionId,
+			);
+			if (session) {
+				const ownerBot = bots.find((b) => String(b.id) === String(session.botId));
+				if (!ownerBot) {
+					return this.__exitChat(this.$t('chat.botUnbound'));
+				}
+			}
+			else if (this.sessionsStore.items.length > 0) {
+				// sessions 已加载但找不到当前 session
+				return this.__exitChat(this.$t('chat.sessionNotFound'));
+			}
+			// else: sessions 尚未加载（可能 WS 未就绪），继续等待
+
+			// 仍需要重试：botId 未解析、有错误、或等待连接就绪
+			if (!this.chatStore.botId || this.chatStore.errorText || this.chatStore.loading) {
+				this.chatStore.activateSession(this.currentSessionId, { force: true });
+			}
+		},
+		__exitChat(message) {
+			this.chatStore.cleanup();
+			this.notify.warning(message);
+			this.$router.replace('/');
 		},
 		scrollToBottom() {
 			const el = this.$refs.scrollContainer;
