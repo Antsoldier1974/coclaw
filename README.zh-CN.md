@@ -4,7 +4,7 @@
 
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
-> **全球首个 [OpenClaw](https://github.com/openclaw/openclaw) 原生 IM 应用。**
+> **全球首个 [OpenClaw](https://github.com/openclaw/openclaw) 原生 IM 旗舰应用。**
 
 Slogan：养虾就用 CoClaw。
 
