@@ -76,4 +76,5 @@
 
 - 本地开发采用 `plugins install --link` 一次性接入；后续代码更新默认只 `openclaw gateway restart`。
 - 避免把 `uninstall + 删除 extensions + reinstall` 作为日常流程。
+- **命名陷阱**：CLI 参数叫 `--link`，但 OpenClaw 在 `openclaw.json` 中记录的 `source` 值为 `"path"`（与普通目录安装相同），没有 `"link"` 值。区分方式是 `sourcePath === installPath` 表示 link 模式。脚本层（`scripts/_lib.sh` 的 `get_install_mode()`）已做转换，对外统一返回 `"link"`。
 - 详细流程与故障恢复见：`plugins/openclaw/docs/local-plugin-update-sop.md`。

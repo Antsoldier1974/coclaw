@@ -12,18 +12,32 @@ OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
 
 # 检测当前安装模式
 # 返回: link | npm | archive | none
+# 注意: OpenClaw --link 安装实际记录 source="path"，此函数通过
+#       比较 sourcePath 与 installPath 是否相同来判断是否为 link 模式。
 get_install_mode() {
 	if [[ ! -f "$OPENCLAW_CONFIG" ]]; then
 		echo "none"
 		return
 	fi
-	local source
-	source=$(node -e "
+	local result
+	result=$(node -e "
 		const c = JSON.parse(require('fs').readFileSync('$OPENCLAW_CONFIG', 'utf8'));
 		const r = c?.plugins?.installs?.['$PLUGIN_ID'];
-		console.log(r?.source ?? 'none');
+		if (!r) { console.log('none'); process.exit(); }
+		if (r.source === 'path') {
+			const same = r.sourcePath && r.installPath && r.sourcePath === r.installPath;
+			console.log(same ? 'link' : 'link:mismatch');
+		} else {
+			console.log(r.source ?? 'none');
+		}
 	" 2>/dev/null) || true
-	echo "${source:-none}"
+	if [[ "$result" == "link:mismatch" ]]; then
+		echo "[ERROR] source=path 但 sourcePath !== installPath，安装状态异常" >&2
+		echo "[HINT] 建议执行 openclaw plugins doctor 检查" >&2
+		echo "link"
+		return
+	fi
+	echo "${result:-none}"
 }
 
 # 获取已安装的版本号
