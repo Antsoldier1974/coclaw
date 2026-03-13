@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
 	login, navigateToChat, waitChatReady,
-	typeText, evalStore, waitForWsState,
+	typeText, evalStore, waitForWsState, forceCloseWs,
 } from './helpers.js';
 
 /**
@@ -113,5 +113,32 @@ test.describe('网络断开与恢复', () => {
 
 		// textarea 不应被禁用（isBotOffline 未变化）
 		await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 2000 });
+	});
+
+	// ================================================================
+	// Test 4: 发送中 WS 断连 → 自动重连 → 重试成功
+	// ================================================================
+
+	test('发送中 WS 断连：自动重连后重试，消息最终发出', async ({ page }) => {
+		const textarea = page.getByTestId('chat-textarea');
+		const testMsg = 'retry-test-' + Date.now();
+
+		await typeText(textarea, testMsg);
+
+		// 点击发送后立即强制关闭 WS（模拟 RPC 进行中连接中断）
+		await page.getByTestId('btn-send').click();
+		await forceCloseWs(page);
+
+		// BotConnection 会自动重连（指数退避，初始 1s）
+		await waitForWsState(page, 'connected', 30_000);
+
+		// 等待发送完成（重试逻辑生效，sending 最终变为 false）
+		await expect(async () => {
+			const sending = await evalStore(page, 'chat', 'return store.sending');
+			expect(sending).toBe(false);
+		}).toPass({ timeout: 60_000 });
+
+		// 发送成功后输入框应为空（文本未回滚）
+		await expect(textarea).toHaveValue('', { timeout: 3000 });
 	});
 });

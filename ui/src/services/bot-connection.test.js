@@ -531,6 +531,16 @@ describe('BotConnection – heartbeat', () => {
 		expect(ws.closeCode).toBe(4000);
 	});
 
+	test('heartbeat timeout is suppressed when there are pending RPCs', () => {
+		const { conn, ws } = makeConnected();
+		// 发起一个不会 resolve 的 RPC，使 pending 非空
+		conn.request('slowMethod', {}, { timeout: 60_000 });
+		// 推进 45s+，正常情况下会触发心跳超时
+		vi.advanceTimersByTime(46_000);
+		// 因为有 pending RPC，心跳超时被抑制，连接不应关闭
+		expect(ws.closed).toBe(false);
+	});
+
 	test('receiving a message resets heartbeat timeout', () => {
 		const { ws } = makeConnected();
 		// advance 30s, receive a message, advance another 30s — still open

@@ -304,6 +304,12 @@ export class BotConnection {
 	__resetHbTimeout() {
 		if (this.__hbTimer) clearTimeout(this.__hbTimer);
 		this.__hbTimer = setTimeout(() => {
+			// 有 pending RPC 时跳过心跳超时判定（大消息传输可能阻塞心跳）
+			if (this.__pending.size > 0) {
+				console.debug('[BotConn] heartbeat timeout suppressed (pending=%d) botId=%s', this.__pending.size, this.botId);
+				this.__resetHbTimeout();
+				return;
+			}
 			console.warn('[BotConn] heartbeat timeout botId=%s', this.botId);
 			try { this.__ws?.close(4000, 'heartbeat_timeout'); }
 			catch {}

@@ -92,6 +92,19 @@ export function getWsState(page) {
 }
 
 /**
+ * 强制关闭当前 chat 的 WS 连接（模拟异常断连）
+ * @param {import('@playwright/test').Page} page
+ * @param {number} [code=4000]
+ * @param {string} [reason='e2e_disconnect']
+ */
+export function forceCloseWs(page, code = 4000, reason = 'e2e_disconnect') {
+	return evalStore(page, 'chat', `
+		const conn = store.__getConnection?.();
+		if (conn?.__ws) conn.__ws.close(${code}, '${reason}');
+	`);
+}
+
+/**
  * 等待 WS 连接进入指定状态
  * @param {import('@playwright/test').Page} page
  * @param {string} expectedState - 'connected' | 'disconnected' | 'connecting'
