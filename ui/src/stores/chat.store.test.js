@@ -527,7 +527,7 @@ describe('useChatStore', () => {
 			expect(store.__agentSettled).toBe(true);
 		});
 
-		test('post-acceptance 120s 超时：sending 置 false，抛出 POST_ACCEPTANCE_TIMEOUT', async () => {
+		test('post-acceptance 30min 超时：sending 置 false，抛出 POST_ACCEPTANCE_TIMEOUT', async () => {
 			vi.useFakeTimers();
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
@@ -549,7 +549,7 @@ describe('useChatStore', () => {
 
 			// 同时推进时间并等待 promise，避免超时 rejection 在 await 前成为 unhandled
 			const [, result] = await Promise.allSettled([
-				vi.advanceTimersByTimeAsync(120_000),
+				vi.advanceTimersByTimeAsync(30 * 60_000),
 				store.sendMessage('hello'),
 			]);
 
@@ -596,6 +596,92 @@ describe('useChatStore', () => {
 
 			const result = await store.sendMessage('hello');
 			expect(result).toEqual({ accepted: true });
+		});
+
+		test('WS_CLOSED 且未 accepted 时等待重连后自动重试一次', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			let callCount = 0;
+			const conn = mockConn();
+
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					callCount++;
+					if (callCount === 1) {
+						// 第一次：WS_CLOSED
+						const err = new Error('connection closed');
+						err.code = 'WS_CLOSED';
+						return Promise.reject(err);
+					}
+					// 第二次（重试）：成功
+					options?.onAccepted?.({ runId: 'run-retry' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'nativeui.sessions.listAll') return Promise.resolve({ items: [] });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+
+			// conn.state 已为 connected，重试逻辑会立即重发
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
+			expect(callCount).toBe(2);
+		});
+
+		test('WS_CLOSED 且未 accepted 时重连超时后仍抛出错误', async () => {
+			vi.useFakeTimers();
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn({ state: 'disconnected' });
+			let callCount = 0;
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') {
+					callCount++;
+					const err = new Error('connection closed');
+					err.code = 'WS_CLOSED';
+					return Promise.reject(err);
+				}
+				return Promise.resolve(null);
+			});
+			// 第一次调用时 state 为 connected，让 request 可以发出
+			// 但 catch 中检查重连时 state 为 disconnected
+			const connForSend = mockConn();
+			connForSend.request = conn.request;
+			connForSend.on = vi.fn();
+			connForSend.off = vi.fn();
+
+			// 模拟：发送时 connected，catch 中 getConnection 返回 disconnected 的 conn
+			let firstGet = true;
+			mockConnections.set('1', connForSend);
+			const origGet = mockConnections.get.bind(mockConnections);
+			mockConnections.get = (id) => {
+				if (id === '1' && callCount > 0 && firstGet) {
+					firstGet = false;
+					// 切换为 disconnected conn，让重连等待逻辑生效
+					conn.on = vi.fn();
+					conn.off = vi.fn();
+					return conn;
+				}
+				return origGet(id);
+			};
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+
+			const [, result] = await Promise.allSettled([
+				vi.advanceTimersByTimeAsync(15_000),
+				store.sendMessage('hello'),
+			]);
+
+			expect(result.status).toBe('rejected');
+			expect(result.reason.code).toBe('WS_CLOSED');
 		});
 
 		test('!__accepted 且 status !== "ok" 时返回 { accepted: false } 并移除本地条目', async () => {

@@ -244,7 +244,7 @@ export const useChatStore = defineStore('chat', {
 							console.debug('[chat] agent accepted runId=%s', payload?.runId);
 							this.__accepted = true;
 							this.streamingRunId = payload?.runId ?? null;
-							// 切换到 post-acceptance 120s 超时
+							// 切换到 post-acceptance 30min 超时（agent 处理可能较久）
 							if (this.__streamingTimer) clearTimeout(this.__streamingTimer);
 							this.__streamingTimer = setTimeout(() => {
 								this.__agentSettled = true;
@@ -253,7 +253,7 @@ export const useChatStore = defineStore('chat', {
 								const err = new Error('post-acceptance timeout');
 								err.code = 'POST_ACCEPTANCE_TIMEOUT';
 								timeoutReject(err);
-							}, 120_000);
+							}, 30 * 60_000);
 						},
 						onUnknownStatus: (status, payload) => {
 							console.error('[chat] unknown agent rpc status=%s', status, payload);
@@ -284,6 +284,37 @@ export const useChatStore = defineStore('chat', {
 				// 用户主动取消：不抛错；根据是否已 accepted 决定是否让调用方恢复输入
 				if (err?.code === 'USER_CANCELLED') {
 					return { accepted: this.__accepted };
+				}
+				// 断连且尚未 accepted：等待重连后自动重试一次
+				if (err?.code === 'WS_CLOSED' && !this.__accepted && !this.__retried) {
+					console.debug('[chat] ws closed before accepted, waiting for reconnect to retry');
+					this.__cleanupStreaming();
+					this.sending = false;
+					const conn = this.__getConnection();
+					if (conn) {
+						const reconnected = await new Promise((resolve) => {
+							const timeout = setTimeout(() => { conn.off('state', onState); resolve(false); }, 15_000);
+							const onState = (state) => {
+								if (state === 'connected') {
+									clearTimeout(timeout);
+									conn.off('state', onState);
+									resolve(true);
+								}
+							};
+							if (conn.state === 'connected') { clearTimeout(timeout); resolve(true); }
+							else conn.on('state', onState);
+						});
+						if (reconnected) {
+							console.debug('[chat] reconnected, retrying sendMessage');
+							this.__retried = true;
+							try {
+								return await this.sendMessage(text, files);
+							}
+							finally {
+								this.__retried = false;
+							}
+						}
+					}
 				}
 				this.__cleanupStreaming();
 				this.sending = false;
