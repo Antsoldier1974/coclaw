@@ -3,6 +3,12 @@ import os from 'node:os';
 import nodePath from 'node:path';
 
 import { clearConfig, getBindingsPath, readConfig } from './config.js';
+import {
+	loadOrCreateDeviceIdentity,
+	signDevicePayload,
+	publicKeyRawBase64Url,
+	buildDeviceAuthPayloadV3,
+} from './device-identity.js';
 import { getRuntime } from './runtime.js';
 
 const DEFAULT_GATEWAY_WS_URL = 'ws://127.0.0.1:18789';
@@ -65,12 +71,14 @@ export class RealtimeBridge {
 	 * @param {Function} [deps.clearConfig] - 清除绑定配置
 	 * @param {Function} [deps.getBindingsPath] - 获取绑定文件路径
 	 * @param {Function} [deps.resolveGatewayAuthToken] - 获取 gateway 认证 token
+	 * @param {Function} [deps.loadDeviceIdentity] - 加载设备身份
 	 */
 	constructor(deps = {}) {
 		this.__readConfig = deps.readConfig ?? readConfig;
 		this.__clearConfig = deps.clearConfig ?? clearConfig;
 		this.__getBindingsPath = deps.getBindingsPath ?? getBindingsPath;
 		this.__resolveGatewayAuthToken = deps.resolveGatewayAuthToken ?? defaultResolveGatewayAuthToken;
+		this.__loadDeviceIdentity = deps.loadDeviceIdentity ?? loadOrCreateDeviceIdentity;
 		this.__WebSocket = deps.WebSocket ?? null;
 
 		this.serverWs = null;
@@ -90,6 +98,7 @@ export class RealtimeBridge {
 		this.serverHbInterval = null;
 		this.serverHbTimer = null;
 		this.__serverHbMissCount = 0;
+		this.__deviceIdentity = null;
 	}
 
 	__resolveWebSocket() {
@@ -281,25 +290,63 @@ export class RealtimeBridge {
 		}
 	}
 
-	__sendGatewayConnectRequest(ws) {
+	__ensureDeviceIdentity() {
+		if (!this.__deviceIdentity) {
+			this.__deviceIdentity = this.__loadDeviceIdentity();
+		}
+		return this.__deviceIdentity;
+	}
+
+	__buildDeviceField(nonce, authToken) {
+		const identity = this.__ensureDeviceIdentity();
+		const clientId = 'gateway-client';
+		const clientMode = 'backend';
+		const role = 'operator';
+		const scopes = ['operator.admin'];
+		const signedAtMs = Date.now();
+		const payload = buildDeviceAuthPayloadV3({
+			deviceId: identity.deviceId,
+			clientId,
+			clientMode,
+			role,
+			scopes,
+			signedAtMs,
+			token: authToken ?? '',
+			nonce: nonce ?? '',
+			platform: process.platform,
+			deviceFamily: '',
+		});
+		const signature = signDevicePayload(identity.privateKeyPem, payload);
+		return {
+			id: identity.deviceId,
+			publicKey: publicKeyRawBase64Url(identity.publicKeyPem),
+			signature,
+			signedAt: signedAtMs,
+			nonce: nonce ?? '',
+		};
+	}
+
+	__sendGatewayConnectRequest(ws, nonce) {
 		this.gatewayConnectReqId = `coclaw-connect-${Date.now()}`;
 		this.__logDebug(`gateway connect request -> id=${this.gatewayConnectReqId}`);
-		const authToken = this.__resolveGatewayAuthToken();
-		const params = {
-			minProtocol: 3,
-			maxProtocol: 3,
-			client: {
-				id: 'gateway-client',
-				version: 'dev',
-				platform: process.platform,
-				mode: 'backend',
-			},
-			caps: [],
-			role: 'operator',
-			scopes: ['operator.admin'],
-			auth: authToken ? { token: authToken } : undefined,
-		};
 		try {
+			const authToken = this.__resolveGatewayAuthToken();
+			const device = this.__buildDeviceField(nonce, authToken);
+			const params = {
+				minProtocol: 3,
+				maxProtocol: 3,
+				client: {
+					id: 'gateway-client',
+					version: 'dev',
+					platform: process.platform,
+					mode: 'backend',
+				},
+				caps: [],
+				role: 'operator',
+				scopes: ['operator.admin'],
+				auth: authToken ? { token: authToken } : undefined,
+				device,
+			};
 			ws.send(JSON.stringify({
 				type: 'req',
 				id: this.gatewayConnectReqId,
@@ -338,8 +385,9 @@ export class RealtimeBridge {
 				return;
 			}
 			if (payload.type === 'event' && payload.event === 'connect.challenge') {
+				const nonce = payload?.payload?.nonce ?? '';
 				this.__logDebug('gateway event <- connect.challenge');
-				this.__sendGatewayConnectRequest(ws);
+				this.__sendGatewayConnectRequest(ws, nonce);
 				return;
 			}
 			if (payload.type === 'res' && this.gatewayConnectReqId && payload.id === this.gatewayConnectReqId) {

@@ -1083,3 +1083,173 @@ test('RealtimeBridge heartbeat miss should skip compensatory ping when socket no
 		await bridge.stop();
 	}
 });
+
+// --- device identity 集成测试 ---
+
+test('connect request should include device field with nonce from challenge', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const fakeIdentity = {
+		deviceId: 'fake-device-id',
+		publicKeyPem: '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAtzDL7h2Z4PZiOmNjmyl+U2gKexygXrWLjOWMufVSZKU=\n-----END PUBLIC KEY-----\n',
+		privateKeyPem: '-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJYc25BaxT+DkFPCYoNeX0a5Vtv3VPJ+o9iEHcuh3+G6\n-----END PRIVATE KEY-----\n',
+	};
+	const bridge = createBridge({
+		resolveGatewayAuthToken: () => 'test-token',
+		loadDeviceIdentity: () => fakeIdentity,
+	});
+
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'test-nonce-123' } }) });
+
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		assert.equal(connectReq.method, 'connect');
+
+		// device 字段存在且正确
+		const { device } = connectReq.params;
+		assert.ok(device, 'connect params should have device field');
+		assert.equal(device.id, 'fake-device-id');
+		assert.equal(device.nonce, 'test-nonce-123');
+		assert.ok(typeof device.publicKey === 'string' && device.publicKey.length > 0);
+		assert.ok(typeof device.signature === 'string' && device.signature.length > 0);
+		assert.ok(typeof device.signedAt === 'number' && device.signedAt > 0);
+
+		// auth 和 scopes 也存在
+		assert.equal(connectReq.params.role, 'operator');
+		assert.deepEqual(connectReq.params.scopes, ['operator.admin']);
+		assert.deepEqual(connectReq.params.auth, { token: 'test-token' });
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('connect request should use empty nonce when challenge has no nonce', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const fakeIdentity = {
+		deviceId: 'did',
+		publicKeyPem: '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAtzDL7h2Z4PZiOmNjmyl+U2gKexygXrWLjOWMufVSZKU=\n-----END PUBLIC KEY-----\n',
+		privateKeyPem: '-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJYc25BaxT+DkFPCYoNeX0a5Vtv3VPJ+o9iEHcuh3+G6\n-----END PRIVATE KEY-----\n',
+	};
+	const bridge = createBridge({ loadDeviceIdentity: () => fakeIdentity });
+
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		// challenge 不含 payload.nonce
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge' }) });
+
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		assert.equal(connectReq.params.device.nonce, '');
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('connect should gracefully handle device identity load failure', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge({
+		loadDeviceIdentity: () => { throw new Error('identity load boom'); },
+	});
+
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n' } }) });
+
+		// 不应有 connect 请求发出（device 构建失败）
+		assert.equal(gateway.sent.length, 0, 'no connect request should be sent');
+		// gatewayConnectReqId 被清空
+		assert.equal(bridge.gatewayConnectReqId, null, 'gatewayConnectReqId should be null after failure');
+		// bridge 不崩溃，仍可正常 stop
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('device identity should be cached across multiple connect attempts', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	let loadCount = 0;
+	const fakeIdentity = {
+		deviceId: 'cached-id',
+		publicKeyPem: '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAtzDL7h2Z4PZiOmNjmyl+U2gKexygXrWLjOWMufVSZKU=\n-----END PUBLIC KEY-----\n',
+		privateKeyPem: '-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJYc25BaxT+DkFPCYoNeX0a5Vtv3VPJ+o9iEHcuh3+G6\n-----END PRIVATE KEY-----\n',
+	};
+	const bridge = createBridge({
+		loadDeviceIdentity: () => { loadCount++; return fakeIdentity; },
+	});
+
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+
+		// 多次 connect.challenge
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n2' } }) });
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n3' } }) });
+
+		assert.equal(loadCount, 1, 'loadDeviceIdentity should be called only once');
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
