@@ -10,6 +10,7 @@ const RECONNECT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 const SERVER_HB_PING_MS = 25_000;
 const SERVER_HB_TIMEOUT_MS = 45_000;
+const SERVER_HB_MAX_MISS = 4; // 连续 4 次无响应才断连（~3 分钟）
 
 function toServerWsUrl(baseUrl, token) {
 	const url = new URL(baseUrl);
@@ -88,6 +89,7 @@ export class RealtimeBridge {
 		this.intentionallyClosed = false;
 		this.serverHbInterval = null;
 		this.serverHbTimer = null;
+		this.__serverHbMissCount = 0;
 	}
 
 	__resolveWebSocket() {
@@ -102,6 +104,7 @@ export class RealtimeBridge {
 
 	__startServerHeartbeat(sock) {
 		this.__clearServerHeartbeat();
+		this.__serverHbMissCount = 0;
 		this.serverHbInterval = setInterval(() => {
 			if (sock.readyState === 1) {
 				try { sock.send(JSON.stringify({ type: 'ping' })); } catch {}
@@ -112,12 +115,34 @@ export class RealtimeBridge {
 	}
 
 	__resetServerHbTimeout(sock) {
+		this.__serverHbMissCount = 0;
 		if (this.serverHbTimer) clearTimeout(this.serverHbTimer);
 		this.serverHbTimer = setTimeout(() => {
-			this.logger.warn?.(`[coclaw] server ws heartbeat timeout (${SERVER_HB_TIMEOUT_MS / 1000}s), closing`);
-			try { sock.close(4000, 'heartbeat_timeout'); } catch {}
+			this.__onServerHbMiss(sock);
 		}, SERVER_HB_TIMEOUT_MS);
 		this.serverHbTimer.unref?.();
+	}
+
+	__onServerHbMiss(sock) {
+		this.__serverHbMissCount++;
+		if (this.__serverHbMissCount < SERVER_HB_MAX_MISS) {
+			this.__logDebug(
+				`server heartbeat miss ${this.__serverHbMissCount}/${SERVER_HB_MAX_MISS}, will retry`
+			);
+			// 补发 ping，继续等下一轮
+			if (sock.readyState === 1) {
+				try { sock.send(JSON.stringify({ type: 'ping' })); } catch {}
+			}
+			this.serverHbTimer = setTimeout(() => {
+				this.__onServerHbMiss(sock);
+			}, SERVER_HB_TIMEOUT_MS);
+			this.serverHbTimer.unref?.();
+			return;
+		}
+		this.logger.warn?.(
+			`[coclaw] server ws heartbeat timeout after ${this.__serverHbMissCount} consecutive misses (~${this.__serverHbMissCount * SERVER_HB_TIMEOUT_MS / 1000}s), closing`
+		);
+		try { sock.close(4000, 'heartbeat_timeout'); } catch {}
 	}
 
 	__clearServerHeartbeat() {
