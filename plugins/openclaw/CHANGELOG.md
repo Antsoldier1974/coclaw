@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.2.3
+
+### Patch Changes
+
+- realtime-bridge 心跳超时改为连续 miss 计数策略（4 次 ~3 分钟），避免大消息传输期间误断连
+
 ## 0.2.1
 
 ### Patch Changes
