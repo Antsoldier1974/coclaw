@@ -800,7 +800,7 @@ test('RealtimeBridge server heartbeat interval should send ping when socket is o
 	}
 });
 
-test('RealtimeBridge server heartbeat timeout should close socket', async () => {
+test('RealtimeBridge server heartbeat should tolerate consecutive misses before closing', async () => {
 	FakeWebSocket.instances.length = 0;
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
 
@@ -824,7 +824,8 @@ test('RealtimeBridge server heartbeat timeout should close socket', async () => 
 	global.clearTimeout = (() => {});
 
 	const warns = [];
-	const logger = { warn: (m) => warns.push(String(m)), info() {}, debug() {} };
+	const debugs = [];
+	const logger = { warn: (m) => warns.push(String(m)), info() {}, debug: (m) => debugs.push(String(m)) };
 	const bridge = createBridge();
 	try {
 		await bridge.start({ logger, pluginConfig: {} });
@@ -836,10 +837,72 @@ test('RealtimeBridge server heartbeat timeout should close socket', async () => 
 		const hbTimeout = timeouts.find((t) => t.__ms === 45_000);
 		assert.ok(hbTimeout, 'should have heartbeat timeout at 45s');
 
-		// 触发超时 → 应关闭 socket
-		hbTimeout.__fn();
-		assert.ok(warns.some((x) => x.includes('heartbeat timeout')), 'should log heartbeat timeout');
-		assert.equal(server.readyState, 3, 'socket should be closed after heartbeat timeout');
+		// 第 1~3 次 miss：不应关闭 socket，应补发 ping 并调度下一轮
+		for (let i = 1; i <= 3; i++) {
+			const latestTimeout = timeouts[timeouts.length - 1];
+			latestTimeout.__fn();
+			assert.equal(server.readyState, 1, `miss ${i}: socket should still be open`);
+			assert.ok(debugs.some((x) => x.includes(`heartbeat miss ${i}/4`)), `miss ${i}: should log miss`);
+			// 应补发 ping
+			assert.ok(server.sent.some((x) => String(x).includes('"type":"ping"')), `miss ${i}: should send compensatory ping`);
+		}
+
+		// 第 4 次 miss：应关闭 socket
+		const lastTimeout = timeouts[timeouts.length - 1];
+		lastTimeout.__fn();
+		assert.ok(warns.some((x) => x.includes('heartbeat timeout') && x.includes('4 consecutive misses')), 'should log final timeout');
+		assert.equal(server.readyState, 3, 'socket should be closed after max misses');
+	}
+	finally {
+		global.setInterval = oldSetInterval;
+		global.clearInterval = oldClearInterval;
+		global.setTimeout = oldSetTimeout;
+		global.clearTimeout = oldClearTimeout;
+		await bridge.stop();
+	}
+});
+
+test('RealtimeBridge server heartbeat miss count should reset on received message', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+
+	const oldSetInterval = global.setInterval;
+	const oldClearInterval = global.clearInterval;
+	const oldSetTimeout = global.setTimeout;
+	const oldClearTimeout = global.clearTimeout;
+	const intervals = [];
+	const timeouts = [];
+	global.setInterval = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		intervals.push(obj);
+		return obj;
+	});
+	global.clearInterval = (() => {});
+	global.setTimeout = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		timeouts.push(obj);
+		return obj;
+	});
+	global.clearTimeout = (() => {});
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		// 触发 2 次 miss
+		for (let i = 0; i < 2; i++) {
+			const t = timeouts[timeouts.length - 1];
+			t.__fn();
+		}
+		assert.equal(bridge.__serverHbMissCount, 2, 'miss count should be 2');
+
+		// 收到消息 → __resetServerHbTimeout → miss count 归零
+		server.emit('message', { data: JSON.stringify({ type: 'pong' }) });
+		assert.equal(bridge.__serverHbMissCount, 0, 'miss count should reset on message');
+		assert.equal(server.readyState, 1, 'socket should still be open');
 	}
 	finally {
 		global.setInterval = oldSetInterval;
@@ -917,13 +980,100 @@ test('RealtimeBridge heartbeat timeout should not crash when close throws', asyn
 		server.readyState = 1;
 		server.emit('open', {});
 
-		const hbTimeout = timeouts.find((t) => t.__ms === 45_000);
-		assert.ok(hbTimeout);
+		// 触发前 3 次 miss（不关闭），然后第 4 次触发 close
+		for (let i = 0; i < 3; i++) {
+			const t = timeouts[timeouts.length - 1];
+			t.__fn();
+		}
 
-		// close 抛异常时不应 crash
+		// 第 4 次 miss 时 close 抛异常不应 crash
 		server.throwOnClose = true;
-		assert.doesNotThrow(() => hbTimeout.__fn());
+		const lastTimeout = timeouts[timeouts.length - 1];
+		assert.doesNotThrow(() => lastTimeout.__fn());
 		server.throwOnClose = false;
+	}
+	finally {
+		global.setInterval = oldSetInterval;
+		global.clearInterval = oldClearInterval;
+		global.setTimeout = oldSetTimeout;
+		global.clearTimeout = oldClearTimeout;
+		await bridge.stop();
+	}
+});
+
+test('RealtimeBridge heartbeat miss compensatory ping should not crash when send throws', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+
+	const oldSetInterval = global.setInterval;
+	const oldClearInterval = global.clearInterval;
+	const oldSetTimeout = global.setTimeout;
+	const oldClearTimeout = global.clearTimeout;
+	const timeouts = [];
+	global.setInterval = ((fn, ms) => ({ __fn: fn, __ms: ms, unref() {} }));
+	global.clearInterval = (() => {});
+	global.setTimeout = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		timeouts.push(obj);
+		return obj;
+	});
+	global.clearTimeout = (() => {});
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		// miss 时补发 ping，send 抛异常不应 crash
+		server.throwOnSend = true;
+		const hbTimeout = timeouts.find((t) => t.__ms === 45_000);
+		assert.doesNotThrow(() => hbTimeout.__fn());
+		assert.equal(bridge.__serverHbMissCount, 1, 'should still increment miss count');
+		server.throwOnSend = false;
+	}
+	finally {
+		global.setInterval = oldSetInterval;
+		global.clearInterval = oldClearInterval;
+		global.setTimeout = oldSetTimeout;
+		global.clearTimeout = oldClearTimeout;
+		await bridge.stop();
+	}
+});
+
+test('RealtimeBridge heartbeat miss should skip compensatory ping when socket not open', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+
+	const oldSetInterval = global.setInterval;
+	const oldClearInterval = global.clearInterval;
+	const oldSetTimeout = global.setTimeout;
+	const oldClearTimeout = global.clearTimeout;
+	const timeouts = [];
+	global.setInterval = ((fn, ms) => ({ __fn: fn, __ms: ms, unref() {} }));
+	global.clearInterval = (() => {});
+	global.setTimeout = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		timeouts.push(obj);
+		return obj;
+	});
+	global.clearTimeout = (() => {});
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		// socket 变为非 OPEN 后触发 miss，不应补发 ping
+		const sentBefore = server.sent.length;
+		server.readyState = 0;
+		const hbTimeout = timeouts.find((t) => t.__ms === 45_000);
+		hbTimeout.__fn();
+		assert.equal(server.sent.length, sentBefore, 'should NOT send compensatory ping when not open');
+		assert.equal(bridge.__serverHbMissCount, 1, 'should still increment miss count');
 	}
 	finally {
 		global.setInterval = oldSetInterval;

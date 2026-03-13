@@ -29,6 +29,12 @@
 - **新增 service**：`coclaw-auto-upgrade` — 自动升级调度器生命周期管理。
 - 详见设计文档 `docs/auto-upgrade.md`。
 
+### 心跳高容忍改造（2026-03-13）
+- **问题**：大消息（如含 base64 图片的 agent 请求）传输时，应用层心跳 ping/pong 被排在大消息后面（TCP FIFO），导致 45s 超时误判断连。Plugin 侧无法可靠感知"对方正在给我发大消息"（标准 WebSocket API 无此能力）。
+- **方案**：将单次 45s 超时改为连续 miss 计数策略：每 45s 无消息计为 1 次 miss，连续 4 次（~3 分钟）才断连。收到任意消息立即重置 miss 计数。
+- 新增常量 `SERVER_HB_MAX_MISS = 4`，新增方法 `__onServerHbMiss(sock)`，miss 期间补发 ping。
+- 详见 `docs/architecture/websocket-heartbeat.md`。
+
 ### v0.2 整改 Stage 5（Plugin 心跳）（2026-03-11）
 - `realtime-bridge.js` 新增应用层心跳：plugin→server WS 连接每 25s 发送 `{ type: "ping" }`，45s 无任何消息则判定超时并关闭连接。
 - 新增方法：`__startServerHeartbeat(sock)` / `__resetServerHbTimeout(sock)` / `__clearServerHeartbeat()`。
