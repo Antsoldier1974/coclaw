@@ -416,21 +416,9 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 					registerSocket(uiSockets, botId, ws);
 					wsLogInfo(`ui ws connected botId=${botId} userId=${auth.userId ?? 'n/a'} ip=${remoteIp}`);
 					ws.on('message', (raw) => onUiMessage(botId, ws, raw));
-					// WS 协议级心跳：检测半开连接
-					ws.__isAlive = true;
-					ws.on('pong', () => { ws.__isAlive = true; });
-					const uiPingInterval = setInterval(() => {
-						if (!ws.__isAlive) {
-							clearInterval(uiPingInterval);
-							wsLogWarn(`ui ws ping timeout, terminating botId=${botId}`);
-							ws.terminate();
-							return;
-						}
-						ws.__isAlive = false;
-						ws.ping();
-					}, 30_000);
+					// UI 侧不做协议级心跳：由 UI 客户端自行维护应用层心跳，
+					// 避免大消息传输时 server 误 terminate UI 连接
 					ws.on('close', (code, reason) => {
-						clearInterval(uiPingInterval);
 						unregisterSocket(uiSockets, botId, ws);
 						wsLogInfo(`ui ws disconnected botId=${botId} code=${code} reason=${String(reason || '')}`);
 					});
@@ -438,6 +426,15 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 				}
 
 				const wasOffline = !botSockets.has(botId);
+				// 淘汰同 botId 的旧连接（避免半开连接残留）
+				const staleSet = botSockets.get(botId);
+				if (staleSet && staleSet.size > 0) {
+					const stale = [...staleSet];
+					for (const old of stale) {
+						wsLogInfo(`closing stale bot ws for botId=${botId}`);
+						try { old.terminate(); } catch {}
+					}
+				}
 				registerSocket(botSockets, botId, ws);
 				wsLogInfo(`bot ws connected botId=${botId} ip=${remoteIp}`);
 				if (wasOffline) {
@@ -446,19 +443,43 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 				botStatusEmitter.emit('status', { botId, online: true });
 				void refreshBotName(botId).catch(() => {});
 				ws.on('message', (raw) => onBotMessage(botId, ws, raw));
-				// WS 协议级心跳：检测半开连接（与 UI 侧对称）
+				// WS 协议级心跳：检测半开连接（仅 bot 侧）
+				// 45s 间隔，连续 4 次 miss（~180s）才 terminate，与 plugin 侧对齐
 				ws.__isAlive = true;
-				ws.on('pong', () => { ws.__isAlive = true; });
+				ws.__pingMissCount = 0;
+				ws.on('pong', () => {
+					ws.__isAlive = true;
+					ws.__pingMissCount = 0;
+				});
+				const BOT_PING_INTERVAL_MS = 45_000;
+				const BOT_PING_MAX_MISS = 4;
 				const botPingInterval = setInterval(() => {
-					if (!ws.__isAlive) {
-						clearInterval(botPingInterval);
-						wsLogWarn(`bot ws ping timeout, terminating botId=${botId}`);
-						ws.terminate();
+					const tick = botPingTick({
+						isAlive: ws.__isAlive,
+						missCount: ws.__pingMissCount,
+						bufferedAmount: ws.bufferedAmount,
+					}, BOT_PING_MAX_MISS);
+					ws.__pingMissCount = tick.missCount;
+					if (tick.action === 'ok') {
+						ws.__isAlive = false;
+						ws.ping();
 						return;
 					}
-					ws.__isAlive = false;
-					ws.ping();
-				}, 30_000);
+					if (tick.action === 'skip') {
+						wsLogDebug(`bot ws ping skip (buffered=${ws.bufferedAmount}) botId=${botId}`);
+						ws.ping();
+						return;
+					}
+					if (tick.action === 'miss') {
+						wsLogDebug(`bot ws ping miss ${ws.__pingMissCount}/${BOT_PING_MAX_MISS} botId=${botId}`);
+						ws.ping();
+						return;
+					}
+					// terminate
+					clearInterval(botPingInterval);
+					wsLogWarn(`bot ws ping timeout after ${ws.__pingMissCount} misses, terminating botId=${botId}`);
+					ws.terminate();
+				}, BOT_PING_INTERVAL_MS);
 				ws.on('close', (code, reason) => {
 					clearInterval(botPingInterval);
 					unregisterSocket(botSockets, botId, ws);
@@ -476,6 +497,27 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 			socket.destroy();
 		}
 	});
+}
+
+/**
+ * Bot 心跳状态机（单轮判定）。
+ * 从 attachBotWsHub 内联逻辑中提取，便于单元测试。
+ * @param {object} state - { isAlive, missCount, bufferedAmount }
+ * @param {number} maxMiss
+ * @returns {{ action: 'ok'|'skip'|'miss'|'terminate', missCount: number }}
+ */
+export function botPingTick(state, maxMiss) {
+	if (state.isAlive) {
+		return { action: 'ok', missCount: 0 };
+	}
+	if (state.bufferedAmount > 0) {
+		return { action: 'skip', missCount: state.missCount };
+	}
+	const next = state.missCount + 1;
+	if (next < maxMiss) {
+		return { action: 'miss', missCount: next };
+	}
+	return { action: 'terminate', missCount: next };
 }
 
 export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {

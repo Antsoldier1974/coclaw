@@ -1,5 +1,13 @@
 # Server STATUS
 
+## 2026-03-13
+- **WebSocket 心跳容错与连接管理**：
+  - `bot-ws-hub.js` bot 侧协议级 ping 改为 45s 间隔 + 连续 miss 计数（最大 4 次，~180s 容忍），与 plugin 侧对齐。`bufferedAmount > 0` 时跳过（不计 miss），覆盖 server→bot 大消息；miss 计数覆盖 bot→server 大消息（pong 被排在大数据帧后面的场景）。
+  - 移除 UI 侧协议级心跳：server 不再主动 ping UI ws、不再主动 terminate UI 连接。UI 客户端自行维护应用层心跳（server 仍被动回复应用层 pong）。理由：避免大消息传输时误断 UI 连接，优先保证通信顺畅。
+  - 新增 bot 重连淘汰旧连接：新 bot socket 连接同一 botId 时，先 terminate 该 botId 的所有旧 socket，避免半开连接残留在 `botSockets` Set 中导致消息发送到死连接。
+  - 新增 `docs/architecture/overview.md` section 4：Server WebSocket 连接管理模型（数据结构、消息路由、多 UI 实例行为、心跳策略）。
+  - 详见 `docs/architecture/websocket-heartbeat.md`。
+
 ## 2026-03-11
 - **v0.2 整改 Stage 1（Server 适配）**：
   - WS 升级认证新增 session cookie 方式（UI 侧优先 cookie，ticket 兜底）
