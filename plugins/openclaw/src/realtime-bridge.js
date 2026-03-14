@@ -90,8 +90,6 @@ export class RealtimeBridge {
 		this.gatewayConnectReqId = null;
 		this.gatewayRpcSeq = 0;
 		this.gatewayPendingRequests = new Map();
-		this.mainSessionEnsurePromise = null;
-		this.mainSessionEnsured = false;
 		this.logger = console;
 		this.pluginConfig = {};
 		this.intentionallyClosed = false;
@@ -248,45 +246,58 @@ export class RealtimeBridge {
 		});
 	}
 
-	async __ensureMainSessionKey() {
-		if (this.mainSessionEnsured) {
+	/**
+	 * 确保指定 agent 的主 session 存在（sessions.resolve + 条件 sessions.reset）
+	 * @param {string} [agentId] - agent ID，默认 'main'
+	 * @returns {Promise<{ok: boolean, state?: string, error?: string}>}
+	 */
+	async ensureAgentSession(agentId) {
+		const aid = typeof agentId === 'string' && agentId.trim() ? agentId.trim() : 'main';
+		const key = `agent:${aid}:main`;
+		const resolved = await this.__gatewayRpc('sessions.resolve', { key }, { timeoutMs: 2000 });
+		if (resolved?.ok === true) {
+			this.__logDebug(`ensure agent session: ready agentId=${aid}`);
 			return { ok: true, state: 'ready' };
 		}
-		/* c8 ignore next 3 -- 并发调用防御，复用进行中的 promise */
-		if (this.mainSessionEnsurePromise) {
-			return await this.mainSessionEnsurePromise;
+		// 仅当网关真实响应 "不存在" 时才创建；超时/网关未就绪等瞬态错误不触发 reset
+		if (!resolved?.response) {
+			return { ok: false, error: resolved?.error ?? 'resolve_transient_failure' };
 		}
-		this.mainSessionEnsurePromise = (async () => {
-			const key = 'agent:main:main';
-			// sessions.resolve 仅返回 { ok, key }，不含 entry
-			const resolved = await this.__gatewayRpc('sessions.resolve', { key }, { timeoutMs: 2000 });
-			if (resolved?.ok === true) {
-				this.mainSessionEnsured = true;
-				this.__logDebug(`main session key ensure: ready key=${key}`);
-				return { ok: true, state: 'ready' };
-			}
-			// 仅当网关真实响应 "不存在" 时才创建；超时/网关未就绪等瞬态错误不触发 reset
-			if (!resolved?.response) {
-				return { ok: false, error: resolved?.error ?? 'resolve_transient_failure' };
-			}
-			// session key 不存在，通过 sessions.reset 创建
-			const reset = await this.__gatewayRpc('sessions.reset', { key, reason: 'new' }, { timeoutMs: 2500 });
-			if (reset?.ok !== true) {
-				return { ok: false, error: reset?.error ?? 'sessions_reset_failed' };
-			}
-			this.mainSessionEnsured = true;
-			this.__logDebug(`main session key ensure: created key=${key}`);
-			return { ok: true, state: 'created' };
-		})();
+		// session key 不存在，通过 sessions.reset 创建
+		const reset = await this.__gatewayRpc('sessions.reset', { key, reason: 'new' }, { timeoutMs: 2500 });
+		if (reset?.ok !== true) {
+			return { ok: false, error: reset?.error ?? 'sessions_reset_failed' };
+		}
+		this.__logDebug(`ensure agent session: created agentId=${aid}`);
+		return { ok: true, state: 'created' };
+	}
+
+	async __ensureAllAgentSessions() {
 		try {
-			const result = await this.mainSessionEnsurePromise;
-			if (!result?.ok) {
-				this.logger.warn?.(`[coclaw] ensure main session key failed: ${result?.error ?? 'unknown'}`);
+			const listResult = await this.__gatewayRpc('agents.list', {}, { timeoutMs: 3000 });
+			let agentIds = ['main'];
+			if (listResult?.ok === true && Array.isArray(listResult?.response?.payload?.agents)) {
+				const ids = listResult.response.payload.agents
+					.map((a) => a?.id)
+					.filter((id) => typeof id === 'string' && id.trim());
+				if (ids.length > 0) agentIds = ids;
 			}
-			return result;
+			else {
+				this.logger.warn?.(`[coclaw] agents.list failed, falling back to main: ${listResult?.error ?? 'unknown'}`);
+			}
+			const results = await Promise.allSettled(
+				agentIds.map((id) => this.ensureAgentSession(id)),
+			);
+			for (let i = 0; i < results.length; i++) {
+				const r = results[i];
+				if (r.status === 'fulfilled' && r.value?.ok) continue;
+				const err = r.status === 'fulfilled' ? r.value?.error : String(r.reason);
+				this.logger.warn?.(`[coclaw] ensure agent session failed: agentId=${agentIds[i]} error=${err ?? 'unknown'}`);
+			}
 		}
-		finally {
-			this.mainSessionEnsurePromise = null;
+		/* c8 ignore next 3 -- 防御性兜底，__gatewayRpc 内部已有完整错误处理 */
+		catch (err) {
+			this.logger.warn?.(`[coclaw] ensureAllAgentSessions unexpected error: ${String(err?.message ?? err)}`);
 		}
 	}
 
@@ -395,7 +406,7 @@ export class RealtimeBridge {
 					this.gatewayReady = true;
 					this.__logDebug(`gateway connect ok <- id=${payload.id}`);
 					this.gatewayConnectReqId = null;
-					void this.__ensureMainSessionKey();
+					void this.__ensureAllAgentSessions();
 				}
 				else {
 					this.gatewayReady = false;
@@ -672,8 +683,6 @@ export class RealtimeBridge {
 
 	async stop() {
 		this.started = false;
-		this.mainSessionEnsured = false;
-		this.mainSessionEnsurePromise = null;
 		this.__clearServerHeartbeat();
 		this.__clearConnectTimer();
 		if (this.reconnectTimer) {
@@ -724,4 +733,12 @@ export async function stopRealtimeBridge() {
 		return;
 	}
 	await singleton.stop();
+	singleton = null;
+}
+
+export async function ensureAgentSession(agentId) {
+	if (!singleton) {
+		return { ok: false, error: 'bridge_not_started' };
+	}
+	return singleton.ensureAgentSession(agentId);
 }

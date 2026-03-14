@@ -3,7 +3,7 @@ import { registerCoclawCli } from './src/cli-registrar.js';
 import { resolveErrorMessage } from './src/common/errors.js';
 import { notBound, bindOk, unbindOk } from './src/common/messages.js';
 import { coclawChannelPlugin } from './src/channel-plugin.js';
-import { refreshRealtimeBridge, startRealtimeBridge, stopRealtimeBridge } from './src/realtime-bridge.js';
+import { ensureAgentSession, refreshRealtimeBridge, startRealtimeBridge, stopRealtimeBridge } from './src/realtime-bridge.js';
 import { setRuntime } from './src/runtime.js';
 import { createSessionManager } from './src/session-manager/manager.js';
 import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
@@ -88,8 +88,12 @@ const plugin = {
 			}
 		});
 
-		api.registerGatewayMethod('nativeui.sessions.listAll', ({ params, respond }) => {
+		api.registerGatewayMethod('nativeui.sessions.listAll', async ({ params, respond }) => {
 			try {
+				const agentId = params?.agentId?.trim?.() || 'main';
+				// best-effort ensure：失败不阻断 listAll
+				try { await ensureAgentSession(agentId); }
+				catch {}
 				respond(true, manager.listAll(params ?? {}));
 			}
 			catch (err) {
