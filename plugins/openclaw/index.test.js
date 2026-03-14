@@ -60,7 +60,7 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 	assert.equal(typeof upgradeService.stop, 'function');
 });
 
-test('gateway methods respond and catch errors', () => {
+test('gateway methods respond and catch errors', async () => {
 	const handlers = new Map();
 	plugin.register({
 		pluginConfig: {},
@@ -75,14 +75,14 @@ test('gateway methods respond and catch errors', () => {
 	});
 
 	let listOut = null;
-	handlers.get('nativeui.sessions.listAll')({
+	await handlers.get('nativeui.sessions.listAll')({
 		params: {},
 		respond(ok, payload) {
 			listOut = { ok, payload };
 		},
 	});
 	assert.equal(listOut.ok, true);
-	assert.throws(() => handlers.get('nativeui.sessions.listAll')({
+	await assert.rejects(() => handlers.get('nativeui.sessions.listAll')({
 		params: {},
 		respond() {
 			throw new Error('respond failed');

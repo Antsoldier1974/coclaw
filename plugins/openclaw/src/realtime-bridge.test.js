@@ -4,7 +4,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import { RealtimeBridge, refreshRealtimeBridge, startRealtimeBridge, stopRealtimeBridge } from './realtime-bridge.js';
+import { RealtimeBridge, ensureAgentSession, refreshRealtimeBridge, startRealtimeBridge, stopRealtimeBridge } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
@@ -74,6 +74,27 @@ function createBridge(overrides = {}) {
 		resolveGatewayAuthToken: () => '',
 		...overrides,
 	});
+}
+
+/**
+ * 消化 __ensureAllAgentSessions 的后台流量：
+ * 响应 agents.list + 对应的 sessions.resolve（均返回成功）
+ */
+async function drainEnsureAllAgentSessions(gateway) {
+	for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+	const agentsListRaw = gateway.sent.find((s) => String(s).includes('agents.list'));
+	if (!agentsListRaw) return;
+	const msg = JSON.parse(String(agentsListRaw));
+	// 返回含 main 的列表，否则空数组也会 fallback 到 ['main']
+	gateway.emit('message', { data: JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: { defaultId: 'main', agents: [{ id: 'main' }] } }) });
+	for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+	// 响应 sessions.resolve for main
+	const resolveRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve') && String(s).includes('agent:main:main'));
+	if (resolveRaw) {
+		const rMsg = JSON.parse(String(resolveRaw));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: rMsg.id, ok: true, payload: { ok: true, key: 'agent:main:main' } }) });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+	}
 }
 
 // --- 单例便捷 API 测试 ---
@@ -172,13 +193,19 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
 		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
 
-		// 等待 ensureMainSessionKey 发出 sessions.resolve 请求并响应
+		// 等待 __ensureAllAgentSessions 发出 agents.list + sessions.resolve
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-		const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
-		if (resolveReqRaw) {
-			const resolveReqMsg = JSON.parse(String(resolveReqRaw));
-			gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReqMsg.id, ok: true, payload: { ok: true, key: 'agent:main:main' } }) });
-			for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+		const agentsListRaw = gateway.sent.find((s) => String(s).includes('agents.list'));
+		if (agentsListRaw) {
+			const agentsListMsg = JSON.parse(String(agentsListRaw));
+			gateway.emit('message', { data: JSON.stringify({ type: 'res', id: agentsListMsg.id, ok: true, payload: { defaultId: 'main', agents: [{ id: 'main' }] } }) });
+			for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+			const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
+			if (resolveReqRaw) {
+				const resolveReqMsg = JSON.parse(String(resolveReqRaw));
+				gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReqMsg.id, ok: true, payload: { ok: true, key: 'agent:main:main' } }) });
+				for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+			}
 		}
 
 		// rpc.req happy path
@@ -300,7 +327,7 @@ test('RealtimeBridge should schedule reconnect on server error', async () => {
 	}
 });
 
-test('RealtimeBridge should ensure main session key after gateway connect', async () => {
+test('RealtimeBridge should ensure all agent sessions after gateway connect', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
@@ -328,17 +355,31 @@ test('RealtimeBridge should ensure main session key after gateway connect', asyn
 		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
 		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
 
+		// 等待 agents.list 请求
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-		const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
-		assert.ok(resolveReqRaw, 'should send sessions.resolve after gateway connect');
-		const resolveReq = JSON.parse(String(resolveReqRaw));
-		assert.equal(resolveReq.method, 'sessions.resolve');
-		assert.equal(resolveReq.params.key, 'agent:main:main');
+		const agentsListRaw = gateway.sent.find((s) => String(s).includes('agents.list'));
+		assert.ok(agentsListRaw, 'should send agents.list after gateway connect');
+		const agentsListReq = JSON.parse(String(agentsListRaw));
 
-		// 模拟 session 已存在
-		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReq.id, ok: true, payload: { ok: true, key: 'agent:main:main' } }) });
+		// 返回两个 agent
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: agentsListReq.id, ok: true, payload: { defaultId: 'main', agents: [{ id: 'main' }, { id: 'ops' }] } }) });
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-		assert.ok(logs.some((x) => String(x).includes('main session key ensure: ready')), 'should log ready');
+
+		// 应为每个 agent 发送 sessions.resolve
+		const resolveReqs = gateway.sent
+			.filter((s) => String(s).includes('sessions.resolve'))
+			.map((s) => JSON.parse(String(s)));
+		assert.equal(resolveReqs.length, 2, 'should send sessions.resolve for each agent');
+		assert.ok(resolveReqs.some((r) => r.params.key === 'agent:main:main'));
+		assert.ok(resolveReqs.some((r) => r.params.key === 'agent:ops:main'));
+
+		// 响应两个 resolve 请求
+		for (const req of resolveReqs) {
+			gateway.emit('message', { data: JSON.stringify({ type: 'res', id: req.id, ok: true, payload: { ok: true, key: req.params.key } }) });
+		}
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		assert.ok(logs.some((x) => String(x).includes('ensure agent session: ready agentId=main')));
+		assert.ok(logs.some((x) => String(x).includes('ensure agent session: ready agentId=ops')));
 	}
 	finally {
 		await bridge.stop();
@@ -348,7 +389,7 @@ test('RealtimeBridge should ensure main session key after gateway connect', asyn
 	}
 });
 
-test('RealtimeBridge ensureMainSessionKey should create session when not found', async () => {
+test('RealtimeBridge ensureAgentSession should create session when not found', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
@@ -376,27 +417,32 @@ test('RealtimeBridge ensureMainSessionKey should create session when not found',
 		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
 		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
 
-		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-		const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
-		assert.ok(resolveReqRaw, 'should send sessions.resolve');
-		const resolveReq = JSON.parse(String(resolveReqRaw));
+		await drainEnsureAllAgentSessions(gateway);
 
-		// 模拟 session 不存在
+		// 手动调用 ensureAgentSession
+		const ensureP = bridge.ensureAgentSession('tester');
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const resolveReqRaw = gateway.sent.findLast((s) => String(s).includes('sessions.resolve') && String(s).includes('tester'));
+		assert.ok(resolveReqRaw, 'should send sessions.resolve for tester');
+		const resolveReq = JSON.parse(String(resolveReqRaw));
+		assert.equal(resolveReq.params.key, 'agent:tester:main');
+
+		// session 不存在
 		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReq.id, ok: false, error: { message: 'not found' } }) });
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 
-		// 应发出 sessions.reset 请求
-		const resetReqRaw = gateway.sent.find((s) => String(s).includes('sessions.reset'));
-		assert.ok(resetReqRaw, 'should send sessions.reset when session not found');
+		// 应发出 sessions.reset
+		const resetReqRaw = gateway.sent.findLast((s) => String(s).includes('sessions.reset') && String(s).includes('tester'));
+		assert.ok(resetReqRaw, 'should send sessions.reset when not found');
 		const resetReq = JSON.parse(String(resetReqRaw));
-		assert.equal(resetReq.method, 'sessions.reset');
-		assert.equal(resetReq.params.key, 'agent:main:main');
+		assert.equal(resetReq.params.key, 'agent:tester:main');
 		assert.equal(resetReq.params.reason, 'new');
 
-		// 模拟 reset 成功
-		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resetReq.id, ok: true, payload: { ok: true, key: 'agent:main:main', entry: { sessionId: 'new-uuid' } } }) });
-		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-		assert.ok(logs.some((x) => String(x).includes('main session key ensure: created')), 'should log created');
+		// reset 成功
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resetReq.id, ok: true, payload: { ok: true } }) });
+		const result = await ensureP;
+		assert.deepEqual(result, { ok: true, state: 'created' });
+		assert.ok(logs.some((x) => String(x).includes('ensure agent session: created agentId=tester')));
 	}
 	finally {
 		await bridge.stop();
@@ -406,7 +452,7 @@ test('RealtimeBridge ensureMainSessionKey should create session when not found',
 	}
 });
 
-test('RealtimeBridge ensureMainSessionKey should NOT reset on resolve timeout', async () => {
+test('RealtimeBridge ensureAgentSession should NOT reset on resolve timeout', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
@@ -434,16 +480,18 @@ test('RealtimeBridge ensureMainSessionKey should NOT reset on resolve timeout', 
 		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
 		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
 
-		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-		const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
-		assert.ok(resolveReqRaw, 'should send sessions.resolve');
+		await drainEnsureAllAgentSessions(gateway);
 
-		// 不响应 sessions.resolve，等待超时
-		await new Promise((r) => setTimeout(r, 2200));
+		// 手动调用并让 resolve 超时（ref 一个 timer 保持事件循环活跃）
+		const keepAlive = setTimeout(() => {}, 5000);
+		const result = await bridge.ensureAgentSession('timeout-agent');
+		clearTimeout(keepAlive);
+		assert.equal(result.ok, false);
+		assert.equal(result.error, 'timeout');
 
-		const resetReqRaw = gateway.sent.find((s) => String(s).includes('sessions.reset'));
+		// 不应发送 sessions.reset
+		const resetReqRaw = gateway.sent.find((s) => String(s).includes('sessions.reset') && String(s).includes('timeout-agent'));
 		assert.equal(resetReqRaw, undefined, 'should NOT send sessions.reset on timeout');
-		assert.ok(logs.some((x) => String(x).includes('ensure main session key failed')), 'should log failure');
 	}
 	finally {
 		await bridge.stop();
@@ -664,7 +712,113 @@ test('RealtimeBridge waitGatewayReady should handle ws reference change', async 
 	}
 });
 
-test('RealtimeBridge ensureMainSessionKey should handle sessions.reset failure', async () => {
+test('RealtimeBridge ensureAgentSession should handle sessions.reset failure', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
+	const bridge = createBridge();
+
+	try {
+		await bridge.start({ logger, pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge' }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		await drainEnsureAllAgentSessions(gateway);
+
+		// 手动调用 ensureAgentSession
+		const ensureP = bridge.ensureAgentSession('fail-agent');
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const resolveReqRaw = gateway.sent.findLast((s) => String(s).includes('sessions.resolve') && String(s).includes('fail-agent'));
+		const resolveReq = JSON.parse(String(resolveReqRaw));
+
+		// session 不存在
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReq.id, ok: false, error: { message: 'not found' } }) });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+
+		// reset 也失败
+		const resetReqRaw = gateway.sent.findLast((s) => String(s).includes('sessions.reset') && String(s).includes('fail-agent'));
+		const resetReq = JSON.parse(String(resetReqRaw));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resetReq.id, ok: false, error: { message: 'reset failed' } }) });
+
+		const result = await ensureP;
+		assert.equal(result.ok, false);
+		assert.equal(result.error, 'reset failed');
+	}
+	finally {
+		await bridge.stop();
+		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge ensureAgentSession should default to main when agentId is empty', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
+	const bridge = createBridge();
+
+	try {
+		await bridge.start({ logger, pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge' }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		await drainEnsureAllAgentSessions(gateway);
+
+		// 传空字符串应 fallback 到 main
+		const ensureP = bridge.ensureAgentSession('  ');
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const resolveReqRaw = gateway.sent.findLast((s) => String(s).includes('sessions.resolve') && String(s).includes('agent:main:main'));
+		assert.ok(resolveReqRaw, 'empty agentId should fallback to main');
+		const resolveReq = JSON.parse(String(resolveReqRaw));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReq.id, ok: true, payload: {} }) });
+		const result = await ensureP;
+		assert.equal(result.ok, true);
+		assert.equal(result.state, 'ready');
+	}
+	finally {
+		await bridge.stop();
+		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge __ensureAllAgentSessions should fallback to main when agents.list fails', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
@@ -693,21 +847,25 @@ test('RealtimeBridge ensureMainSessionKey should handle sessions.reset failure',
 		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
 
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-		const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
-		const resolveReq = JSON.parse(String(resolveReqRaw));
+		const agentsListRaw = gateway.sent.find((s) => String(s).includes('agents.list'));
+		assert.ok(agentsListRaw, 'should send agents.list');
+		const agentsListReq = JSON.parse(String(agentsListRaw));
 
-		// session 不存在
-		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReq.id, ok: false, error: { message: 'not found' } }) });
+		// agents.list 失败
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: agentsListReq.id, ok: false, error: { message: 'method not found' } }) });
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		assert.ok(logs.some((x) => String(x).includes('agents.list failed, falling back to main')));
 
-		// reset 也失败
-		const resetReqRaw = gateway.sent.find((s) => String(s).includes('sessions.reset'));
-		const resetReq = JSON.parse(String(resetReqRaw));
-		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resetReq.id, ok: false, error: { message: 'reset failed' } }) });
+		// 应 fallback 到仅 ensure main
+		const resolveReqs = gateway.sent
+			.filter((s) => String(s).includes('sessions.resolve'))
+			.map((s) => JSON.parse(String(s)));
+		assert.equal(resolveReqs.length, 1);
+		assert.equal(resolveReqs[0].params.key, 'agent:main:main');
+
+		// 响应 resolve
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReqs[0].id, ok: true, payload: {} }) });
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-
-		assert.ok(logs.some((x) => String(x).includes('ensure main session key failed')));
-		assert.equal(bridge.mainSessionEnsured, false);
 	}
 	finally {
 		await bridge.stop();
@@ -717,33 +875,25 @@ test('RealtimeBridge ensureMainSessionKey should handle sessions.reset failure',
 	}
 });
 
-test('RealtimeBridge should skip mainSessionKey if already ensured', async () => {
-	FakeWebSocket.instances.length = 0;
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
+test('singleton ensureAgentSession should return error when bridge not started', async () => {
+	// 确保 singleton 为 null
+	await stopRealtimeBridge();
+	const result = await ensureAgentSession('main');
+	assert.equal(result.ok, false);
+	assert.equal(result.error, 'bridge_not_started');
+});
 
-	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
-	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
-	const bridge = createBridge();
-
+test('singleton ensureAgentSession should delegate to bridge instance', async () => {
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
 	try {
-		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
-		// 手动设置 mainSessionEnsured
-		bridge.mainSessionEnsured = true;
-
-		// 直接调用应该立即返回 ready
-		const result = await bridge.__ensureMainSessionKey();
-		assert.deepEqual(result, { ok: true, state: 'ready' });
+		await startRealtimeBridge({ logger: noopLogger(), pluginConfig: {} });
+		// bridge 已启动但 gateway 未就绪，ensure 应返回 gateway_not_ready
+		const result = await ensureAgentSession('main');
+		assert.equal(result.ok, false);
+		assert.equal(result.error, 'gateway_not_ready');
 	}
 	finally {
-		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
+		await stopRealtimeBridge();
 	}
 });
 
