@@ -1,11 +1,14 @@
 apply plugin: 'com.android.application'
 
-// 从 local.properties 读取签名密码
+// 从 local.properties 读取签名配置（可选覆盖）
 def localProps = new Properties()
 def localPropsFile = rootProject.file('local.properties')
 if (localPropsFile.exists()) {
     localProps.load(new FileInputStream(localPropsFile))
 }
+
+// 密钥文件统一存放于 ~/.coclaw/keys/，local.properties 的 COCLAW_STORE_FILE 可覆盖
+def defaultKeystorePath = "${System.getProperty('user.home')}/.coclaw/keys/android-release.jks"
 
 android {
     namespace = "net.coclaw.im"
@@ -25,9 +28,9 @@ android {
     }
     signingConfigs {
         release {
-            storeFile file("keystore/coclaw-release.jks")
+            storeFile file(localProps.getProperty('COCLAW_STORE_FILE', defaultKeystorePath))
             storePassword localProps.getProperty('COCLAW_STORE_PASSWORD', '')
-            keyAlias "coclaw-release"
+            keyAlias localProps.getProperty('COCLAW_KEY_ALIAS', 'coclaw-release')
             keyPassword localProps.getProperty('COCLAW_KEY_PASSWORD', '')
         }
     }

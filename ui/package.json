@@ -20,7 +20,14 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "e2e": "playwright test",
-    "verify": "pnpm check && pnpm test && pnpm coverage"
+    "verify": "pnpm check && pnpm test && pnpm coverage",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:win": "tauri build --bundles nsis",
+    "tauri:build:mac": "tauri build --target universal-apple-darwin --bundles dmg",
+    "tauri:build:mac-app": "tauri build --target universal-apple-darwin --bundles app",
+    "tauri:icon": "tauri icon"
   },
   "dependencies": {
     "@capacitor/android": "^8.2.0",
@@ -53,6 +60,7 @@
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "@tailwindcss/postcss": "^4.2.1",
+    "@tauri-apps/cli": "^2.10.1",
     "@vitejs/plugin-vue": "^6.0.5",
     "@vitest/coverage-v8": "^3.2.4",
     "@vue/test-utils": "^2.4.6",
