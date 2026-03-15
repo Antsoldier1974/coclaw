@@ -70,7 +70,7 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.refreshBridge', async ({ respond }) => {
 			try {
-				await refreshRealtimeBridge();
+				await refreshRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
 				respond(true, { status: 'refreshed' });
 			}
 			catch (err) {
@@ -148,7 +148,7 @@ const plugin = {
 							code: positionals[0],
 							serverUrl,
 						});
-						await refreshRealtimeBridge();
+						await refreshRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
 						return { text: bindOk(result) };
 					}
 

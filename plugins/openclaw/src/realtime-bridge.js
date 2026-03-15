@@ -721,8 +721,12 @@ export async function startRealtimeBridge(opts) {
 	await singleton.start(opts);
 }
 
-export async function refreshRealtimeBridge() {
+export async function refreshRealtimeBridge(opts) {
 	if (!singleton) {
+		// stop 后 singleton 被清除，需重新创建（如 bind 后重连）
+		if (opts) {
+			await startRealtimeBridge(opts);
+		}
 		return;
 	}
 	await singleton.refresh();
