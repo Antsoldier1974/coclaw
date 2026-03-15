@@ -103,7 +103,7 @@ import { useBotsStore } from '../stores/bots.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { useChatStore } from '../stores/chat.store.js';
 import { groupSessionMessages, cleanDerivedTitle } from '../utils/session-msg-group.js';
-import { isNative } from '../utils/capacitor-app.js';
+import { isCapacitorApp } from '../utils/platform.js';
 
 export default {
 	name: 'ChatPage',
@@ -131,7 +131,7 @@ export default {
 	},
 	computed: {
 		chatRootClasses() {
-			return isNative ? 'flex-1 min-h-0' : 'h-dvh';
+			return isCapacitorApp ? 'flex-1 min-h-0' : 'h-dvh';
 		},
 		currentSessionId() {
 			return typeof this.$route.params?.sessionId === 'string'

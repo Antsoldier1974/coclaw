@@ -60,8 +60,11 @@ vi.mock('../composables/use-notify.js', () => ({
 	useNotify: () => mockNotify,
 }));
 
-vi.mock('../utils/capacitor-app.js', () => ({
-	isNative: false,
+vi.mock('../utils/platform.js', () => ({
+	isCapacitorApp: false,
+	isTauriApp: false,
+	isNativeShell: false,
+	isDesktop: true,
 }));
 
 import ChatPage from './ChatPage.vue';

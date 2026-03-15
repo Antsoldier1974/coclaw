@@ -6,8 +6,8 @@
 
 | 项目 | 状态 |
 |------|------|
-| Keystore | `android/app/keystore/coclaw-release.jks`（已被 .gitignore 排除） |
-| 签名配置 | `build.gradle` 从 `local.properties` 读取密码（不入库） |
+| Keystore | 默认 `~/.coclaw/keys/android-release.jks`；可通过 `local.properties` 的 `COCLAW_STORE_FILE` 覆盖 |
+| 签名配置 | `build.gradle` 从 `local.properties` 读取密码和可选路径覆盖（不入库） |
 | 签名格式 | PKCS12（keytool 默认），keystore 和 key 共用同一密码 |
 | versionName | `1.0.0` |
 | versionCode | `1` |

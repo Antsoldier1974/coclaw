@@ -123,29 +123,29 @@ ui/
 ├── src-tauri/
 │   ├── Cargo.toml                    # Rust 依赖声明
 │   ├── tauri.conf.json               # 主配置（共用）
-│   ├── tauri.windows.conf.json       # Windows 平台覆盖
-│   ├── tauri.macos.conf.json         # macOS 平台覆盖
+│   ├── tauri.macos.conf.json         # macOS 平台覆盖（overlay 标题栏、DMG 打包）
 │   ├── build.rs                      # Tauri 构建脚本
 │   ├── src/
-│   │   ├── main.rs                   # 入口：注册插件、系统托盘、窗口事件
-│   │   ├── tray.rs                   # 系统托盘逻辑
-│   │   └── commands.rs               # 自定义 IPC commands（如有）
+│   │   ├── main.rs                   # 入口（调用 lib.rs）
+│   │   ├── lib.rs                    # 注册插件、系统托盘、窗口事件
+│   │   └── tray.rs                   # 系统托盘逻辑
 │   ├── capabilities/
-│   │   ├── main.json                 # 主窗口能力声明（共用）
-│   │   ├── windows-only.json         # Windows 专属能力（如需）
-│   │   └── macos-only.json           # macOS 专属能力（如需）
-│   ├── icons/                        # 应用图标（多尺寸）
-│   │   ├── icon.ico                  # Windows
-│   │   ├── icon.icns                 # macOS
-│   │   ├── icon.png                  # 通用
-│   │   ├── 32x32.png
-│   │   ├── 128x128.png
-│   │   ├── 128x128@2x.png
-│   │   ├── Square150x150Logo.png     # Windows Store
+│   │   └── main.json                 # 主窗口能力声明（共用，含 remote URLs 限制）
+│   ├── icons/                        # 应用图标（多尺寸，tauri init 自动生成）
+│   │   ├── icon.ico, icon.icns, icon.png, 32x32.png, 128x128.png, ...
+│   │   ├── Square*.png               # Windows Store 图标
 │   │   └── tray-icon.png             # 系统托盘图标
-│   ├── Entitlements.plist            # macOS 沙箱权限
-│   └── Info.plist                    # macOS 补充 plist 条目
-├── src/                              # 前端代码（现有，不变）
+│   ├── Entitlements.plist            # macOS 沙箱权限（预置）
+│   └── Info.plist                    # macOS 权限描述文字（预置）
+├── scripts/
+│   ├── tauri-build.sh                # Bash 构建 wrapper（自动加载签名密钥）
+│   └── tauri-build.ps1               # PowerShell 构建 wrapper（Windows 用）
+├── src/
+│   └── utils/
+│       ├── platform.js               # 统一平台检测（Capacitor / Tauri / Web）
+│       ├── tauri-app.js              # Tauri 壳子初始化（Deep Link 等）
+│       ├── tauri-notify.js           # Tauri 桌面端 IM 通知能力
+│       └── capacitor-app.js          # Capacitor 壳子初始化（现有）
 ├── android/                          # Android 壳子（现有）
 └── ...
 ```
@@ -208,7 +208,7 @@ ui/
         "type": "downloadBootstrapper"
       },
       "nsis": {
-        "installMode": "perUser",
+        "installMode": "currentUser",
         "displayLanguageSelector": true,
         "languages": ["SimpChinese", "English"]
       },
@@ -616,11 +616,13 @@ await win.requestUserAttention(null);
 
 #### 各平台实现方式
 
-| 平台 | 机制 | API | 效果 |
-|---|---|---|---|
-| **Windows** | 任务栏叠加图标 | `Window.setOverlayIcon(image)` | 任务栏按钮右下角显示 16×16 小图标 |
-| **macOS** | Dock 原生徽章 | `Window.setBadgeCount(count)` | Dock 图标右下角红色数字圆圈（系统原生） |
-| **Android** | 启动器通知徽章 | 通知 `setNumber(count)` + `@capawesome/capacitor-badge` | 效果因启动器而异（原生小红点或数字） |
+| 平台 | 机制 | API | 效果 | 状态 |
+|---|---|---|---|---|
+| **Windows** | 任务栏叠加图标 | Rust 自定义 command（JS API 不支持） | 任务栏按钮右下角显示 16×16 小图标 | TODO |
+| **macOS** | Dock 原生徽章 | Rust 自定义 command（JS API 不支持） | Dock 图标右下角红色数字圆圈 | TODO |
+| **Android** | 启动器通知徽章 | `@capawesome/capacitor-badge` | 效果因启动器而异（原生小红点或数字） | TODO |
+
+> **注**：设计文档初版中使用的 `Window.setOverlayIcon()` 和 `Window.setBadgeCount()` 在 Tauri v2 的 JS Window API 中不存在。需通过 Rust 端自定义 `tauri::command` 调用底层 API 实现，Web 端通过 `invoke()` 调用。
 
 #### Windows 叠加图标的特殊处理
 
@@ -698,88 +700,59 @@ await win.setBadgeCount(null);
 
 ### 9.1 统一平台检测
 
-当前前端通过 `Capacitor.isNativePlatform()` 检测是否在原生壳子中。需扩展以支持 Tauri：
+当前前端通过 `Capacitor.isNativePlatform()` 检测是否在原生壳子中。已扩展以支持 Tauri。
+
+**实现**：`src/utils/platform.js`
 
 ```js
-// src/utils/platform.js（新建）
+// 注意：此模块不依赖 capacitor-app.js，避免 Tauri/Web 环境加载 @capacitor/core
+// 通过 window.Capacitor 运行时对象检测，与 media-helper.js、voice-recorder.js 的方式一致
 
-import { isNative as isCapacitorNative } from './capacitor-app.js';
-
-/**
- * 是否运行在桌面壳子（Tauri）中
- */
+/** 是否运行在桌面壳子（Tauri）中 */
 export const isTauriApp = '__TAURI_INTERNALS__' in window;
 
-/**
- * 是否运行在移动壳子（Capacitor）中
- */
-export const isCapacitorApp = isCapacitorNative;
+/** 是否运行在移动壳子（Capacitor）中 */
+export const isCapacitorApp = !!window.Capacitor?.isNativePlatform();
 
-/**
- * 是否运行在任何原生壳子中（Capacitor 或 Tauri）
- */
+/** 是否运行在任何原生壳子中（Capacitor 或 Tauri） */
 export const isNativeShell = isCapacitorApp || isTauriApp;
 
-/**
- * 是否为桌面环境（Tauri 或普通浏览器桌面视口）
- */
+/** 是否为桌面环境（Tauri 或普通浏览器桌面视口） */
 export const isDesktop = isTauriApp || !isCapacitorApp;
 
-/**
- * 平台标识
- * @returns {'capacitor' | 'tauri' | 'web'}
- */
-export function getPlatformType() {
-    if (isCapacitorApp) return 'capacitor';
-    if (isTauriApp) return 'tauri';
-    return 'web';
-}
+/** 平台标识 */
+export function getPlatformType() { ... }
 ```
 
-### 9.2 现有 `isNative` 引用的迁移策略
+> **设计决策**：`platform.js` 不 `import` 任何 Capacitor 包，而是通过 `window.Capacitor` 全局对象检测。这确保在 Tauri 和普通 Web 环境下不会触发 `@capacitor/core` 的加载。`capacitor-app.js` 仅由 `main.js`（初始化）和 `theme-mode.js`（状态栏同步）导入，这两个场景在非 Capacitor 环境下通过内部 guard 直接跳过。
 
-当前代码中 `isNative`（来自 `capacitor-app.js`）的用途分析及迁移：
+### 9.2 `isNative` 引用迁移（已完成）
 
-| 使用位置 | 当前用途 | Tauri 下的行为 | 迁移方案 |
-|---|---|---|---|
-| `AuthedLayout.vue` rootClasses | `h-dvh overflow-hidden` vs `min-h-screen` | Tauri 桌面应走 `min-h-screen`（桌面浏览器行为） | 改用 `isCapacitorApp`（仅移动壳子） |
-| `AuthedLayout.vue` sectionClasses | safe-area-inset padding | Tauri 无 safe area | 改用 `isCapacitorApp` |
-| `ChatPage.vue` chatRootClasses | `flex-1 min-h-0` vs `h-dvh` | Tauri 走 `h-dvh`（桌面行为） | 改用 `isCapacitorApp` |
-| `capacitor-app.js` StatusBar | 透明状态栏 | 不适用 | 保持原样（Capacitor 代码自带平台检测） |
-| `capacitor-app.js` BackButton | Android 返回键 | 不适用 | 保持原样 |
-| `media-helper.js` queryMicPerm | 跳过 permissions.query | Tauri WebView2 支持该 API | 改用 `isCapacitorApp` |
-| `voice-recorder.js` | enumerateDevices 可靠性 | Tauri WebView2 可靠 | 改用 `isCapacitorApp` |
+已将视图层中所有 `isNative`（来自 `capacitor-app.js`）引用替换为 `isCapacitorApp`（来自 `platform.js`）：
 
-**核心原则**：现有 `isNative` 的所有使用场景都是为了规避 Capacitor WebView 的限制或适配移动端 UI，Tauri 桌面端不需要这些适配。因此，将现有 `isNative` 引用逐步替换为 `isCapacitorApp`，保持桌面端行为与 Web 浏览器一致。
+| 使用位置 | 用途 | 迁移结果 |
+|---|---|---|
+| `AuthedLayout.vue` rootClasses/innerClasses/sectionClasses | 移动端视口约束、safe-area | ✅ 改用 `isCapacitorApp`，Tauri 桌面走 Web 布局 |
+| `ChatPage.vue` chatRootClasses | 移动端 flex 布局 | ✅ 改用 `isCapacitorApp` |
+| `ChatPage.test.js` | 测试 mock | ✅ 改为 mock `platform.js` |
+| `voice-recorder.js` | enumerateDevices 可靠性判断 | ✅ 局部变量重命名为 `isCapacitor`（使用 `window.Capacitor` 检测） |
+| `media-helper.js` | 跳过 permissions.query | 保持原样（已使用 `window.Capacitor` 检测） |
+| `capacitor-app.js` | StatusBar / BackButton 初始化 | 保持原样（内部 `isNative` guard，非 Capacitor 环境直接跳过） |
 
-### 9.3 Tauri 壳子专属初始化
+**核心原则**：现有 `isNative` 的所有使用场景都是为了规避 Capacitor WebView 的限制或适配移动端 UI，Tauri 桌面端不需要这些适配。视图层统一从 `platform.js` 导入，不直接依赖 `@capacitor/core`。
 
-新建 `src/utils/tauri-app.js`：
+### 9.3 Tauri 壳子专属初始化（已实现）
 
-```js
-// src/utils/tauri-app.js
-import { isTauriApp } from './platform.js';
+**实现**：`src/utils/tauri-app.js`
 
-/**
- * Tauri 壳子初始化（仅在 Tauri 环境下执行）
- */
-export function initTauriApp(router) {
-    if (!isTauriApp) return;
+- 入口 `initTauriApp(router)`，非 Tauri 环境直接跳过
+- Deep Link 监听：解析 `coclaw://` URL，拼接 `host + pathname` 为 Vue 路由路径并导航
+- 在 `main.js` 中，`initCapacitorApp(router)` 之后调用 `initTauriApp(router)`
+- 窗口关闭行为（隐藏到托盘）在 Rust 端 `tray.rs` 处理
 
-    // 1. Deep Link 监听
-    initDeepLink(router);
+**另有**：`src/utils/tauri-notify.js` 封装了 Tauri 桌面端 IM 通知能力（系统通知、任务栏闪烁、托盘 tooltip），所有方法在非 Tauri 环境静默跳过。
 
-    // 2. 窗口关闭确认（防止意外退出正在进行的对话）
-    // 实际关闭/隐藏逻辑在 Rust 端处理
-}
-
-function initDeepLink(router) {
-    // 监听 deep-link 事件，导航到对应路由
-    // coclaw://chat/xxx → router.push('/chat/xxx')
-}
-```
-
-在 `main.js` 中，`initCapacitorApp(router)` 之后追加 `initTauriApp(router)` 调用。
+> TODO：任务栏叠加图标（Windows overlay icon）/ Dock 徽章（macOS setBadgeCount）需通过 Rust 侧自定义 command 实现，Tauri v2 的 JS Window API 当前不支持这些方法。
 
 ## 10. Tauri 插件清单
 
@@ -806,10 +779,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-### 10.2 插件注册（main.rs）
+### 10.2 插件注册（lib.rs）
+
+> 注意：部分插件使用 `init()` 初始化，部分使用 `Builder` 模式。以实际代码 `src-tauri/src/lib.rs` 为准。
 
 ```rust
-fn main() {
+// src/lib.rs（简化示意，完整代码见源文件）
+pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -817,21 +793,18 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_updater::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())   // Builder 模式
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_store::Builder::new().build())     // Builder 模式
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_http::init())
-        .plugin(tauri_plugin_log::Builder::new().build())
-        .plugin(tauri_plugin_global_shortcut::init())
-        // 系统托盘（见 tray.rs）
-        .setup(|app| {
-            crate::tray::init(app)?;
-            Ok(())
-        })
+        .plugin(tauri_plugin_log::Builder::default()
+            .level(log::LevelFilter::Info).build())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build()) // Builder 模式
+        .setup(|app| { tray::init(app)?; Ok(()) })
         .on_window_event(|window, event| {
-            crate::tray::handle_window_event(window, event);
+            tray::handle_window_event(window, event);
         })
         .run(tauri::generate_context!())
         .expect("error while running CoClaw");
@@ -929,17 +902,142 @@ fn main() {
 
 ## 12. 构建与分发
 
-### 12.1 构建命令
+### 12.0 交叉编译说明
+
+Tauri 基于 Rust 原生编译，**不支持可靠的跨 OS 交叉编译**：
+
+- Windows 安装包必须在 **Windows** 上构建
+- macOS 安装包必须在 **macOS** 上构建
+- WSL2 (Linux) 仅能构建 Linux 版本，不能产出 `.exe` 或 `.dmg`
+
+> Tauri 官方文档虽提及通过 `cargo-xwin` 从 Linux 交叉编译 Windows 的路径，但明确标注为"最后手段"，存在未解决的 bug（tauri#13829、tauri#9598），且不支持代码签名。不推荐用于生产构建。
+>
+> 对比：Electron 因打包预编译的 Chromium + JS，支持从 Linux 交叉编译 Windows/macOS。Tauri 的架构决定了这一限制。
+
+**推荐构建方式**：
+- 本地开发/验证：在对应 OS 的物理机上构建
+- 持续集成：GitHub Actions 使用 `windows-latest` / `macos-latest` runner
+
+### 12.1 构建命令（package.json scripts）
+
+所有构建命令均需在**目标 OS** 上执行：
 
 ```bash
-# Windows（在 Windows 上执行）
-pnpm tauri build                          # NSIS 安装包（直接下载分发）
-pnpm tauri build --config tauri.store.conf.json  # Microsoft Store 版本（离线 WebView2）
+# ---- Windows（在 Windows 上执行）----
+pnpm tauri:build:win                      # NSIS 安装包（官网直接下载分发）
 
-# macOS（在 macOS 上执行）
-pnpm tauri build --target universal-apple-darwin --bundles dmg   # DMG（直接下载）
-pnpm tauri build --target universal-apple-darwin --bundles app   # .app（用于 App Store 打包）
+# ---- macOS（在 macOS 上执行）----
+pnpm tauri:build:mac                      # Universal Binary DMG（官网直接下载）
+pnpm tauri:build:mac-app                  # Universal Binary .app（用于 App Store 打包）
+
+# ---- 通用 ----
+pnpm tauri:dev                            # 开发模式（本地前端 + Tauri 窗口）
+pnpm tauri:build                          # 默认构建（自动检测当前 OS）
 ```
+
+| 脚本 | 实际命令 | 目标 OS |
+|---|---|---|
+| `tauri:build:win` | `tauri build --bundles nsis` | Windows |
+| `tauri:build:mac` | `tauri build --target universal-apple-darwin --bundles dmg` | macOS |
+| `tauri:build:mac-app` | `tauri build --target universal-apple-darwin --bundles app` | macOS |
+
+### 12.1.1 签名密钥管理
+
+所有平台的签名密钥统一存放于开发者 home 目录 `~/.coclaw/keys/`，**不入库**：
+
+```
+~/.coclaw/keys/
+├── android-release.jks       # Android APK 签名密钥库
+├── tauri-updater.key         # Tauri 自动更新签名私钥
+└── tauri-updater.key.pub     # Tauri 自动更新签名公钥
+```
+
+| 密钥 | 格式 | 用途 | 生成方式 |
+|---|---|---|---|
+| `android-release.jks` | Java KeyStore (RSA) | Android APK 发布签名 | `keytool -genkey ...` |
+| `tauri-updater.key` | Ed25519 (minisign) | Tauri 壳子更新包签名 | `pnpm tauri signer generate` |
+
+**新开发者配置**：从团队密码管理器获取密钥文件，放入 `~/.coclaw/keys/` 即可。无需修改任何项目配置。
+
+**构建时如何读取**：
+
+- **Android**：`build.gradle` 默认读取 `~/.coclaw/keys/android-release.jks`，密码通过 `android/local.properties` 配置。可通过 `COCLAW_STORE_FILE` 覆盖路径
+- **Tauri**：构建脚本 `scripts/tauri-build.sh`（Bash）/ `scripts/tauri-build.ps1`（PowerShell）自动从 `~/.coclaw/keys/tauri-updater.key` 读取并设置 `TAURI_SIGNING_PRIVATE_KEY` 环境变量
+- **CI**：通过 GitHub Actions secrets 注入环境变量，不依赖文件
+
+### 12.1.2 Windows 一键构建步骤
+
+**前置环境（一次性搭建）：**
+
+```powershell
+# 1. 安装 Rust
+winget install Rustlang.Rustup
+# 或访问 https://rustup.rs 下载安装
+
+# 2. 安装 Visual Studio Build Tools 2022+（勾选"使用 C++ 的桌面开发"）
+winget install Microsoft.VisualStudio.2022.BuildTools
+
+# 3. 安装 Node.js 20+
+winget install OpenJS.NodeJS.LTS
+
+# 4. 启用 pnpm
+corepack enable
+
+# 5. WebView2 Runtime（Win10/11 通常已预装，若未安装）
+# https://developer.microsoft.com/en-us/microsoft-edge/webview2/
+
+# 6. 放置签名密钥（从团队密码管理器获取）
+mkdir $HOME\.coclaw\keys
+# 将 tauri-updater.key 放入该目录
+```
+
+**构建：**
+
+```powershell
+cd path\to\coclaw\ui
+pnpm install
+.\scripts\tauri-build.ps1 --bundles nsis     # 自动加载签名密钥
+```
+
+产出位置：`src-tauri\target\release\bundle\nsis\coclaw_{version}_x64-setup.exe`
+
+### 12.1.3 macOS 一键构建步骤
+
+**前置环境（一次性搭建）：**
+
+```bash
+# 1. 安装 Xcode Command Line Tools
+xcode-select --install
+
+# 2. 安装 Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# 3. 添加 Universal Binary 所需的两个 target
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+# 4. 安装 Node.js 20+（通过 nvm）
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+nvm install 22
+
+# 5. 启用 pnpm
+corepack enable
+
+# 6. 放置签名密钥
+mkdir -p ~/.coclaw/keys
+# 将 tauri-updater.key 放入该目录
+```
+
+**构建：**
+
+```bash
+cd path/to/coclaw/ui
+pnpm install
+./scripts/tauri-build.sh --target universal-apple-darwin --bundles dmg     # DMG
+# 或
+./scripts/tauri-build.sh --target universal-apple-darwin --bundles app     # App Store
+```
+
+产出位置：`src-tauri/target/universal-apple-darwin/release/bundle/dmg/CoClaw_{version}_universal.dmg`
 
 ### 12.2 安装包输出
 
@@ -1133,48 +1231,55 @@ Tauri CLI 提供 `pnpm tauri icon <source-image>` 命令，从一张 1024×1024 
 | Tauri CLI | 2.x | `pnpm add -D @tauri-apps/cli` |
 | Rust targets | aarch64 + x86_64 | `rustup target add` |
 
-### 15.3 当前环境限制
+### 15.3 构建环境约束
 
-当前开发环境为 WSL2 (Linux)，可以进行 Tauri 项目初始化和前端开发，但：
+Tauri 不支持可靠的跨 OS 交叉编译（详见 §12.0），各平台构建必须在对应 OS 上执行：
 
-- **Windows 构建**：需要在 Windows 宿主机上执行 `pnpm tauri build`（WSL2 不能构建 Windows 原生应用）
-- **macOS 构建**：需要 macOS 机器（物理机或 CI），本地暂不可用
-- **开发调试**：Windows 宿主机安装 Rust + VS Build Tools 后可在 PowerShell/CMD 中 `pnpm tauri dev`
+| 操作 | WSL2 (Linux) | Windows 宿主机 | macOS |
+|---|---|---|---|
+| 前端开发 (`pnpm dev`) | ✅ | ✅ | ✅ |
+| Rust 编译检查 (`cargo check`) | ✅ | ✅ | ✅ |
+| 单元测试 (`pnpm test`) | ✅ | ✅ | ✅ |
+| Tauri 开发模式 (`pnpm tauri:dev`) | ❌ 无图形界面 | ✅ | ✅ |
+| 构建 Windows 安装包 (`pnpm tauri:build:win`) | ❌ | ✅ | ❌ |
+| 构建 macOS DMG (`pnpm tauri:build:mac`) | ❌ | ❌ | ✅ |
+
+**当前日常开发流程**：WSL2 负责前端代码编写、Rust 编译检查、测试；Windows 宿主机负责实际构建和调试。
 
 ## 16. 实施计划
 
 ### Phase 1：Windows 壳子开发（当前）
 
-1. **项目初始化**
+1. **项目初始化** ✅
    - 在 `ui/` 下执行 `pnpm tauri init` 生成 `src-tauri/` 骨架
    - 配置 `tauri.conf.json`（远程加载、窗口参数、图标）
    - 安装所有 Tauri 插件（Cargo.toml）
    - 准备图标资源（应用图标 + 托盘图标 + 托盘未读图标）
 
-2. **核心功能实现**
+2. **核心功能实现** ✅
    - 系统托盘（tray.rs）：托盘图标、菜单、关闭行为、tooltip
    - Deep Link 监听（`coclaw://` 协议）
    - 窗口状态保存/恢复（`tauri-plugin-window-state`）
-   - WebView2 麦克风/摄像头权限自动批准（Rust 端 `PermissionRequested` 处理）
+   - WebView2 麦克风/摄像头权限自动批准（Rust 端 `PermissionRequested` 处理）— TODO：待 Windows 构建验证时确认
 
-3. **能力预埋**
+3. **能力预埋** ✅
    - 编写 `capabilities/main.json` 声明所有权限
-   - 注册全部插件（main.rs）
+   - 注册全部插件（lib.rs）
 
-4. **前端适配**
+4. **前端适配** ✅
    - 新建 `src/utils/platform.js` 统一平台检测
    - 迁移现有 `isNative` 引用为 `isCapacitorApp`
    - 新建 `src/utils/tauri-app.js` 桌面壳子初始化
-   - 在 Web 设置页面中添加壳子设置项（仅 Tauri 环境显示）
+   - 在 Web 设置页面中添加壳子设置项（仅 Tauri 环境显示）— TODO：待壳子设置需求明确后添加
 
-5. **IM 通知特性**
+5. **IM 通知特性**（进行中）
    - 实现托盘图标闪动（新消息时切换图标）
    - 实现任务栏闪烁（`requestUserAttention`）
    - 实现任务栏叠加图标（未读数字渲染）
    - 集成 `tauri-plugin-notification` 系统通知
    - 托盘 tooltip 动态更新
 
-6. **构建验证**
+6. **构建验证**（需 Windows 宿主机）
    - Windows 宿主机构建 NSIS 安装包
    - 安装并测试核心功能：远程加载、托盘、语音录制、剪贴板、通知、图标闪动
 
@@ -1189,10 +1294,12 @@ Tauri CLI 提供 `pnpm tauri icon <source-image>` 命令，从一张 1024×1024 
 3. 准备商店素材（截图、描述、隐私政策 URL）
 4. 提交审核
 
-### Phase 3：macOS 壳子开发
+### Phase 3：macOS 壳子开发（TODO — 待环境就绪后启动）
+
+> **状态**：暂缓。当前无 macOS 开发环境。`Entitlements.plist`、`Info.plist`、`tauri.macos.conf.json` 已按设计文档预置于 `src-tauri/`，待 macOS 环境就绪后直接进入测试验证阶段。
 
 1. macOS 开发环境搭建（Rust + Xcode + targets）
-2. 配置 `Entitlements.plist`、`Info.plist`
+2. 验证已预置的 `Entitlements.plist`、`Info.plist` 配置
 3. 测试 WKWebView 兼容性（尤其是麦克风/摄像头权限，关注 wry#1195）
 4. 测试 App Sandbox 下的网络连接（WebSocket、SSE）
 5. 验证 Dock 徽章（`setBadgeCount`）和 Dock 弹跳

@@ -1,0 +1,80 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "主窗口完整能力集，预埋所有可预见的原生能力",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["https://*.coclaw.net"]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-close",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-minimize",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-title",
+    "core:webview:default",
+    "core:event:default",
+
+    "fs:default",
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "$DOWNLOAD/**/*" },
+        { "path": "$DOCUMENT/**/*" },
+        { "path": "$PICTURE/**/*" },
+        { "path": "$VIDEO/**/*" },
+        { "path": "$AUDIO/**/*" },
+        { "path": "$HOME/**/*" },
+        { "path": "$DESKTOP/**/*" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$DOWNLOAD/**/*" },
+        { "path": "$DOCUMENT/**/*" },
+        { "path": "$APPDATA/**/*" }
+      ]
+    },
+    "fs:allow-exists",
+    "fs:allow-mkdir",
+    "fs:allow-read-dir",
+
+    "dialog:default",
+
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-read-image",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-write-html",
+    "clipboard-manager:allow-write-image",
+    "clipboard-manager:allow-clear",
+
+    "notification:default",
+
+    "shell:allow-open",
+
+    "deep-link:default",
+
+    "updater:default",
+
+    "os:default",
+
+    "store:default",
+
+    "window-state:default",
+
+    "process:default",
+
+    "http:default",
+
+    "log:default",
+
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
+  ]
+}

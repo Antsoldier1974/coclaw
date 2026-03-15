@@ -43,7 +43,7 @@ import { useBotStatusSse } from '../composables/use-bot-status-sse.js';
 import { usePullRefresh } from '../composables/use-pull-refresh.js';
 import { useAuthStore } from '../stores/auth.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
-import { isNative } from '../utils/capacitor-app.js';
+import { isCapacitorApp } from '../utils/platform.js';
 
 export default {
 	name: 'AuthedLayout',
@@ -76,16 +76,16 @@ export default {
 		},
 		rootClasses() {
 			// 原生壳：固定视口高度，禁止外层滚动；Web：浏览器滚动
-			return isNative ? 'h-dvh overflow-hidden' : 'min-h-screen';
+			return isCapacitorApp ? 'h-dvh overflow-hidden' : 'min-h-screen';
 		},
 		innerClasses() {
-			return isNative ? 'h-full' : 'min-h-screen';
+			return isCapacitorApp ? 'h-full' : 'min-h-screen';
 		},
 		sectionClasses() {
 			const cls = [];
 			// 原生壳下 section 需 min-h-0 以允许 flex 子项内部滚动
-			if (isNative) cls.push('min-h-0');
-			if (!isNative) cls.push('min-h-screen');
+			if (isCapacitorApp) cls.push('min-h-0');
+			if (!isCapacitorApp) cls.push('min-h-screen');
 			// 顶级页面无 MobilePageHeader，需要为状态栏留出安全距离
 			if (this.isTopPage) cls.push('pt-[env(safe-area-inset-top)] md:pt-0');
 			// 底部导航可见时为其留出空间

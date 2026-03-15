@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- JIT（WKWebView 必需，否则 notarization 后崩溃） -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- 麦克风 -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- 摄像头 -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+
+    <!-- 网络（出站连接） -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- App Sandbox（Mac App Store 必需） -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- 用户选择的文件访问（通过 Open/Save 对话框） -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- 下载目录读写 -->
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "CoClaw",
+  "version": "1.0.0",
+  "identifier": "net.coclaw.im",
+  "mainBinaryName": "coclaw",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "CoClaw",
+        "width": 420,
+        "height": 780,
+        "minWidth": 360,
+        "minHeight": 640,
+        "resizable": true,
+        "center": true,
+        "url": "https://im.coclaw.net",
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": ["main-capability"]
+    },
+    "withGlobalTauri": true,
+    "trayIcon": {
+      "iconPath": "icons/tray-icon.png",
+      "tooltip": "CoClaw"
+    }
+  },
+  "build": {
+    "devUrl": "http://localhost:5173"
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.icns",
+      "icons/icon.png"
+    ],
+    "resources": [],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": true,
+        "languages": ["SimpChinese", "English"]
+      },
+      "certificateThumbprint": null,
+      "timestampUrl": "http://timestamp.digicert.com"
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": null,
+      "hardenedRuntime": true,
+      "entitlements": "./Entitlements.plist",
+      "dmg": {
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["coclaw"]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY5NzJEMzA2ODM1NUU5OTYKUldTVzZWV0RCdE55YVZuT2IyZm04a3Z2d3k4Zm01SWJLcWtJMlUwMS9rU1krMy85a2Z3cjJHOVIK",
+      "endpoints": [
+        "https://github.com/AYuaner/coclaw/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

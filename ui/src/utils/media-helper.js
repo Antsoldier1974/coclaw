@@ -3,7 +3,7 @@
  * @returns {Promise<'granted'|'denied'|'prompt'|null>}
  */
 export async function queryMicPerm() {
-	// Capacitor WebView 中 permissions.query 不可靠，跳过
+	// Capacitor WebView 中 permissions.query 不可靠，跳过（Tauri WebView2 支持该 API）
 	if (window.Capacitor?.isNativePlatform()) return null;
 	if (!navigator.permissions) return null;
 	try {
