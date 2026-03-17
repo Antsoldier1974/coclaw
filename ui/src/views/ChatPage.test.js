@@ -350,7 +350,7 @@ describe('ChatPage new topic', () => {
 		});
 	});
 
-	test('onNewTopic 从 topic 页面也可导航', async () => {
+	test('onNewTopic 从 topic 页面用 replace 导航（避免话题栈堆积）', async () => {
 		const wrapper = createWrapper('sess-1', 'topics-chat');
 		const chatStore = useChatStore();
 		chatStore.sessionId = 'sess-1';
@@ -364,11 +364,12 @@ describe('ChatPage new topic', () => {
 
 		wrapper.vm.onNewTopic();
 
-		expect(mockRouter.push).toHaveBeenCalledWith({
+		expect(mockRouter.replace).toHaveBeenCalledWith({
 			name: 'topics-chat',
 			params: { sessionId: 'new' },
 			query: { agent: 'main', bot: 'bot-2' },
 		});
+		expect(mockRouter.push).not.toHaveBeenCalled();
 	});
 
 	test('showNewTopicBtn 在 topic 路由下始终为 true', async () => {
