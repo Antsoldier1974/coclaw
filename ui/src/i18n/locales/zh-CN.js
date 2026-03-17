@@ -174,6 +174,14 @@ export const zhCNMessages = {
 	topic: {
 		newTopic: '新话题',
 		createFailed: '创建话题失败',
+		rename: '重命名',
+		delete: '删除',
+		deleteConfirmTitle: '删除话题',
+		deleteConfirmDesc: '删除后无法恢复，确定要删除这个话题吗？',
+		deleted: '话题已删除',
+		deleteFailed: '删除话题失败',
+		renamed: '已重命名',
+		renameFailed: '重命名失败',
 	},
 	chat: {
 		loading: '正在加载会话...',
