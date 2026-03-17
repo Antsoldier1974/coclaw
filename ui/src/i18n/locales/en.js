@@ -159,17 +159,7 @@ export const enMessages = {
 		offline: 'Offline',
 	},
 	pluginUpgrade: {
-		title: 'Plugin upgrade required',
-		desc: 'The CoClaw plugin installed on your OpenClaw is outdated and cannot support the latest features. Please upgrade the plugin and retry.',
-		chatMethodTitle: 'Option 1: Send via chat',
-		chatMethodDesc: 'If you can already chat with your OpenClaw, copy the message below and send it',
-		chatPrompt: 'Please run the following command:\n`{command}`',
-		shellMethodTitle: 'Option 2: Run in terminal',
-		shellMethodDesc: 'If you can access the terminal on the machine running OpenClaw, copy and run the command below',
-		retry: 'I\'ve upgraded, retry',
-		versionOk: 'Plugin version meets requirements',
-		stillOutdated: 'Plugin version is still below minimum ({version})',
-		checkFailed: 'Version check failed',
+		outdated: 'This Claw\'s plugin is outdated and some features may not work. Please run: openclaw plugins update openclaw-coclaw',
 	},
 	topic: {
 		newTopic: 'New topic',

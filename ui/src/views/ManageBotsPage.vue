@@ -130,6 +130,9 @@ export default {
 			return this.agentsStore?.getAgentsByBot(botId) ?? [];
 		},
 		goToAgent(botId, agentId) {
+			if (this.botsStore?.pluginVersionOk[String(botId)] === false) {
+				this.notify.warning(this.$t('pluginUpgrade.outdated'));
+			}
 			const mainSessionKey = `agent:${agentId}:main`;
 			const sessions = this.sessionsStore?.items ?? [];
 			const session = sessions.find(

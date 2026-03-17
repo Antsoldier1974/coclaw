@@ -23,10 +23,6 @@ vi.mock('../utils/plugin-version.js', () => ({
 	MIN_PLUGIN_VERSION: '0.4.0',
 }));
 
-vi.mock('../router/index.js', () => ({
-	router: { push: vi.fn(), currentRoute: { value: { path: '/' } } },
-}));
-
 import { listBots } from '../services/bots.api.js';
 import { useAgentsStore } from './agents.store.js';
 import { useBotsStore } from './bots.store.js';
@@ -306,6 +302,51 @@ describe('loadBots', () => {
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
 		await vi.waitFor(() => {
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+		});
+	});
+
+	test('stores pluginVersionOk per bot after version check', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockResolvedValue(true);
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+
+		await store.loadBots();
+
+		await vi.waitFor(() => {
+			expect(store.pluginVersionOk['1']).toBe(true);
+		});
+	});
+
+	test('proceeds to loadAgents even when plugin version check fails', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockResolvedValue(false);
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '2', name: 'B' }]);
+
+		await store.loadBots();
+
+		await vi.waitFor(() => {
+			expect(store.pluginVersionOk['2']).toBe(false);
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('2');
+			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
 		});
 	});
 
