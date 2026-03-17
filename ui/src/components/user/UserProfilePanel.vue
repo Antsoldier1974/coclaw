@@ -7,10 +7,13 @@
 
 		<UserInfoRows :user="authStore.user" editable @edit-name="openNameModal = true" @copy-login-name="onCopyLoginName" />
 
-		<UModal v-model:open="openNameModal" :title="$t('profile.editName')">
+		<UModal v-model:open="openNameModal" :title="$t('profile.editName')" :ui="promptUi">
 			<template #body>
-				<div class="flex items-center gap-2">
-					<UInput v-model="nameForm" :placeholder="$t('profile.nicknamePlaceholder')" class="flex-1" @keydown.enter="onSaveName" />
+				<UInput v-model="nameForm" autofocus class="w-full" :placeholder="$t('profile.nicknamePlaceholder')" @keydown.enter="onSaveName" />
+			</template>
+			<template #footer>
+				<div class="flex w-full justify-end gap-2">
+					<UButton variant="ghost" color="neutral" @click="openNameModal = false">{{ $t('common.cancel') }}</UButton>
 					<UButton :loading="authStore.loading" @click="onSaveName">{{ $t('common.save') }}</UButton>
 				</div>
 			</template>
@@ -22,6 +25,7 @@
 import { useAuthStore } from '../../stores/auth.store.js';
 import { useNotify } from '../../composables/use-notify.js';
 import { getUserDisplayName, getUserLoginName } from '../../utils/user-profile.js';
+import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 import UserInfoRows from './UserInfoRows.vue';
 
 export default {
@@ -33,6 +37,7 @@ export default {
 		return {
 			authStore: useAuthStore(),
 			notify: useNotify(),
+			promptUi: promptModalUi,
 		};
 	},
 	data() {
