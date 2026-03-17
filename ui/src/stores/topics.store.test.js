@@ -265,6 +265,82 @@ describe('topics store', () => {
 		store.generateTitle('no-bot', 't1');
 	});
 
+	// --- deleteTopic ---
+
+	test('deleteTopic 成功删除并移除本地缓存', async () => {
+		const conn = {
+			state: 'connected',
+			request: vi.fn().mockResolvedValue({ ok: true }),
+			on: vi.fn(), off: vi.fn(),
+		};
+		mockConnections.set('bot-1', conn);
+
+		const store = useTopicsStore();
+		store.items = [
+			{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100, botId: 'bot-1' },
+			{ topicId: 't2', agentId: 'main', title: 'B', createdAt: 200, botId: 'bot-1' },
+		];
+
+		await store.deleteTopic('bot-1', 't1');
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].topicId).toBe('t2');
+		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.delete', { topicId: 't1' });
+	});
+
+	test('deleteTopic topic 不存在时抛出错误', async () => {
+		const conn = {
+			state: 'connected',
+			request: vi.fn().mockResolvedValue({ ok: false }),
+			on: vi.fn(), off: vi.fn(),
+		};
+		mockConnections.set('bot-1', conn);
+
+		const store = useTopicsStore();
+		await expect(store.deleteTopic('bot-1', 'nonexistent')).rejects.toThrow('Topic not found');
+	});
+
+	test('deleteTopic bot 未连接时抛出错误', async () => {
+		const store = useTopicsStore();
+		await expect(store.deleteTopic('no-bot', 't1')).rejects.toThrow('Bot not connected');
+	});
+
+	// --- updateTopic ---
+
+	test('updateTopic 成功更新并同步本地缓存', async () => {
+		const conn = {
+			state: 'connected',
+			request: vi.fn().mockResolvedValue({ topic: { topicId: 't1', agentId: 'main', title: '新标题', createdAt: 100 } }),
+			on: vi.fn(), off: vi.fn(),
+		};
+		mockConnections.set('bot-1', conn);
+
+		const store = useTopicsStore();
+		store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }];
+
+		await store.updateTopic('bot-1', 't1', { title: '新标题' });
+		expect(store.items[0].title).toBe('新标题');
+		expect(store.items[0].botId).toBe('bot-1'); // botId 保留
+		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.update', { topicId: 't1', changes: { title: '新标题' } });
+	});
+
+	test('updateTopic 响应无 topic 时抛出错误', async () => {
+		const conn = {
+			state: 'connected',
+			request: vi.fn().mockResolvedValue({}),
+			on: vi.fn(), off: vi.fn(),
+		};
+		mockConnections.set('bot-1', conn);
+
+		const store = useTopicsStore();
+		store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }];
+		await expect(store.updateTopic('bot-1', 't1', { title: 'x' })).rejects.toThrow('Update failed');
+	});
+
+	test('updateTopic bot 未连接时抛出错误', async () => {
+		const store = useTopicsStore();
+		await expect(store.updateTopic('no-bot', 't1', { title: 'x' })).rejects.toThrow('Bot not connected');
+	});
+
 	// --- findTopic getter ---
 
 	test('findTopic 返回匹配的 topic', () => {

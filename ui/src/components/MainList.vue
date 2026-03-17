@@ -55,31 +55,42 @@
 		</nav>
 
 		<!-- Group 3: Topic 列表 -->
-		<nav class="mt-3 space-y-0 px-2 pb-2">
-			<RouterLink
+		<nav class="mt-3 space-y-0 px-2 pb-4">
+			<div
 				v-for="item in topicItems"
 				:key="item.id"
-				:to="item.to"
-				class="group flex h-11 items-center gap-3 rounded-lg px-2 py-1 text-sm text-default transition-colors hover:bg-accented/80"
+				class="group flex h-11 items-center rounded-lg text-sm text-default transition-colors hover:bg-accented/80"
 				:class="resolvePath(item.to) === currentPath ? 'bg-accented text-highlighted' : ''"
 				role="listitem"
 			>
-				<img
-					v-if="item.agentAvatarUrl"
-					:src="item.agentAvatarUrl"
-					:alt="item.label"
-					class="size-6 shrink-0 rounded-full object-cover"
+				<RouterLink
+					:to="item.to"
+					class="flex min-w-0 flex-1 items-center gap-3 px-2 py-1"
+				>
+					<img
+						v-if="item.agentAvatarUrl"
+						:src="item.agentAvatarUrl"
+						:alt="item.label"
+						class="size-6 shrink-0 rounded-full object-cover"
+					/>
+					<span
+						v-else-if="item.agentEmoji"
+						class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center text-sm leading-none"
+					>{{ item.agentEmoji }}</span>
+					<span
+						v-else
+						class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center text-xs font-medium text-dimmed"
+					>{{ item.agentInitial }}</span>
+					<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+				</RouterLink>
+				<TopicItemActions
+					class="topic-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
+					:topic-id="item.id"
+					:bot-id="item.botId"
+					:title="item.rawTitle"
+					@deleted="onTopicDeleted"
 				/>
-				<span
-					v-else-if="item.agentEmoji"
-					class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center text-sm leading-none"
-				>{{ item.agentEmoji }}</span>
-				<span
-					v-else
-					class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center text-xs font-medium text-dimmed"
-				>{{ item.agentInitial }}</span>
-				<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
-			</RouterLink>
+			</div>
 		</nav>
 	</div>
 </template>
@@ -89,6 +100,7 @@ import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
+import TopicItemActions from './TopicItemActions.vue';
 import defaultBotAvatar from '../assets/bot-avatars/openclaw.svg';
 
 function toTopicLabel(topic, t) {
@@ -100,6 +112,7 @@ function toTopicLabel(topic, t) {
 
 export default {
 	name: 'MainList',
+	components: { TopicItemActions },
 	props: {
 		currentPath: {
 			type: String,
@@ -201,6 +214,8 @@ export default {
 					return {
 						id: topic.topicId,
 						label: toTopicLabel(topic, this.$t),
+						rawTitle: topic.title ?? '',
+						botId: topic.botId,
 						agentAvatarUrl: d.avatarUrl || null,
 						agentEmoji: d.emoji || null,
 						agentInitial: agentName.charAt(0).toUpperCase(),
@@ -243,6 +258,13 @@ export default {
 				this.topicsStore.loadAllTopics(),
 			]);
 		},
+		onTopicDeleted(topicId) {
+			// 如果当前正在查看被删除的 topic，导航回 topic 列表
+			const route = this.$route;
+			if (route?.name === 'topics-chat' && route.params?.sessionId === topicId) {
+				this.$router.push({ name: 'topics' });
+			}
+		},
 		resolvePath(to) {
 			if (typeof to === 'string') {
 				return to;
@@ -252,3 +274,12 @@ export default {
 	},
 };
 </script>
+
+<style scoped>
+/* 触屏设备无 hover，操作按钮始终可见 */
+@media (hover: none) {
+	.topic-actions {
+		opacity: 1;
+	}
+}
+</style>

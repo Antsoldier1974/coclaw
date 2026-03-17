@@ -188,6 +188,20 @@
 >
 > 届时 `coclaw.topics.getHistory` 可废弃或改为薄封装。当前版本保持不变。
 
+### coclaw.topics.update
+
+更新 Topic 元信息（部分更新，patch 语义）。
+
+- **参数**：`{ topicId: string, changes: { title?: string } }`
+- **返回**：`{ topic: { topicId, agentId, title, createdAt } }`
+- **行为**：
+  1. 验证 topicId 存在
+  2. 当前版本仅处理 `changes.title`，忽略其他字段
+  3. 在 mutex 内更新 `coclaw-topics.json` 中对应 topic 的 `title` 字段并持久化
+  4. 返回更新后的完整 topic 记录
+- **错误处理**：topicId 不存在 → `respond(false, { error })`
+- **扩展性**：后续若需支持 pinned、archived 等字段，扩展 `changes` 对象即可，RPC 接口无需变动
+
 ### coclaw.topics.generateTitle
 
 为 Topic 生成 AI 标题。阻塞式调用，完成后直接返回标题。

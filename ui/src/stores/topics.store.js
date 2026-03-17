@@ -128,6 +128,38 @@ export const useTopicsStore = defineStore('topics', {
 		},
 
 		/**
+		 * 删除 topic
+		 * @param {string} botId
+		 * @param {string} topicId
+		 */
+		async deleteTopic(botId, topicId) {
+			const conn = useBotConnections().get(String(botId));
+			if (!conn || conn.state !== 'connected') throw new Error('Bot not connected');
+			const result = await conn.request('coclaw.topics.delete', { topicId });
+			if (result?.ok === false) throw new Error('Topic not found');
+			this.items = this.items.filter((t) => t.topicId !== topicId);
+		},
+
+		/**
+		 * 更新 topic 元信息（当前仅支持 title）
+		 * @param {string} botId
+		 * @param {string} topicId
+		 * @param {{ title?: string }} changes
+		 */
+		async updateTopic(botId, topicId, changes) {
+			const conn = useBotConnections().get(String(botId));
+			if (!conn || conn.state !== 'connected') throw new Error('Bot not connected');
+			const result = await conn.request('coclaw.topics.update', { topicId, changes });
+			const updated = result?.topic;
+			if (!updated) throw new Error('Update failed');
+			const idx = this.items.findIndex((t) => t.topicId === topicId);
+			if (idx >= 0) {
+				this.items[idx] = { ...this.items[idx], ...updated };
+				this.items = [...this.items];
+			}
+		},
+
+		/**
 		 * 异步生成 topic 标题（fire-and-forget，不阻塞调用方）
 		 * @param {string} botId
 		 * @param {string} topicId

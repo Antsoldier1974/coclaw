@@ -20,6 +20,7 @@ declare module 'vue' {
     MobilePageHeader: typeof import('./src/components/MobilePageHeader.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    TopicItemActions: typeof import('./src/components/TopicItemActions.vue')['default']
     TouchSpeakOverlay: typeof import('./src/components/TouchSpeakOverlay.vue')['default']
     UAccordion: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@tiptap+extensions@3.20.0_@tiptap+core@3.20.0_@tiptap+pm@3.20.0__@tiptap_6f2c5a0497087477e332a4cd477b8f32/node_modules/@nuxt/ui/dist/runtime/components/Accordion.vue')['default']
     UApp: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@tiptap+extensions@3.20.0_@tiptap+core@3.20.0_@tiptap+pm@3.20.0__@tiptap_6f2c5a0497087477e332a4cd477b8f32/node_modules/@nuxt/ui/dist/runtime/components/App.vue')['default']

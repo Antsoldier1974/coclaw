@@ -174,6 +174,14 @@ export const enMessages = {
 	topic: {
 		newTopic: 'New topic',
 		createFailed: 'Failed to create topic',
+		rename: 'Rename',
+		delete: 'Delete',
+		deleteConfirmTitle: 'Delete topic',
+		deleteConfirmDesc: 'This action cannot be undone. Are you sure you want to delete this topic?',
+		deleted: 'Topic deleted',
+		deleteFailed: 'Failed to delete topic',
+		renamed: 'Renamed',
+		renameFailed: 'Failed to rename topic',
 	},
 	chat: {
 		loading: 'Loading session...',

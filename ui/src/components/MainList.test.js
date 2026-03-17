@@ -11,6 +11,10 @@ vi.mock('../services/bots.api.js', () => ({
 	listBots: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock('./TopicItemActions.vue', () => ({
+	default: { name: 'TopicItemActions', template: '<div class="topic-actions-stub" />', props: ['topicId', 'botId', 'title'] },
+}));
+
 vi.mock('../services/bot-connection-manager.js', () => ({
 	useBotConnections: () => ({
 		get: vi.fn(),
@@ -50,6 +54,7 @@ function createWrapper(props = {}) {
 			stubs: {
 				RouterLink: RouterLinkStub,
 				UIcon: UIconStub,
+				TopicItemActions: { template: '<div class="topic-actions-stub" />' },
 			},
 			mocks: {
 				$t: (key) => {
@@ -237,7 +242,7 @@ test('agent item should NOT be active on topic route', async () => {
 		props: { currentPath: '/topics/t-uuid' },
 		global: {
 			plugins: [pinia],
-			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub },
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, TopicItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addBot': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'topics-chat', params: { sessionId: 't-uuid' }, query: {} },
@@ -269,7 +274,7 @@ test('agent item should be active on main session route', async () => {
 		props: { currentPath: '/chat/sess-main' },
 		global: {
 			plugins: [pinia],
-			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub },
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, TopicItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addBot': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'chat', params: { sessionId: 'sess-main' }, query: {} },
