@@ -1,6 +1,6 @@
 # OpenClaw Plugin STATUS
 
-## 当前状态（2026-03-12）
+## 当前状态（2026-03-17）
 
 - 插件工作区：`plugins/openclaw`，已稳定运行。
 - 对外标识：
@@ -11,13 +11,22 @@
   - channel（coclaw）
   - services：`coclaw-realtime-bridge`（WebSocket 桥接）、`coclaw-auto-upgrade`（自动升级调度）
   - command（`/coclaw bind/unbind`）
-  - gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll` / `nativeui.sessions.get`）
+  - gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll` / `nativeui.sessions.get` / `coclaw.topics.*`）
   - CLI（`openclaw coclaw bind/unbind`）
 - 绑定信息存储在 `~/.openclaw/coclaw/bindings.json`（独立于 `openclaw.json`）。
 - 升级状态存储在 `~/.openclaw/coclaw/upgrade-state.json`，升级日志在 `upgrade-log.jsonl`。
 - 测试门禁：`pnpm verify` 通过，覆盖率 lines/statements/functions 100%，branches ≥ 95%。
 
 ## 关键里程碑
+
+### Topic 管理功能（2026-03-17）
+- 新增 `src/topic-manager/` 目录，包含：
+  - `manager.js` — TopicManager 类：内存模型（按 agentId 隔离）、CRUD 操作、coclaw-topics.json 磁盘持久化（mutex + atomicWriteJsonFile）。
+  - `title-gen.js` — AI 标题生成：复制 .jsonl → 通过 gateway WS 两阶段 agent 调用 → 清洗标题 → 更新元信息 → 清理临时文件。
+- 扩展 `realtime-bridge.js`：新增 `__gatewayAgentRpc` 方法支持 agent() 两阶段响应（accepted → final），通过 singleton `gatewayAgentRpc()` 暴露。
+- 注册 6 个 gateway methods：`coclaw.topics.create` / `.list` / `.get` / `.getHistory` / `.generateTitle` / `.delete`。
+- 数据存储：`~/.openclaw/agents/<agentId>/sessions/coclaw-topics.json`（利用 OpenClaw sessions 目录天然按 agentId 隔离）。
+- 设计文档：`docs/designs/topic-management.md`，研究基础：`docs/openclaw-research/topic-feature-research.md`。
 
 ### 原子文件操作基础设施（2026-03-16）
 - 新增 `src/utils/` 目录，包含两个零依赖工具模块：

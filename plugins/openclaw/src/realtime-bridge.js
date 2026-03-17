@@ -247,6 +247,79 @@ export class RealtimeBridge {
 	}
 
 	/**
+	 * 两阶段 agent RPC：发送请求后等待 accepted 再等待最终响应。
+	 * agent() RPC 返回两次响应（同一 id）：
+	 *   1. { status: "accepted", runId }
+	 *   2. { status: "ok", result: { payloads: [{ text }] } }
+	 *
+	 * @param {string} method - RPC 方法名（通常为 'agent'）
+	 * @param {object} params - RPC 参数
+	 * @param {object} [options]
+	 * @param {number} [options.timeoutMs=60000] - 总超时（含两阶段）
+	 * @param {number} [options.acceptTimeoutMs=10000] - 等待 accepted 的超时
+	 * @returns {Promise<{ok: boolean, response?: object, error?: string}>}
+	 */
+	async __gatewayAgentRpc(method, params = {}, options = {}) {
+		const totalTimeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 60_000;
+		const acceptTimeoutMs = Number.isFinite(options.acceptTimeoutMs) ? options.acceptTimeoutMs : 10_000;
+		const ready = await this.__waitGatewayReady(acceptTimeoutMs);
+		/* c8 ignore next 3 -- waitGatewayReady 返回 false 后的防御检查 */
+		if (!ready || !this.gatewayWs || this.gatewayWs.readyState !== 1 || !this.gatewayReady) {
+			return { ok: false, error: 'gateway_not_ready' };
+		}
+		const ws = this.gatewayWs;
+		const id = this.__nextGatewayReqId('coclaw-agent');
+		return await new Promise((resolve) => {
+			let settled = false;
+			let accepted = false;
+			let totalTimer = null;
+			let acceptTimer = null;
+			const finish = (result) => {
+				if (settled) return;
+				settled = true;
+				if (totalTimer) clearTimeout(totalTimer);
+				if (acceptTimer) clearTimeout(acceptTimer);
+				this.gatewayPendingRequests.delete(id);
+				resolve(result);
+			};
+			// 两阶段 settle：第一次 accepted 不 resolve，第二次才 resolve
+			const settle = (result) => {
+				if (settled) return;
+				// 错误响应：直接结束
+				if (!result.ok) {
+					finish(result);
+					return;
+				}
+				const status = result.response?.payload?.status;
+				if (!accepted && status === 'accepted') {
+					// 第一阶段：已接受，切换到总超时
+					accepted = true;
+					if (acceptTimer) clearTimeout(acceptTimer);
+					return;
+				}
+				// 第二阶段或非 accepted 响应：最终结果
+				finish(result);
+			};
+			this.gatewayPendingRequests.set(id, settle);
+			// 总超时
+			totalTimer = setTimeout(() => finish({ ok: false, error: 'timeout' }), totalTimeoutMs);
+			totalTimer.unref?.();
+			// accepted 超时（仅等第一阶段）
+			acceptTimer = setTimeout(() => {
+				if (!accepted) finish({ ok: false, error: 'accept_timeout' });
+			}, acceptTimeoutMs);
+			acceptTimer.unref?.();
+			try {
+				ws.send(JSON.stringify({ type: 'req', id, method, params }));
+			}
+			/* c8 ignore next 3 -- ws.send 极少抛出 */
+			catch {
+				finish({ ok: false, error: 'send_failed' });
+			}
+		});
+	}
+
+	/**
 	 * 确保指定 agent 的主 session 存在（sessions.resolve + 条件 sessions.reset）
 	 * @param {string} [agentId] - agent ID，默认 'main'
 	 * @returns {Promise<{ok: boolean, state?: string, error?: string}>}
@@ -746,4 +819,18 @@ export async function ensureAgentSession(agentId) {
 		return { ok: false, error: 'bridge_not_started' };
 	}
 	return singleton.ensureAgentSession(agentId);
+}
+
+/**
+ * 通过 gateway WS 发起两阶段 agent RPC（供标题生成等场景使用）
+ * @param {string} method
+ * @param {object} params
+ * @param {object} [options]
+ * @returns {Promise<{ok: boolean, response?: object, error?: string}>}
+ */
+export async function gatewayAgentRpc(method, params, options) {
+	if (!singleton) {
+		return { ok: false, error: 'bridge_not_started' };
+	}
+	return singleton.__gatewayAgentRpc(method, params, options);
 }

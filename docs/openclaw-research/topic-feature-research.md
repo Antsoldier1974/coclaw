@@ -417,7 +417,54 @@ OpenClaw 架构中**所有产生 LLM 响应的路径都走完整 agent 流水线
 
 ---
 
-## 八、关键源码索引
+## 八、插件内发起 agent 请求的机制
+
+### 1. 通过 gateway WebSocket 直接发送 RPC（主选）
+
+插件的 realtime-bridge 持有与 OpenClaw gateway 的直连 WebSocket。插件已有自主发起 RPC 的先例（`ensureAgentSession` 中调用 `sessions.resolve` / `sessions.reset`）。
+
+通过该连接发送 `agent()` 请求时，需处理**两阶段响应**：
+1. 第一阶段：`{ status: "accepted", runId }` — 表示请求被接受
+2. 第二阶段：`{ status: "ok", result: { payloads: [{ text }] } }` — agent 运行完成，`result.payloads[0].text` 是 assistant 的文本回复
+
+两次响应共享同一个请求 `id`。调用方需等待第二阶段才能获取最终结果。
+
+**优势**：不依赖任何内部 API，使用标准 gateway RPC 协议；`sessionId` 模式不会在 `sessions.json` 中创建条目。
+
+**agent 两阶段响应**的实现位于 `src/gateway/server-methods/agent.ts`：
+- 第一阶段：line 579，`respond(true, { runId, status: "accepted", acceptedAt })`
+- 第二阶段：lines 104-122，`respond(true, { runId, status: "ok", summary: "completed", result })`
+
+### 2. `api.runtime.subagent` 官方插件 API（备选）
+
+OpenClaw 提供了 `api.runtime.subagent` 作为插件内发起 agent 任务的官方 API：
+
+```js
+// 在 registerGatewayMethod handler 内可用（依赖 AsyncLocalStorage 的 gateway request scope）
+const { runId } = await api.runtime.subagent.run({
+  sessionKey,          // 必须为 sessionKey，不支持 sessionId
+  message,
+  extraSystemPrompt,
+  deliver: false
+});
+const { status } = await api.runtime.subagent.waitForRun({ runId, timeoutMs: 30000 });
+const { messages } = await api.runtime.subagent.getSessionMessages({ sessionKey, limit: 1 });
+await api.runtime.subagent.deleteSession({ sessionKey, deleteTranscript: true });
+```
+
+类型定义：`src/plugins/runtime/types.ts:51-63`
+实现：`src/gateway/server-plugins.ts:117-148`
+
+**注意事项**：
+- **只接受 `sessionKey`，不接受 `sessionId`**——无法利用"复制 .jsonl"方式传递上下文，需从原 transcript 中提取内容通过 `message` 参数传入
+- **`waitForRun` 不返回文本**——返回 `{ status: "ok"|"error"|"timeout" }`，需额外调用 `getSessionMessages` 获取标题
+- **会在 `sessions.json` 中创建条目**——需在完成后调用 `deleteSession` 清理
+- **仅在 `registerGatewayMethod` handler 内可用**——不能在 service 或 hook 回调中使用
+- **并发风险**：若使用固定 sessionKey（如 `coclaw:title-gen`），多个并发的标题生成请求会共享同一个 session 上下文。应使用唯一 sessionKey（如 `coclaw:title-gen:<topicId>`）避免
+
+---
+
+## 九、关键源码索引
 
 | 用途 | 文件路径 |
 |------|---------|
