@@ -365,11 +365,14 @@ export default {
 		onNewTopic() {
 			const agentId = this.currentAgentId;
 			const botId = this.currentBotId;
-			this.$router.push({
+			const route = {
 				name: 'topics-chat',
 				params: { sessionId: 'new' },
 				query: { agent: agentId, bot: botId },
-			});
+			};
+			// 从 topic 页面新建：replace 避免话题栈堆积；从 session 页面新建：push 保留返回
+			if (this.isTopicRoute) this.$router.replace(route);
+			else this.$router.push(route);
 		},
 
 		onCancelSend() {
