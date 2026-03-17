@@ -4,7 +4,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import { RealtimeBridge, ensureAgentSession, restartRealtimeBridge, stopRealtimeBridge } from './realtime-bridge.js';
+import { RealtimeBridge, ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
@@ -1442,5 +1442,307 @@ test('device identity should be cached across multiple connect attempts', async 
 		await bridge.stop();
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
+	}
+});
+
+// --- __gatewayAgentRpc 两阶段响应测试 ---
+
+test('__gatewayAgentRpc should wait for final response after accepted', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1]));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		await drainEnsureAllAgentSessions(gateway);
+
+		// 发起两阶段 agent 请求
+		const rpcP = bridge.__gatewayAgentRpc('agent', { message: 'hello' }, { timeoutMs: 5000, acceptTimeoutMs: 3000 });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+
+		const agentReqRaw = gateway.sent.findLast((s) => String(s).includes('"agent"'));
+		assert.ok(agentReqRaw, 'should send agent request');
+		const agentReq = JSON.parse(String(agentReqRaw));
+
+		// 第一阶段: accepted
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: agentReq.id, ok: true,
+			payload: { status: 'accepted', runId: 'run-1' },
+		}) });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+
+		// 第二阶段: ok with result
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: agentReq.id, ok: true,
+			payload: { status: 'ok', result: { payloads: [{ text: '生成的标题' }] } },
+		}) });
+		const result = await rpcP;
+		assert.equal(result.ok, true);
+		assert.equal(result.response.payload.status, 'ok');
+		assert.equal(result.response.payload.result.payloads[0].text, '生成的标题');
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__gatewayAgentRpc should handle error on first response', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1]));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+		await drainEnsureAllAgentSessions(gateway);
+
+		const rpcP = bridge.__gatewayAgentRpc('agent', { message: 'hello' }, { timeoutMs: 5000, acceptTimeoutMs: 3000 });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const agentReqRaw = gateway.sent.findLast((s) => String(s).includes('"agent"'));
+		const agentReq = JSON.parse(String(agentReqRaw));
+
+		// 直接返回错误
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: agentReq.id, ok: false,
+			error: { message: 'agent_error' },
+		}) });
+		const result = await rpcP;
+		assert.equal(result.ok, false);
+		assert.equal(result.error, 'agent_error');
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__gatewayAgentRpc should timeout if accepted never arrives', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1]));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+		await drainEnsureAllAgentSessions(gateway);
+
+		// 使用极短的 accept timeout
+		const result = await bridge.__gatewayAgentRpc('agent', { message: 'hello' }, { timeoutMs: 200, acceptTimeoutMs: 50 });
+		assert.equal(result.ok, false);
+		assert.equal(result.error, 'accept_timeout');
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__gatewayAgentRpc should timeout if final response never arrives after accepted', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1]));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+		await drainEnsureAllAgentSessions(gateway);
+
+		const rpcP = bridge.__gatewayAgentRpc('agent', { message: 'hello' }, { timeoutMs: 100, acceptTimeoutMs: 50 });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const agentReqRaw = gateway.sent.findLast((s) => String(s).includes('"agent"'));
+		const agentReq = JSON.parse(String(agentReqRaw));
+
+		// 第一阶段：accepted（在 accept timeout 内）
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: agentReq.id, ok: true,
+			payload: { status: 'accepted', runId: 'run-1' },
+		}) });
+
+		// 等总超时
+		const result = await rpcP;
+		assert.equal(result.ok, false);
+		assert.equal(result.error, 'timeout');
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__gatewayAgentRpc should resolve immediately for non-accepted ok response', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1]));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+		await drainEnsureAllAgentSessions(gateway);
+
+		const rpcP = bridge.__gatewayAgentRpc('agent', { message: 'hello' }, { timeoutMs: 5000, acceptTimeoutMs: 3000 });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const agentReqRaw = gateway.sent.findLast((s) => String(s).includes('"agent"'));
+		const agentReq = JSON.parse(String(agentReqRaw));
+
+		// 直接返回 ok（没有 accepted 阶段）
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: agentReq.id, ok: true,
+			payload: { status: 'ok', result: { payloads: [{ text: 'direct' }] } },
+		}) });
+		const result = await rpcP;
+		assert.equal(result.ok, true);
+		assert.equal(result.response.payload.result.payloads[0].text, 'direct');
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__gatewayAgentRpc duplicate settle after final should be no-op', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1]));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+		await drainEnsureAllAgentSessions(gateway);
+
+		const rpcP = bridge.__gatewayAgentRpc('agent', { message: 'hello' }, { timeoutMs: 5000, acceptTimeoutMs: 3000 });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const agentReqRaw = gateway.sent.findLast((s) => String(s).includes('"agent"'));
+		const agentReq = JSON.parse(String(agentReqRaw));
+
+		// 直接 ok
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: agentReq.id, ok: true,
+			payload: { status: 'ok', result: { payloads: [{ text: 'first' }] } },
+		}) });
+		const result = await rpcP;
+		assert.equal(result.ok, true);
+
+		// 后续重复响应应被忽略（entry 已删除，不在 map 中）
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: agentReq.id, ok: true,
+			payload: { status: 'ok', result: { payloads: [{ text: 'duplicate' }] } },
+		}) });
+		// 不抛出即可
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+// --- singleton gatewayAgentRpc ---
+
+test('singleton gatewayAgentRpc should return error when bridge not started', async () => {
+	await stopRealtimeBridge();
+	const result = await gatewayAgentRpc('agent', {});
+	assert.equal(result.ok, false);
+	assert.equal(result.error, 'bridge_not_started');
+});
+
+test('singleton gatewayAgentRpc should delegate to bridge instance', async () => {
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	try {
+		await restartRealtimeBridge({ logger: noopLogger(), pluginConfig: {} });
+		// bridge 已启动但 gateway 未就绪
+		const result = await gatewayAgentRpc('agent', {}, { acceptTimeoutMs: 50, timeoutMs: 100 });
+		assert.equal(result.ok, false);
+		// gateway 未就绪时返回 gateway_not_ready 或 accept_timeout
+		assert.ok(['gateway_not_ready', 'accept_timeout', 'timeout'].includes(result.error));
+	}
+	finally {
+		await stopRealtimeBridge();
 	}
 });

@@ -1,13 +1,34 @@
+import fs from 'node:fs/promises';
+import nodePath from 'node:path';
+
 import { bindBot, unbindBot } from './src/common/bot-binding.js';
 import { registerCoclawCli } from './src/cli-registrar.js';
 import { resolveErrorMessage } from './src/common/errors.js';
 import { notBound, bindOk, unbindOk } from './src/common/messages.js';
 import { coclawChannelPlugin } from './src/channel-plugin.js';
-import { ensureAgentSession, restartRealtimeBridge, stopRealtimeBridge } from './src/realtime-bridge.js';
+import { ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge } from './src/realtime-bridge.js';
 import { setRuntime } from './src/runtime.js';
 import { createSessionManager } from './src/session-manager/manager.js';
+import { TopicManager } from './src/topic-manager/manager.js';
+import { generateTitle } from './src/topic-manager/title-gen.js';
 import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
 import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
+
+// 延迟读取 + 缓存：避免模块加载时 package.json 损坏导致插件整体无法注册
+let __pluginVersion = null;
+export async function getPluginVersion() {
+	if (__pluginVersion) return __pluginVersion;
+	try {
+		const pkgPath = nodePath.resolve(import.meta.dirname, 'package.json');
+		const raw = await fs.readFile(pkgPath, 'utf8');
+		__pluginVersion = JSON.parse(raw).version ?? 'unknown';
+	} catch {
+		return 'unknown';
+	}
+	return __pluginVersion;
+}
+// 测试用：重置缓存
+export function __resetPluginVersion() { __pluginVersion = null; }
 
 
 function parseCommandArgs(args) {
@@ -56,6 +77,12 @@ const plugin = {
 		setRuntime(api.runtime);
 		const logger = api?.logger ?? console;
 		const manager = createSessionManager({ logger });
+		const topicManager = new TopicManager({ logger });
+
+		// 懒加载 topic 数据（best-effort，不阻断注册）
+		topicManager.load('main').catch((err) => {
+			logger.warn?.(`[coclaw] topic manager load failed: ${String(err?.message ?? err)}`);
+		});
 
 		api.registerChannel({ plugin: coclawChannelPlugin });
 		api.registerService({
@@ -104,6 +131,109 @@ const plugin = {
 		api.registerGatewayMethod('nativeui.sessions.get', ({ params, respond }) => {
 			try {
 				respond(true, manager.get(params ?? {}));
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.info', async ({ respond }) => {
+			try {
+				const version = await getPluginVersion();
+				respond(true, { version, capabilities: ['topics'] });
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.topics.create', async ({ params, respond }) => {
+			try {
+				const agentId = params?.agentId?.trim?.() || 'main';
+				// 确保该 agent 的 topics 已加载
+				if (!topicManager.__cache.has(agentId)) {
+					await topicManager.load(agentId);
+				}
+				const result = await topicManager.create({ agentId });
+				respond(true, result);
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.topics.list', async ({ params, respond }) => {
+			try {
+				const agentId = params?.agentId?.trim?.() || 'main';
+				if (!topicManager.__cache.has(agentId)) {
+					await topicManager.load(agentId);
+				}
+				respond(true, topicManager.list({ agentId }));
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.topics.get', ({ params, respond }) => {
+			try {
+				const topicId = params?.topicId?.trim?.();
+				if (!topicId) {
+					respond(false, { error: 'topicId required' });
+					return;
+				}
+				respond(true, topicManager.get({ topicId }));
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.topics.getHistory', ({ params, respond }) => {
+			try {
+				const topicId = params?.topicId?.trim?.();
+				if (!topicId) {
+					respond(false, { error: 'topicId required' });
+					return;
+				}
+				const agentId = params?.agentId?.trim?.() || 'main';
+				// 直接复用 session-manager 的 get()，topicId 即 sessionId
+				respond(true, manager.get({ agentId, sessionId: topicId }));
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.topics.generateTitle', async ({ params, respond }) => {
+			try {
+				const topicId = params?.topicId?.trim?.();
+				if (!topicId) {
+					respond(false, { error: 'topicId required' });
+					return;
+				}
+				const result = await generateTitle({
+					topicId,
+					topicManager,
+					agentRpc: gatewayAgentRpc,
+					logger,
+				});
+				respond(true, result);
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.topics.delete', async ({ params, respond }) => {
+			try {
+				const topicId = params?.topicId?.trim?.();
+				if (!topicId) {
+					respond(false, { error: 'topicId required' });
+					return;
+				}
+				const result = await topicManager.delete({ topicId });
+				respond(true, result);
 			}
 			catch (err) {
 				respondError(respond, err);
