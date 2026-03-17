@@ -313,6 +313,11 @@ export default {
 				this.notify.error(this.$t('topic.createFailed'));
 				return;
 			}
+			// 插件版本过低时话题功能不可用
+			if (this.botsStore.pluginVersionOk[String(botId)] === false) {
+				this.notify.warning(this.$t('pluginUpgrade.outdated'));
+				return;
+			}
 
 			// 标志位：抑制路由 watcher + 禁用输入（防止 createTopic 期间重复发送）
 			this.__creatingTopic = true;

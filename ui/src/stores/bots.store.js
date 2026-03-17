@@ -16,6 +16,8 @@ export const useBotsStore = defineStore('bots', {
 		loading: false,
 		/** loadBots 至少成功完成过一次 */
 		fetched: false,
+		/** 各 bot 插件版本是否满足最低要求 (botId → boolean) */
+		pluginVersionOk: {},
 	}),
 	actions: {
 		setBots(items) {
@@ -96,16 +98,11 @@ export const useBotsStore = defineStore('bots', {
 		 */
 		__listenForReady(botIds, manager) {
 			const fire = async (id, conn) => {
-				// 先检查插件版本
+				// 静默检查插件版本，记录结果但不阻断
 				const versionOk = await checkPluginVersion(conn);
+				this.pluginVersionOk = { ...this.pluginVersionOk, [id]: versionOk };
 				if (!versionOk) {
-					console.warn('[bots] plugin version check failed for botId=%s → redirect to upgrade', id);
-					const { router } = await import('../router/index.js');
-					const current = router.currentRoute?.value?.path ?? '/';
-					if (current !== '/plugin-upgrade') {
-						router.push({ path: '/plugin-upgrade', query: { redirect: current } });
-					}
-					return;
+					console.warn('[bots] plugin version outdated for botId=%s', id);
 				}
 				await useAgentsStore().loadAgents(id);
 				useSessionsStore().loadAllSessions();
@@ -120,7 +117,7 @@ export const useBotsStore = defineStore('bots', {
 				const conn = manager.get(id);
 				if (!conn) continue;
 				if (conn.state === 'connected') {
-					console.debug('[bots] conn already ready botId=%s → checkVersion+loadAgents', id);
+					console.debug('[bots] conn already ready botId=%s → loadAgents', id);
 					catchFire(id, conn);
 					continue;
 				}
@@ -130,7 +127,7 @@ export const useBotsStore = defineStore('bots', {
 					if (state === 'connected') {
 						conn.off('state', onState);
 						_awaitingConnIds.delete(id);
-						console.debug('[bots] conn ready botId=%s → checkVersion+loadAgents', id);
+						console.debug('[bots] conn ready botId=%s → loadAgents', id);
 						catchFire(id, conn);
 					}
 				};
