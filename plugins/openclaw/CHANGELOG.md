@@ -1,5 +1,16 @@
 # @coclaw/openclaw-coclaw
 
+## 0.5.0
+
+### Minor Changes
+
+- 新增 chat 历史追踪与统一消息加载能力：
+  - ChatHistoryManager：通过 session_start 钩子追踪 chat reset 产生的孤儿 session，持久化到 coclaw-chat-history.json
+  - coclaw.chatHistory.list RPC：供 UI 查询指定 chat 的孤儿 session 链
+  - coclaw.sessions.getById RPC：按 sessionId 返回完整 JSONL 行级消息（type + id + message），替代 nativeui.sessions.get
+  - coclaw.info capabilities 新增 chatHistory
+  - 修复 recordArchived 竞态：在 mutex 内先从磁盘重载，防止 list() 无锁覆写缓存导致数据丢失
+
 ## 0.4.1
 
 ### Patch Changes
