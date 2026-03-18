@@ -45,7 +45,7 @@
 				<div v-if="chatStore.historyLoading" class="px-4 py-3 text-center text-xs text-muted">
 					{{ $t('chat.loading') }}
 				</div>
-				<div v-else-if="chatStore.historyExhausted && chatStore.historySegments.length > 0" class="px-4 py-3 text-center text-xs text-muted">
+				<div v-else-if="chatStore.historyExhausted && !isTopicRoute" class="px-4 py-3 text-center text-xs text-muted">
 					{{ $t('chat.noMoreHistory') }}
 				</div>
 				<div v-if="chatStore.loading" class="px-4 py-8 text-center text-sm text-muted">
