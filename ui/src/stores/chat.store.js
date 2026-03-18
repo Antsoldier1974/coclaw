@@ -190,6 +190,9 @@ export const useChatStore = defineStore('chat', {
 				const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
 				// 薄包装为 JSONL 行级结构（补 type + id）
 				this.messages = wrapOcMessages(flatMsgs);
+				// 先解除 loading，使消息 DOM 在同一微任务内渲染，
+				// 确保 chatStore.messages watcher 触发的 scrollToBottom $nextTick 能看到可见的消息区域
+				this.loading = false;
 				console.debug('[chat] loadMessages ok count=%d', this.messages.length);
 
 				// 获取当前 sessionId（用于历史上翻）
@@ -210,7 +213,7 @@ export const useChatStore = defineStore('chat', {
 				return false;
 			}
 			finally {
-				this.loading = false;
+				this.loading = false; // 错误/异常时兜底
 			}
 		},
 
