@@ -42,6 +42,13 @@ export const useChatStore = defineStore('chat', {
 		__accepted: false,
 		__cancelReject: null,
 		__retried: false,
+		// 斜杠命令状态
+		__slashCommandRunId: null,
+		__slashCommandType: null,
+		__chatEventHandler: null,
+		__slashCommandTimer: null,
+		__slashCommandResolve: null,
+		__slashCommandReject: null,
 	}),
 	getters: {
 		currentSessionKey() {
@@ -524,6 +531,115 @@ export const useChatStore = defineStore('chat', {
 			this.sending = false;
 		},
 
+		/**
+		 * 发送斜杠命令（通过 chat.send RPC）
+		 * Promise 在 event:chat final/error 或超时时 settle，调用方可 await + catch
+		 * @param {string} command - 如 '/compact'、'/new'、'/help'
+		 */
+		async sendSlashCommand(command) {
+			const conn = this.__getConnection();
+			if (!conn || conn.state !== 'connected' || this.sending) return;
+
+			this.sending = true;
+			const idempotencyKey = crypto.randomUUID();
+			this.__slashCommandRunId = idempotencyKey;
+			this.__slashCommandType = command;
+
+			const handler = (evt) => this.__onChatEvent(evt);
+			conn.on('event:chat', handler);
+			this.__chatEventHandler = handler;
+
+			// 完成/超时 Promise（让调用方 await 到命令结束）
+			let settleResolve, settleReject;
+			const settlePromise = new Promise((resolve, reject) => {
+				settleResolve = resolve;
+				settleReject = reject;
+			});
+			this.__slashCommandResolve = settleResolve;
+			this.__slashCommandReject = settleReject;
+
+			this.__slashCommandTimer = setTimeout(() => {
+				const reject = this.__slashCommandReject;
+				this.__cleanupSlashCommand(conn);
+				if (reject) {
+					const err = new Error('slash command timeout');
+					err.code = 'SLASH_CMD_TIMEOUT';
+					reject(err);
+				}
+			}, 30_000);
+
+			try {
+				await conn.request('chat.send', {
+					sessionKey: this.chatSessionKey,
+					message: command,
+					idempotencyKey,
+				});
+			}
+			catch (err) {
+				const reject = this.__slashCommandReject;
+				this.__cleanupSlashCommand(conn);
+				if (reject) reject(err);
+				else throw err;
+				// 等待 settlePromise reject 传播
+				return settlePromise;
+			}
+
+			return settlePromise;
+		},
+
+		/** 处理 event:chat 事件（斜杠命令响应） */
+		__onChatEvent(evt) {
+			if (evt.runId !== this.__slashCommandRunId) return;
+			const conn = this.__getConnection();
+			const cmd = this.__slashCommandType;
+			const resolve = this.__slashCommandResolve;
+			const reject = this.__slashCommandReject;
+
+			if (evt.state === 'final') {
+				this.__cleanupSlashCommand(conn);
+				if (/^\/(new|reset)\b/i.test(cmd)) {
+					this.loadMessages({ silent: true });
+					useSessionsStore().loadAllSessions();
+					this.__loadChatHistory();
+				}
+				else if (/^\/compact\b/i.test(cmd)) {
+					this.loadMessages({ silent: true });
+				}
+				else if (evt.message) {
+					// /help 等：本地追加结果消息
+					this.messages = [...this.messages, {
+						type: 'message',
+						id: `chat-${evt.runId}`,
+						message: evt.message,
+					}];
+				}
+				resolve?.();
+			}
+			else if (evt.state === 'error') {
+				this.__cleanupSlashCommand(conn);
+				const err = new Error(evt.errorMessage || 'slash command failed');
+				err.code = 'SLASH_CMD_ERROR';
+				reject?.(err);
+			}
+		},
+
+		/** 清理斜杠命令状态 */
+		__cleanupSlashCommand(conn) {
+			this.sending = false;
+			if (this.__slashCommandTimer) {
+				clearTimeout(this.__slashCommandTimer);
+				this.__slashCommandTimer = null;
+			}
+			if (conn && this.__chatEventHandler) {
+				conn.off('event:chat', this.__chatEventHandler);
+			}
+			this.__chatEventHandler = null;
+			this.__slashCommandRunId = null;
+			this.__slashCommandType = null;
+			this.__slashCommandResolve = null;
+			this.__slashCommandReject = null;
+		},
+
 		/** 清理全部状态（离开页面/bot 解绑时） */
 		cleanup() {
 			// 同 cancelSend：让挂起的 sendMessage 立即 settle
@@ -534,6 +650,8 @@ export const useChatStore = defineStore('chat', {
 				this.__cancelReject = null;
 			}
 			this.__cleanupStreaming();
+			// 清理斜杠命令状态
+			this.__cleanupSlashCommand(this.__getConnection());
 			this.sessionId = '';
 			this.botId = '';
 			this.messages = [];

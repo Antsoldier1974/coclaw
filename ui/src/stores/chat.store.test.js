@@ -2016,4 +2016,162 @@ describe('useChatStore', () => {
 			expect(result).toBe(false);
 		});
 	});
+
+	// =====================================================================
+	// sendSlashCommand
+	// =====================================================================
+
+	describe('sendSlashCommand', () => {
+		/** @type {ReturnType<typeof useChatStore>} */
+		let store;
+		let conn;
+
+		beforeEach(() => {
+			store = useChatStore();
+			conn = mockConn();
+			mockConnections.set('1', conn);
+			store.botId = '1';
+			store.sessionId = 'sess-1';
+			store.chatSessionKey = 'agent:main:main';
+			conn.request.mockResolvedValue({ runId: 'test-run', status: 'started' });
+		});
+
+		test('发送 chat.send RPC 并设置状态', async () => {
+			const p = store.sendSlashCommand('/help');
+			expect(store.sending).toBe(true);
+			expect(store.__slashCommandRunId).toBeTruthy();
+			expect(store.__slashCommandType).toBe('/help');
+
+			// 验证注册了 event:chat 监听
+			expect(conn.on).toHaveBeenCalledWith('event:chat', expect.any(Function));
+
+			// 验证 chat.send RPC 调用
+			expect(conn.request).toHaveBeenCalledWith('chat.send', {
+				sessionKey: 'agent:main:main',
+				message: '/help',
+				idempotencyKey: expect.any(String),
+			});
+
+			// 模拟 event:chat final
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({
+				runId: store.__slashCommandRunId,
+				state: 'final',
+				message: { role: 'assistant', content: [{ type: 'text', text: 'help text' }] },
+			});
+
+			await p;
+			expect(store.sending).toBe(false);
+			// /help 应追加结果消息
+			expect(store.messages.length).toBe(1);
+			expect(store.messages[0].message.content[0].text).toBe('help text');
+		});
+
+		test('sending 为 true 时不发送', async () => {
+			store.sending = true;
+			await store.sendSlashCommand('/help');
+			expect(conn.request).not.toHaveBeenCalled();
+		});
+
+		test('连接未就绪时不发送', async () => {
+			conn.state = 'connecting';
+			await store.sendSlashCommand('/help');
+			expect(conn.request).not.toHaveBeenCalled();
+		});
+
+		test('/compact 完成后调用 loadMessages', async () => {
+			setupConnForLoad(conn, { flatMessages: [], currentSessionId: 'sess-1' });
+			// 让 chat.send 返回正常
+			const origImpl = conn.request.getMockImplementation();
+			conn.request.mockImplementation((method, ...args) => {
+				if (method === 'chat.send') return Promise.resolve({ runId: 'r', status: 'started' });
+				return origImpl(method, ...args);
+			});
+
+			const p = store.sendSlashCommand('/compact');
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			await p;
+
+			// loadMessages 被调用（通过 sessions.get 请求判断）
+			expect(conn.request).toHaveBeenCalledWith('sessions.get', expect.any(Object));
+		});
+
+		test('/new 完成后调用 loadMessages 和 loadAllSessions', async () => {
+			const sessStore = useSessionsStore();
+			sessStore.loadAllSessions = vi.fn().mockResolvedValue();
+			setupConnForLoad(conn, { flatMessages: [], currentSessionId: 'new-sess' });
+			const origImpl = conn.request.getMockImplementation();
+			conn.request.mockImplementation((method, ...args) => {
+				if (method === 'chat.send') return Promise.resolve({ runId: 'r', status: 'started' });
+				return origImpl(method, ...args);
+			});
+
+			const p = store.sendSlashCommand('/new');
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			await p;
+
+			expect(conn.request).toHaveBeenCalledWith('sessions.get', expect.any(Object));
+			expect(sessStore.loadAllSessions).toHaveBeenCalled();
+		});
+
+		test('event:chat error reject 并清理状态', async () => {
+			const p = store.sendSlashCommand('/compact');
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'error', errorMessage: 'fail' });
+
+			await expect(p).rejects.toThrow('fail');
+			expect(store.sending).toBe(false);
+			expect(store.__slashCommandRunId).toBeNull();
+		});
+
+		test('RPC 异常时清理并抛出', async () => {
+			conn.request.mockRejectedValue(new Error('network error'));
+			await expect(store.sendSlashCommand('/help')).rejects.toThrow('network error');
+			expect(store.sending).toBe(false);
+			expect(store.__slashCommandRunId).toBeNull();
+		});
+
+		test('超时 reject 并清理状态', async () => {
+			vi.useFakeTimers();
+			const p = store.sendSlashCommand('/help');
+			expect(store.sending).toBe(true);
+
+			vi.advanceTimersByTime(30_000);
+			expect(store.sending).toBe(false);
+			expect(store.__slashCommandRunId).toBeNull();
+
+			await expect(p).rejects.toThrow('slash command timeout');
+		});
+
+		test('cleanup 清理斜杠命令状态', () => {
+			store.__slashCommandRunId = 'run-1';
+			store.__slashCommandType = '/help';
+			store.__slashCommandTimer = setTimeout(() => {}, 99999);
+			store.__chatEventHandler = () => {};
+			store.sending = true;
+
+			store.cleanup();
+
+			expect(store.__slashCommandRunId).toBeNull();
+			expect(store.__slashCommandType).toBeNull();
+			expect(store.__chatEventHandler).toBeNull();
+			expect(store.sending).toBe(false);
+		});
+
+		test('忽略不匹配的 runId 事件', async () => {
+			const p = store.sendSlashCommand('/help');
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+
+			// 不匹配的 runId → 应忽略
+			handler({ runId: 'other-run', state: 'final', message: { role: 'assistant', content: 'x' } });
+			expect(store.sending).toBe(true); // 仍在发送中
+
+			// 匹配的 runId → 应处理
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			await p;
+			expect(store.sending).toBe(false);
+		});
+	});
 });

@@ -78,14 +78,22 @@
 			</div>
 		</main>
 
-		<ChatInput
-			ref="chatInput"
-			v-model="inputText"
-			:sending="chatStore.sending"
-			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (!currentSessionId || isBotOffline || chatStore.loading)"
-			@send="onSendMessage"
-			@cancel="onCancelSend"
-		/>
+		<div class="relative">
+			<SlashCommandMenu
+				v-if="showSlashMenu"
+				class="absolute bottom-full left-0 z-10 pb-1"
+				:disabled="chatStore.sending || isBotOffline || chatStore.loading"
+				@command="onSlashCommand"
+			/>
+			<ChatInput
+				ref="chatInput"
+				v-model="inputText"
+				:sending="chatStore.sending"
+				:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (!currentSessionId || isBotOffline || chatStore.loading)"
+				@send="onSendMessage"
+				@cancel="onCancelSend"
+			/>
+		</div>
 	</div>
 </template>
 
@@ -94,6 +102,7 @@ import MobilePageHeader from '../components/MobilePageHeader.vue';
 import ChatMsgItem from '../components/ChatMsgItem.vue';
 import defaultBotAvatar from '../assets/bot-avatars/openclaw.svg';
 import ChatInput from '../components/ChatInput.vue';
+import SlashCommandMenu from '../components/chat/SlashCommandMenu.vue';
 import { useNotify } from '../composables/use-notify.js';
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
@@ -112,6 +121,7 @@ export default {
 		MobilePageHeader,
 		ChatMsgItem,
 		ChatInput,
+		SlashCommandMenu,
 	},
 	setup() {
 		const { suppress, unsuppress } = usePullRefreshSuppress();
@@ -212,6 +222,10 @@ export default {
 			const agentId = this.currentAgentId;
 			if (!botId || !agentId) return { name: 'Agent', avatarUrl: null, emoji: null };
 			return this.agentsStore.getAgentDisplay(botId, agentId);
+		},
+		/** 斜杠命令菜单仅在 chat 模式（非 topic）且有 sessionKey 时显示 */
+		showSlashMenu() {
+			return !this.isTopicRoute && !this.isNewTopic && !!this.chatStore.chatSessionKey;
 		},
 		chatMessages() {
 			const items = [];
@@ -418,6 +432,15 @@ export default {
 			// replace 场景：topic 页面新建（避免话题栈堆积）、窄屏模式（无侧边栏，返回应回列表页）
 			if (this.isTopicRoute || isMobileViewport(window.innerWidth)) this.$router.replace(route);
 			else this.$router.push(route);
+		},
+
+		async onSlashCommand(cmd) {
+			try {
+				await this.chatStore.sendSlashCommand(cmd);
+			}
+			catch (err) {
+				this.notify.error(err?.message || this.$t('slashCmd.error'));
+			}
 		},
 
 		onCancelSend() {

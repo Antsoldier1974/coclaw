@@ -174,6 +174,13 @@ export const enMessages = {
 		renamed: 'Renamed',
 		renameFailed: 'Failed to rename topic',
 	},
+	slashCmd: {
+		compact: 'Compact context',
+		reset: 'Reset session',
+		help: 'Help',
+		timeout: 'Command timed out',
+		error: 'Command failed',
+	},
 	chat: {
 		loading: 'Loading session...',
 		empty: 'No messages yet',
