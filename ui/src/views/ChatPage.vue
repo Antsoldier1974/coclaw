@@ -45,7 +45,7 @@
 				<div v-if="chatStore.historyLoading" class="px-4 py-3 text-center text-xs text-muted">
 					{{ $t('chat.loading') }}
 				</div>
-				<div v-else-if="chatStore.historyExhausted && !isTopicRoute" class="px-4 py-3 text-center text-xs text-muted">
+				<div v-else-if="showNoMoreHint" class="px-4 pt-3 pb-2 text-center text-xs text-muted">
 					{{ $t('chat.noMoreHistory') }}
 				</div>
 				<div v-if="chatStore.loading" class="px-4 py-8 text-center text-sm text-muted">
@@ -127,6 +127,7 @@ export default {
 			defaultBotAvatar,
 			inputText: '',
 			userScrolledUp: false,
+			showNoMoreHint: false,
 			__exiting: false,
 			// 标记当前 topic 是否为首轮（用于 generateTitle）
 			__isFirstRound: false,
@@ -273,6 +274,7 @@ export default {
 		async __activate() {
 			// 新建 topic 流程进行中（create→activate→replace→send），抑制 watcher 触发的重复激活
 			if (this.__creatingTopic) return;
+			this.showNoMoreHint = false;
 			if (this.isNewTopic) {
 				// 新建 topic：清空状态，不加载消息
 				this.chatStore.cleanup();
@@ -553,7 +555,12 @@ export default {
 		},
 
 		async __loadMoreHistory() {
-			if (this.chatStore.historyExhausted || this.chatStore.historyLoading) return;
+			if (this.chatStore.historyExhausted || this.chatStore.historyLoading) {
+				if (this.chatStore.historyExhausted && !this.isTopicRoute) {
+					this.showNoMoreHint = true;
+				}
+				return;
+			}
 			const el = this.$refs.scrollContainer;
 			const prevHeight = el?.scrollHeight ?? 0;
 			const loaded = await this.chatStore.loadNextHistorySession();
@@ -563,6 +570,10 @@ export default {
 					const newHeight = el.scrollHeight;
 					el.scrollTop += (newHeight - prevHeight);
 				});
+			}
+			// 刚加载完最后一段历史后也显示提示
+			if (this.chatStore.historyExhausted && !this.isTopicRoute) {
+				this.showNoMoreHint = true;
 			}
 		},
 	},
