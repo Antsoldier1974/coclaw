@@ -1,7 +1,8 @@
 # 斜杠命令支持
 
 > 创建时间：2026-03-18
-> 状态：草案
+> 实现时间：2026-03-18
+> 状态：已实现（初期）
 > 研究基础：`docs/openclaw-research/topic-feature-research.md`
 
 ---
@@ -10,14 +11,14 @@
 
 ### 目标
 
-使 CoClaw UI 能正确发送和处理 OpenClaw 的斜杠命令（`/new`、`/reset`、`/compact`、`/help`、`/subagents` 等），而非将其作为普通文本发给 LLM。
+使 CoClaw UI 能正确发送和处理 OpenClaw 的斜杠命令（`/new`、`/compact`、`/help` 等），而非将其作为普通文本发给 LLM。
 
 ### 问题背景
 
-CoClaw 当前通过 `agent()` RPC 发送所有消息。但 `agent()` 对斜杠命令的支持有限：
+CoClaw 通过 `agent()` RPC 发送所有消息。但 `agent()` 对斜杠命令的支持有限：
 
 - **仅拦截 `/new` 和 `/reset`**（`agent.ts:316`，`RESET_COMMAND_RE`）——调用 `performGatewaySessionReset()`
-- **其他所有斜杠命令**（`/compact`、`/help`、`/status`、`/subagents` 等）——**原样作为文本传给 LLM**，不被识别为命令
+- **其他所有斜杠命令**（`/compact`、`/help`、`/status` 等）——**原样作为文本传给 LLM**，不被识别为命令
 
 OpenClaw 的完整命令管线仅在 `chat.send()` 路径中生效（通过 `dispatchInboundMessage` → `handleCommands`）。
 
@@ -29,6 +30,10 @@ OpenClaw 的完整命令管线仅在 `chat.send()` 路径中生效（通过 `dis
 | B. 全部走 `chat.send()` | 所有消息统一使用 `chat.send()` | 一套事件模型；斜杠命令自然工作 | 重写事件处理；`chat.send` 无 `extraSystemPrompt` |
 
 **采用方案 A**——改动最小，风险可控。
+
+### 实现范围
+
+初期实现 3 个命令：`/compact`、`/new`、`/help`。通过 UI 菜单按钮触发，暂不检测输入框中的斜杠前缀。
 
 ---
 
@@ -68,9 +73,11 @@ const RESET_COMMAND_RE = /^\/(new|reset)(?:\s+([\s\S]*))?$/i;
 
 ---
 
-## 三、关键发现：runId 全链路一致
+## 三、关键发现：idempotencyKey 与 runId
 
-`chat.send()` 触发的 agent run 与 `agent()` 触发的 agent run 共享同一套 `event:agent` 广播。且 **runId 全链路一致**：
+`chat.send()` 和 `agent()` 都要求传入 `idempotencyKey`，且该值直接成为 `runId`，贯穿全链路。
+
+### chat.send 路径
 
 ```
 UI 生成 idempotencyKey (UUID)
@@ -79,119 +86,55 @@ UI 生成 idempotencyKey (UUID)
        ↓ 如果命令触发了 agent run（如 /new hello）
   → agent run 使用同一个 runId                    [agent-runner-execution.ts:110]
   → event:agent 广播携带同一个 runId               [server-chat.ts:530-582]
+  → event:chat final 使用同一个 runId              [server-chat.ts:470-488]
 ```
 
-**源码追踪**：
-1. `clientRunId = p.idempotencyKey`（`chat.ts:1195`）
-2. ACK 返回 `{ runId: clientRunId }`（`chat.ts:1258`）
-3. `dispatchInboundMessage` 接收 `replyOptions.runId = clientRunId`（`chat.ts:1345`）
-4. agent run 注册：`runId = params.opts?.runId ?? crypto.randomUUID()`（`agent-runner-execution.ts:110`）
-5. 所有 `emitAgentEvent` 使用该 `runId`
-6. `event:agent` 广播时无转换：`clientRunId = evt.runId`（`server-chat.ts:530`，因 `chatLink` 为 `undefined`）
+### agent() 路径
 
-**结论**：UI 可以用 `chat.send` ACK 中的 `runId` 直接匹配后续的 `event:agent` 事件。现有的 `__onAgentEvent` 处理逻辑**完全不需要改动**。
+```
+UI 生成 idempotencyKey (UUID)
+  → agent({ message, idempotencyKey, ... })
+  → const runId = idem;                           [agent.ts:450]
+  → ACK: { runId, status: "accepted" }            [agent.ts:565]
+  → event:agent 广播携带同一个 runId
+```
 
 ---
 
-## 四、两类斜杠命令的事件模型
+## 四、架构决策：独立流程，仅 event:chat
 
-### 类型 1：触发 agent run 的命令
+### 问题：双事件监听的生命周期冲突
 
-如 `/new hello`（reset 后以 `hello` 为首条消息启动 agent run）。
+若斜杠命令同时监听 `event:agent` 和 `event:chat`，对于 `/new`（会触发 agent run）：
 
-```
-chat.send ACK: { runId, status: "started" }
-  ↓
-event:agent { runId, stream: "lifecycle", data: { phase: "start" } }
-event:agent { runId, stream: "assistant", data: { text, delta } }
-event:agent { runId, stream: "lifecycle", data: { phase: "end" } }
-  ↓
-event:chat  { runId, state: "final", message: { role: "assistant", ... } }
-```
+1. `event:agent` lifecycle `phase: "end"` → 触发 `__cleanupTimersAndListeners()` → 清除 `streamingRunId`、移除所有监听
+2. 随后 `event:chat` `state: "final"` 到达 → 监听已被移除，无法处理后续逻辑
 
-UI 处理流程：
-1. 收到 ACK → 记录 `runId`，开始监听
-2. `event:agent` 事件 → 现有 streaming 逻辑处理（零改动）
-3. `event:chat` `state: "final"` → 标记完成
+两套独立的完成处理逻辑会互相干扰。
 
-### 类型 2：不触发 agent run 的命令
-
-如 `/compact`、`/help`、`/status`、`/subagents`、裸 `/new`（无尾部消息）等。
+### 解决方案：斜杠命令仅监听 event:chat
 
 ```
-chat.send ACK: { runId, status: "started" }
-  ↓
-（无 event:agent 事件）
-  ↓
-event:chat  { runId, state: "final", message: { role: "assistant", content: [...] } }
+┌───────────────────────────────────────────────┐
+│  普通消息:  sendMessage()                       │
+│    → agent() RPC                               │
+│    → event:agent 流式处理（现有逻辑，零改动）      │
+│    → __reconcileMessages() → loadMessages()    │
+├───────────────────────────────────────────────┤
+│  斜杠命令:  sendSlashCommand()                  │
+│    → chat.send() RPC                           │
+│    → event:chat 完成处理（独立逻辑）              │
+│    → 按命令类型后处理                             │
+└───────────────────────────────────────────────┘
 ```
 
-UI 处理流程：
-1. 收到 ACK → 记录 `runId`，开始监听
-2. **无 `event:agent` 事件**
-3. `event:chat` `state: "final"` → 提取 `message` 渲染为命令结果
+对于 `/new` 触发的 agent run（greeting），不做流式渲染，而是在 `event:chat final` 后调用 `loadMessages({ silent: true })` 一次性加载完整结果。
 
-### 统一处理逻辑
-
-两种类型可以用同一套逻辑处理：
-
-1. 发送 `chat.send()` → 记录 `runId`
-2. 同时监听 `event:agent`（现有逻辑）和 `event:chat`
-3. `event:agent` 按现有方式处理 streaming
-4. `event:chat` `state: "final"` 作为**终结信号**
-5. 若从未收到 `event:agent` 且直接收到 `event:chat` `final` → 纯命令结果，直接渲染
+**取舍**：`/new` 的 greeting 不流式显示，用户感知上是"重置 → 短暂等待 → 消息刷新"。这是合理的，因为 reset 后的 greeting 通常很短。
 
 ---
 
-## 五、chat.send 的参数与 ACK
-
-### 参数
-
-```js
-{
-  method: 'chat.send',
-  params: {
-    sessionKey: 'agent:main:main',  // 必填
-    message: '/compact',             // 必填（可为空字符串用于 reset）
-    idempotencyKey: crypto.randomUUID(),  // 必填
-    // thinking: 'enabled',          // 可选
-    // deliver: false,               // chat.send 无此参数
-    // attachments: [...],           // 可选
-  }
-}
-```
-
-**注意**：`chat.send` 没有 `deliver` 参数（webchat 路径不涉及外部渠道投递）。也没有 `extraSystemPrompt`。
-
-### ACK 响应
-
-```json
-{ "runId": "<idempotencyKey>", "status": "started" }
-```
-
-与 `agent()` ACK 的 `{ runId, status: "accepted" }` 类似，但 status 值不同。
-
----
-
-## 六、event:chat 事件格式
-
-### delta（LLM 流式片段）
-
-```json
-{
-  "runId": "...",
-  "sessionKey": "agent:main:main",
-  "seq": 1,
-  "state": "delta",
-  "message": {
-    "role": "assistant",
-    "content": [{ "type": "text", "text": "partial..." }],
-    "timestamp": 1742000000
-  }
-}
-```
-
-限流：最多每 150ms 一条。
+## 五、event:chat 事件格式
 
 ### final（完成）
 
@@ -226,115 +169,160 @@ UI 处理流程：
 
 ---
 
-## 七、UI 实现方案
+## 六、UI 实现
 
-### 7.1 发送逻辑
+### 6.1 操作入口：SlashCommandMenu 组件
 
-在 `chat.store.js` 的 `sendMessage` 中，发送前检测消息是否为斜杠命令：
+**文件**：`src/components/chat/SlashCommandMenu.vue`
+
+- 使用 `UDropdownMenu`（`content: { side: 'top', align: 'start' }`）
+- 触发按钮：ghost/primary 的 `i-lucide-chevron-right` 图标按钮
+- 定位：ChatInput footer 外部上方，`absolute bottom-full left-0`，透明背景不影响内容区
+
+菜单项：
+
+| label | icon | 命令 |
+|-------|------|------|
+| 压缩上下文 | `i-lucide-archive` | `/compact` |
+| 重置会话 | `i-lucide-refresh-cw` | `/new` |
+| 帮助 | `i-lucide-help-circle` | `/help` |
+
+**可见性条件**（ChatPage `showSlashMenu` 计算属性）：
+- 非 topic 路由（`!isTopicRoute`）
+- 有 sessionKey（`!!chatStore.chatSessionKey`）
+
+**禁用条件**：
+- `chatStore.sending || isBotOffline || chatStore.loading`
+
+### 6.2 ChatPage 布局
+
+```html
+<main>...messages...</main>
+<div class="relative">
+  <SlashCommandMenu
+    v-if="showSlashMenu"
+    class="absolute bottom-full left-0 z-10 pb-1"
+    :disabled="chatStore.sending || isBotOffline || chatStore.loading"
+    @command="onSlashCommand"
+  />
+  <ChatInput ... />
+</div>
+```
+
+`onSlashCommand(cmd)` 调用 `chatStore.sendSlashCommand(cmd)`，通过 `try/catch` 捕获错误并 `notify.error`。
+
+### 6.3 sendSlashCommand（chat.store.js）
+
+核心流程：
 
 ```js
-const isSlashCommand = /^\/\w/.test(text.trim());
-
-if (this.topicMode) {
-  agentParams.sessionId = this.sessionId;
-  // topic 模式不支持斜杠命令（无 sessionKey），始终走 agent()
-} else if (isSlashCommand) {
-  // 斜杠命令走 chat.send
-  return this.__sendViaChatSend(conn, text, this.chatSessionKey);
-} else {
-  agentParams.sessionKey = this.chatSessionKey;
-  // 普通消息走 agent()
+async sendSlashCommand(command) {
+  // 前置守卫：conn 就绪 + 非 sending
+  // 1. 设置 sending = true
+  // 2. 生成 idempotencyKey，记录到 __slashCommandRunId
+  // 3. 创建 settle Promise（__slashCommandResolve / __slashCommandReject）
+  // 4. 注册 event:chat 监听（__chatEventHandler）
+  // 5. 设置 30s 超时 → reject
+  // 6. await conn.request('chat.send', { sessionKey, message, idempotencyKey })
+  // 7. return settlePromise（等待 event:chat final/error 或超时）
 }
 ```
 
-### 7.2 __sendViaChatSend 方法
+**Promise 模型**：`sendSlashCommand` 返回的 Promise 在以下时机 settle：
+- `event:chat state: "final"` → **resolve**
+- `event:chat state: "error"` → **reject**（`SLASH_CMD_ERROR`）
+- 30s 超时 → **reject**（`SLASH_CMD_TIMEOUT`）
+- RPC 异常 → **reject**（原始错误）
+
+这确保调用方（ChatPage）能通过 `try/catch` 捕获所有错误并给出用户反馈。
+
+### 6.4 __onChatEvent 处理逻辑
 
 ```js
-async __sendViaChatSend(conn, message, sessionKey) {
-  const idempotencyKey = crypto.randomUUID();
-
-  // 注册 event:chat 监听
-  const chatEventHandler = (evt) => {
-    if (evt.runId !== idempotencyKey) return;
-    if (evt.state === 'final') {
-      // 完成：渲染命令结果
-      conn.off('event:chat', chatEventHandler);
-      conn.off('event:agent', this.__onAgentEvent);
-      this.__finalizeChatSend(evt);
-    } else if (evt.state === 'error') {
-      conn.off('event:chat', chatEventHandler);
-      conn.off('event:agent', this.__onAgentEvent);
-      this.__handleChatSendError(evt);
-    }
-  };
-
-  // 同时监听 event:agent（处理 /new <message> 等触发 agent run 的场景）
-  conn.on('event:agent', this.__onAgentEvent);
-  conn.on('event:chat', chatEventHandler);
-
-  this.streamingRunId = idempotencyKey;
-
-  const ack = await conn.request('chat.send', {
-    sessionKey,
-    message,
-    idempotencyKey,
-  });
-  // ack.runId === idempotencyKey
-}
-```
-
-### 7.3 命令结果渲染
-
-对于不触发 agent run 的命令（`/compact`、`/help` 等），`event:chat` `final` 中的 `message` 直接作为 assistant 消息追加到消息列表：
-
-```js
-__finalizeChatSend(evt) {
-  this.sending = false;
-  this.streamingRunId = null;
-  if (evt.message) {
-    this.messages.push({
-      type: 'message',
-      id: `chat-${evt.runId}`,
-      message: evt.message,
-    });
+__onChatEvent(evt) {
+  // 仅处理匹配 __slashCommandRunId 的事件
+  if (evt.state === 'final') {
+    cleanup → resolve
+    // /new|/reset → loadMessages({ silent: true }) + loadAllSessions() + __loadChatHistory()
+    // /compact    → loadMessages({ silent: true })
+    // /help 等   → 本地追加 evt.message 为 assistant 消息
   }
-  // 对于 /new：重新加载消息（session 已 reset）
-  // 对于 /compact：重新加载消息（transcript 已压缩）
+  else if (evt.state === 'error') {
+    cleanup → reject
+  }
 }
 ```
 
-### 7.4 特殊命令的后处理
+### 6.5 命令后处理
 
-| 命令 | 后处理 |
-|------|--------|
-| `/new`、`/reset` | 重新调用 `loadMessages()` 刷新消息列表；重新获取 `currentSessionId`；刷新 chat history |
-| `/compact` | 重新调用 `loadMessages()` 刷新消息列表 |
-| `/help`、`/status` 等 | 无特殊处理，命令结果已渲染 |
+| 命令 | event:agent | event:chat final | 后处理 |
+|------|:-----------:|:----------------:|--------|
+| `/new` | 有（greeting agent run），但不监听 | 有 | `loadMessages({ silent: true })` + `loadAllSessions()` + `__loadChatHistory()` |
+| `/compact` | 无 | 有（结果消息） | `loadMessages({ silent: true })` |
+| `/help` | 无 | 有（帮助文本） | 本地追加 `evt.message`，无需 reload |
 
-命令类型的判断可以基于发送时的原始消息文本（`/^\/new(\s|$)/` 等正则匹配）。
+### 6.6 /new 的 sessionId 边界处理
+
+`chat.send('/new')` 执行 session reset 后，新的 `sessionId` **不会**出现在 `event:chat final` 响应中。
+
+刷新机制：`loadMessages({ silent: true })` 内部调用 `chat.history` RPC，返回当前 sessionKey 对应的活跃 sessionId，自然更新 `currentSessionId`。
+
+时序：
+
+```
+1. chat.send({ message: '/new', idempotencyKey })
+2. ACK: { runId, status: "started" }
+3. OpenClaw: reset session（新 sessionId 生成）+ greeting agent run
+4. event:chat: state: "final"
+5. __onChatEvent → loadMessages({ silent: true })
+   → sessions.get 返回新 session 的消息
+   → chat.history 返回新 sessionId → currentSessionId 更新
+6. loadAllSessions() 刷新侧边栏
+7. __loadChatHistory() 刷新孤儿 session 列表
+```
+
+### 6.7 清理与安全
+
+- **`__cleanupSlashCommand(conn)`**：清理 timer、event:chat 监听、所有内部标志、resolve/reject 引用
+- **`cleanup()`**（页面离开）：级联调用 `__cleanupSlashCommand`，确保不会泄漏监听或 timer
+- **`sending` 守卫**：防止常规消息发送和斜杠命令并发
+- **runId 过滤**：`__onChatEvent` 仅处理匹配 `__slashCommandRunId` 的事件，忽略其他 run 的事件
 
 ---
 
-## 八、chat.send 对 session_start 钩子的影响
+## 七、chat.send 对 session_start 钩子的影响
 
-通过 `chat.send` 发送 `/new` 或 `/reset` 时，消息进入 auto-reply 管线（`commands-core.ts`），该路径**会触发 `session_start` 插件钩子**。这解决了 `chat-history-tracking.md` 中标记的 TODO——切换到 `chat.send` 后，session reset 的钩子缺口自然消除。
+通过 `chat.send` 发送 `/new` 或 `/reset` 时，消息进入 auto-reply 管线（`commands-core.ts`），该路径**会触发 `session_start` 插件钩子**。
 
 | 场景 | 之前（agent() 路径） | 之后（chat.send 路径） |
 |------|:---:|:---:|
-| 用户发 `/new` | `session_start` 不触发 | **✓ 触发** |
-| 用户发 `/reset` | `session_start` 不触发 | **✓ 触发** |
-| 自动过期 | ✓ 触发 | ✓ 触发（不变） |
+| 用户发 `/new` | `session_start` 不触发 | **触发** |
+| 用户发 `/reset` | `session_start` 不触发 | **触发** |
+| 自动过期 | 触发 | 触发（不变） |
 
 ---
 
-## 九、实施步骤
+## 八、文件变更清单
 
-1. **chat.store.js**：`sendMessage` 中添加斜杠命令检测，分流到 `__sendViaChatSend`
-2. **chat.store.js**：实现 `__sendViaChatSend` 方法（`chat.send` RPC + `event:chat` 监听 + `event:agent` 复用）
-3. **chat.store.js**：实现 `__finalizeChatSend` 和 `__handleChatSendError`
-4. **chat.store.js**：实现特殊命令后处理（`/new` → reload，`/compact` → reload）
-5. **ChatPage.vue**：可能需要在 reconcile 中处理 `/new` 导致的 session 变更（currentSessionId 更新、路由更新）
-6. **测试**：覆盖 `/new`、`/new <message>`、`/compact`、`/help` 等场景
+| 文件 | 变更类型 | 说明 |
+|------|---------|------|
+| `src/components/chat/SlashCommandMenu.vue` | 新建 | 斜杠命令菜单组件 |
+| `src/views/ChatPage.vue` | 修改 | 引入菜单，`showSlashMenu` 计算属性，`onSlashCommand` 方法，布局调整 |
+| `src/stores/chat.store.js` | 修改 | 新增 `sendSlashCommand`、`__onChatEvent`、`__cleanupSlashCommand`；`cleanup` 追加斜杠命令清理 |
+| `src/i18n/locales/zh-CN.js` | 修改 | 新增 `slashCmd` 翻译键 |
+| `src/i18n/locales/en.js` | 修改 | 新增 `slashCmd` 翻译键 |
+| `src/stores/chat.store.test.js` | 修改 | 新增 8 个斜杠命令单元测试 |
+| `e2e/slash-command.e2e.spec.js` | 新建 | 5 个 E2E 测试 |
+
+---
+
+## 九、TODO（后续迭代）
+
+- 检测用户输入 `/` 前缀时自动弹出命令菜单
+- 输入框内容作为斜杠命令参数（如 `/new hello`）
+- `/new` greeting 流式渲染（需解决 event:agent / event:chat 生命周期协调）
+- 斜杠命令的取消支持（stop 按钮）
+- 更多命令扩展（`/status`、`/subagents` 等）
 
 ---
 
@@ -342,14 +330,16 @@ __finalizeChatSend(evt) {
 
 | 用途 | 文件路径 |
 |------|---------|
-| agent() 斜杠命令拦截 | `src/gateway/server-methods/agent.ts:67,316-340` |
-| chat.send handler | `src/gateway/server-methods/chat.ts:1106-1503` |
-| clientRunId 生成 | `src/gateway/server-methods/chat.ts:1195` |
-| chat.send ACK | `src/gateway/server-methods/chat.ts:1258-1262` |
-| runId 传递到 agent run | `src/gateway/server-methods/chat.ts:1345` → `agent-runner-execution.ts:110` |
-| event:agent 广播（runId 不转换） | `src/gateway/server-chat.ts:530-582` |
-| event:chat 广播（final） | `src/gateway/server-chat.ts:470-488` |
-| 命令管线入口 | `src/auto-reply/reply/commands-core.ts:173-203` |
-| chat.send 参数 schema | `src/gateway/protocol/schema/logs-chat.ts:34-47` |
+| agent() 斜杠命令拦截 | `openclaw-repo/src/gateway/server-methods/agent.ts:67,316-340` |
+| agent() idempotencyKey → runId | `openclaw-repo/src/gateway/server-methods/agent.ts:196,450` |
+| chat.send handler | `openclaw-repo/src/gateway/server-methods/chat.ts:1106-1503` |
+| clientRunId 生成 | `openclaw-repo/src/gateway/server-methods/chat.ts:1195` |
+| chat.send ACK | `openclaw-repo/src/gateway/server-methods/chat.ts:1258-1262` |
+| runId 传递到 agent run | `openclaw-repo/src/gateway/server-methods/chat.ts:1345` → `agent-runner-execution.ts:110` |
+| event:agent 广播（runId 不转换） | `openclaw-repo/src/gateway/server-chat.ts:530-582` |
+| event:chat 广播（final） | `openclaw-repo/src/gateway/server-chat.ts:470-488` |
+| 命令管线入口 | `openclaw-repo/src/auto-reply/reply/commands-core.ts:173-203` |
+| chat.send 参数 schema | `openclaw-repo/src/gateway/protocol/schema/logs-chat.ts:34-47` |
+| performGatewaySessionReset | `openclaw-repo/src/gateway/session-reset-service.ts:246-346` |
 
 > 以上路径均基于本地同步的 OpenClaw 源码（`./openclaw-repo/openclaw/`）。
