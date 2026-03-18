@@ -156,3 +156,4 @@
 - [Android/iOS] 文本选择行为：交互元素（按钮、导航等）长按时可能触发浏览器选区，与原生 App 行为不一致。内容区（聊天消息等）的长按复制已与原生一致，暂不处理。
 - [Android] APK versionCode 约束：当前 `android/app/build.gradle` 中 `versionCode = 1`。由于采用远端 URL 加载模式（`server.url` 指向 `https://im.coclaw.net`），短期内无需发布新 APK。若将来必须发布新 APK（如新增权限、修改原生插件、升级 Capacitor 核心等），需手动递增 `versionCode`，否则无法覆盖安装。
 - [Chat] Agent task 完成后步骤区不显示 tool result 内容和 thinking 内容：lifecycle:end 后的静默 loadMessages（count=77）已执行但 UI 未更新。已添加诊断日志（toolResults/thinkingMsgs 计数），待进一步定位是数据问题还是渲染问题。Thinking 事件在当前 agent 配置下可能不通过流式传递，仅存在于持久化消息。详见 `docs/openclaw-research/agent-event-streams-and-rpcs.md`。
+- [UI/设计] **"是否有侧边栏"应为全局响应式状态**：当前 `ChatPage.onNewTopic()` 使用 `isMobileViewport(window.innerWidth)` 判断窄屏，但"是否有侧边栏"是更语义化的条件。应在 `uiStore`（或合适的 store）中维护 `hasSidebar` getter（基于 `screenWidth >= 768`，与 Tailwind `md` 断点对齐），供全局消费。

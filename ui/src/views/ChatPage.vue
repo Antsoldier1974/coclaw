@@ -104,6 +104,7 @@ import { useBotConnections } from '../services/bot-connection-manager.js';
 import { groupSessionMessages } from '../utils/session-msg-group.js';
 import { isCapacitorApp } from '../utils/platform.js';
 import { usePullRefreshSuppress } from '../composables/use-pull-refresh.js';
+import { isMobileViewport } from '../utils/layout.js';
 
 export default {
 	name: 'ChatPage',
@@ -414,8 +415,8 @@ export default {
 				params: { sessionId: 'new' },
 				query: { agent: agentId, bot: botId },
 			};
-			// 从 topic 页面新建：replace 避免话题栈堆积；从 session 页面新建：push 保留返回
-			if (this.isTopicRoute) this.$router.replace(route);
+			// replace 场景：topic 页面新建（避免话题栈堆积）、窄屏模式（无侧边栏，返回应回列表页）
+			if (this.isTopicRoute || isMobileViewport(window.innerWidth)) this.$router.replace(route);
 			else this.$router.push(route);
 		},
 
