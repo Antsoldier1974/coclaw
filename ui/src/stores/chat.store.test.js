@@ -2120,14 +2120,16 @@ describe('useChatStore', () => {
 			expect(store.currentSessionId).toBe('new-sess');
 		});
 
-		test('event:chat error reject 并清理状态', async () => {
+		test('event:chat error reject 并清理状态和乐观消息', async () => {
 			const p = store.sendSlashCommand('/compact');
+			expect(store.messages.length).toBe(1); // 乐观 user message
 			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
 			handler({ runId: store.__slashCommandRunId, state: 'error', errorMessage: 'fail' });
 
 			await expect(p).rejects.toThrow('fail');
 			expect(store.sending).toBe(false);
 			expect(store.__slashCommandRunId).toBeNull();
+			expect(store.messages.length).toBe(0); // 乐观消息已清理
 		});
 
 		test('RPC 异常时清理并抛出', async () => {
@@ -2135,16 +2137,19 @@ describe('useChatStore', () => {
 			await expect(store.sendSlashCommand('/help')).rejects.toThrow('network error');
 			expect(store.sending).toBe(false);
 			expect(store.__slashCommandRunId).toBeNull();
+			expect(store.messages.length).toBe(0); // 乐观消息已清理
 		});
 
-		test('超时 reject 并清理状态', async () => {
+		test('超时 reject 并清理状态和乐观消息', async () => {
 			vi.useFakeTimers();
 			const p = store.sendSlashCommand('/help');
 			expect(store.sending).toBe(true);
+			expect(store.messages.length).toBe(1); // 乐观 user message
 
 			vi.advanceTimersByTime(30_000);
 			expect(store.sending).toBe(false);
 			expect(store.__slashCommandRunId).toBeNull();
+			expect(store.messages.length).toBe(0); // 乐观消息已清理
 
 			await expect(p).rejects.toThrow('slash command timeout');
 		});

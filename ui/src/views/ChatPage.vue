@@ -148,6 +148,8 @@ export default {
 			__isFirstRound: false,
 			// 新建 topic 流程进行中，抑制 watcher 的重复激活
 			__creatingTopic: false,
+			// /new|/reset 过渡期间，抑制 __activate/__retryActivation 竞态
+			__resetTransition: false,
 		};
 	},
 	computed: {
