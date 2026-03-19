@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.6.0
+
+### Minor Changes
+
+- Add claim-bind (enroll) flow for OpenClaw-initiated binding; align gateway method error response format with OpenClaw protocol; fix shell mangling JSON params in gateway RPC calls
+
 ## 0.5.2
 
 ### Patch Changes
