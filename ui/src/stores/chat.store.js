@@ -570,6 +570,7 @@ export const useChatStore = defineStore('chat', {
 			this.__slashCommandTimer = setTimeout(() => {
 				const reject = this.__slashCommandReject;
 				this.__cleanupSlashCommand(conn);
+				this.__removeLocalMessages();
 				if (reject) {
 					const err = new Error('slash command timeout');
 					err.code = 'SLASH_CMD_TIMEOUT';
@@ -587,6 +588,7 @@ export const useChatStore = defineStore('chat', {
 			catch (err) {
 				const reject = this.__slashCommandReject;
 				this.__cleanupSlashCommand(conn);
+				this.__removeLocalMessages();
 				if (reject) reject(err);
 				else throw err;
 				// 等待 settlePromise reject 传播
@@ -627,10 +629,16 @@ export const useChatStore = defineStore('chat', {
 			}
 			else if (evt.state === 'error') {
 				this.__cleanupSlashCommand(conn);
+				this.__removeLocalMessages();
 				const err = new Error(evt.errorMessage || 'slash command failed');
 				err.code = 'SLASH_CMD_ERROR';
 				reject?.(err);
 			}
+		},
+
+		/** 移除本地乐观消息（错误/超时回退） */
+		__removeLocalMessages() {
+			this.messages = this.messages.filter((m) => !m._local);
 		},
 
 		/** 清理斜杠命令状态 */

@@ -31,7 +31,7 @@ test.describe('斜杠命令', () => {
 		await btn.click();
 
 		// 菜单弹出层可见，应有两个菜单项
-		const popover = page.locator('[data-testid="btn-slash-menu"] + div, [role="dialog"]').or(page.locator('.min-w-40'));
+		const popover = page.locator('[data-testid="btn-slash-menu"] + div, [role="dialog"]').or(page.locator('.max-w-60'));
 		const items = popover.locator('button');
 		await expect(items.first()).toBeVisible({ timeout: 3000 });
 		await expect(items).toHaveCount(2);
@@ -44,7 +44,7 @@ test.describe('斜杠命令', () => {
 
 		// 打开菜单并点击压缩上下文
 		await page.getByTestId('btn-slash-menu').click();
-		const compactItem = page.locator('.min-w-40 button').filter({ hasText: /compact|压缩/i });
+		const compactItem = page.locator('.max-w-60 button').filter({ hasText: /compact|压缩/i });
 		await expect(compactItem).toBeVisible({ timeout: 3000 });
 		await compactItem.click();
 
@@ -62,7 +62,7 @@ test.describe('斜杠命令', () => {
 
 		// 打开菜单并点击重置会话
 		await page.getByTestId('btn-slash-menu').click();
-		const resetItem = page.locator('.min-w-40 button').filter({ hasText: /reset|重置/i });
+		const resetItem = page.locator('.max-w-60 button').filter({ hasText: /reset|重置/i });
 		await expect(resetItem).toBeVisible({ timeout: 3000 });
 		await resetItem.click();
 
