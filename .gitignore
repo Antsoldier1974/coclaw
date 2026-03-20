@@ -19,6 +19,11 @@ test-results/
 .npmrc
 .coclaw-tunnel.json
 
+# SSL private keys & certificates (deploy on server only, never commit)
+*.key
+*.crt
+*.pem
+
 # Logs & temp
 *.log
 tmp/
