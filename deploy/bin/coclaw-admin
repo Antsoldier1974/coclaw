@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# coclaw-admin — 在 server 容器中执行 admin CLI 的快捷入口
+# 用法: coclaw-admin user count
+#       coclaw-admin user list
+#       coclaw-admin user set-level <id|loginName> <level>
+
+set -euo pipefail
+
+# bin/ -> deploy/
+COMPOSE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+SERVICE="server"
+
+exec docker compose -f "$COMPOSE_DIR/compose.yaml" exec -it "$SERVICE" \
+	node src/cli/admin.js "$@"
