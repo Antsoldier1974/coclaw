@@ -13,6 +13,9 @@ RUN pnpm --filter @coclaw/server prisma:generate \
 
 # ── 阶段 3: 运行时 ──
 FROM node:22-slim AS runner
+# OCI labels：写入单架构 image config，供 docker inspect 等读取
+# 多架构构建时 GHCR 需要 manifest index 级 annotations 才能自动关联仓库，
+# 由 build-server.sh 的 --annotation 参数补充，两处需保持一致
 LABEL org.opencontainers.image.source="https://github.com/coclaw/coclaw"
 LABEL org.opencontainers.image.description="CoClaw server"
 LABEL org.opencontainers.image.licenses="SEE LICENSE IN LICENSE"

@@ -40,11 +40,18 @@ else
 fi
 
 # 打包并推送镜像（仅包含静态文件，无架构依赖）
+REPO_URL="https://github.com/coclaw/coclaw"
+
+# manifest index annotations：GHCR 通过此处（而非 Dockerfile LABEL）关联仓库
+# Dockerfile 中的 LABEL 写入单架构 image config，两处需保持一致
 log "building and pushing image..."
 docker buildx build \
 	--platform "$PLATFORMS" \
 	-t "$GHCR_UI:latest" \
 	-t "$GHCR_UI:$VERSION" \
+	--annotation "index:org.opencontainers.image.source=$REPO_URL" \
+	--annotation "index:org.opencontainers.image.description=CoClaw UI" \
+	--annotation "index:org.opencontainers.image.licenses=SEE LICENSE IN LICENSE" \
 	--push \
 	-f "$PROJECT_ROOT/ui/Dockerfile" \
 	"$PROJECT_ROOT"

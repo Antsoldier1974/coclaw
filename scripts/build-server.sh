@@ -33,11 +33,18 @@ else
 	docker buildx use coclaw-builder
 fi
 
+REPO_URL="https://github.com/coclaw/coclaw"
+
+# manifest index annotations：GHCR 通过此处（而非 Dockerfile LABEL）关联仓库
+# Dockerfile 中的 LABEL 写入单架构 image config，两处需保持一致
 log "building and pushing..."
 docker buildx build \
 	--platform "$PLATFORMS" \
 	-t "$GHCR_SERVER:latest" \
 	-t "$GHCR_SERVER:$VERSION" \
+	--annotation "index:org.opencontainers.image.source=$REPO_URL" \
+	--annotation "index:org.opencontainers.image.description=CoClaw server" \
+	--annotation "index:org.opencontainers.image.licenses=SEE LICENSE IN LICENSE" \
 	--push \
 	-f "$PROJECT_ROOT/server/Dockerfile" \
 	"$PROJECT_ROOT"
