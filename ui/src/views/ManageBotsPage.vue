@@ -31,13 +31,14 @@
 								{{ bot.online ? $t('bots.online') : $t('bots.offline') }}
 							</UBadge>
 						</p>
-						<p class="text-xs text-dimmed">{{ $t('bots.updatedAt') }}{{ formatTime(bot.updatedAt) }}</p>
+						<p v-if="false" class="text-xs text-dimmed">{{ $t('bots.updatedAt') }}{{ formatTime(bot.updatedAt) }}</p>
 						<p v-if="getPluginInfo(bot.id)" class="text-xs text-dimmed">
 							<span v-if="getPluginInfo(bot.id).version">{{ $t('bots.pluginVersion') }}{{ getPluginInfo(bot.id).version }}</span>
 							<span v-if="getPluginInfo(bot.id).clawVersion" class="ml-2">{{ $t('bots.clawVersion') }}{{ getPluginInfo(bot.id).clawVersion }}</span>
 						</p>
 					</div>
 					<UButton
+						class="shrink-0"
 						color="error"
 						variant="soft"
 						size="sm"
@@ -68,6 +69,7 @@
 						</span>
 						<span class="min-w-0 flex-1 truncate">{{ agentDisplay(bot.id, agent.id).name }}</span>
 						<UButton
+							class="shrink-0"
 							variant="soft"
 							size="sm"
 							:disabled="!bot.online"

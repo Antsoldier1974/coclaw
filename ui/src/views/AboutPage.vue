@@ -5,7 +5,7 @@
 		<div class="mx-auto w-full max-w-xl">
 			<img :src="logoSrc" alt="CoClaw" class="mx-auto mb-5 size-20 rounded-xl" />
 			<h1 v-if="false" class="hidden text-center text-xl font-semibold md:block">{{ $t('about.title') }}</h1>
-			<p class="text-center text-base text-toned md:mt-4">{{ $t('about.intro') }}</p>
+			<p class="flex justify-center text-base text-toned md:mt-4">{{ $t('about.intro') }}</p>
 
 			<div class="mt-8">
 				<UAccordion :items="accordionItems" collapsible :ui="{ trigger: 'text-base' }">
@@ -52,9 +52,9 @@
 			>
 				{{ $t('about.goLogin') }}
 			</UButton>
-			<p class="mt-1 text-center text-xs text-dimmed">
-				{{ $t('about.version') }} {{ appVersion }}
-				<span v-if="serverVersion" class="ml-2">{{ $t('about.serverVersion') }} {{ serverVersion }}</span>
+			<p class="mt-1 flex justify-center gap-2 text-xs text-dimmed">
+				<span>{{ $t('about.clientVersion') }} {{ appVersion }}</span>
+				<span v-if="serverVersion">{{ $t('about.serverVersion') }} {{ serverVersion }}</span>
 			</p>
 		</div>
 	</footer>

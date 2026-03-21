@@ -6,7 +6,7 @@
 				color="neutral"
 				size="xs"
 				icon="i-lucide-ellipsis"
-				class="size-7"
+				class="cc-icon-btn"
 				:class="menuOpen ? 'opacity-100' : ''"
 				aria-label="More"
 			/>
