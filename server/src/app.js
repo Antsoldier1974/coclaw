@@ -11,6 +11,7 @@ import { PrismaSessionStore } from './db/prisma-session-store.js';
 import { authRouter } from './routes/auth.route.js';
 import { botRouter } from './routes/bot.route.js';
 import { clawRouter } from './routes/claw.route.js';
+import { infoRouter } from './routes/info.route.js';
 import { userRouter } from './routes/user.route.js';
 
 setupPassport();
@@ -77,6 +78,7 @@ export function createApp() {
 		res.status(200).json({ ok: true });
 	});
 
+	app.use('/api/v1/info', infoRouter);
 	app.use('/api/v1/auth', authRouter);
 	app.use('/api/v1/user', userRouter);
 	app.use('/api/v1/bots', botRouter);

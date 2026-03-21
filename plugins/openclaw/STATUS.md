@@ -123,6 +123,10 @@
 ### bot 命名策略（2026-02-28）
 - 绑定阶段不提交 `name`，server 通过 gateway WebSocket 获取实例名，未设置时前端回退显示 `OpenClaw`。
 
+## 已知问题
+
+- **OpenClaw 版本号不可用**（2026-03-21）：OpenClaw 打包后 `resolveVersion()` 中 `require("../../../package.json")` 的相对路径与 dist 产物目录层级不匹配，导致 `api.runtime.version` 返回 `'unknown'`。属于 OpenClaw 上游 bug。插件侧已做兜底：当版本号为假值或 `'unknown'` 时不返回 `clawVersion` 字段，前端对应不渲染。待上游修复后自动生效。
+
 ## 待办
 
 - **TODO**: `channel-plugin.js` 的 `status.defaultRuntime.running` 应反映 realtime-bridge 实际连接状态，当前硬编码 `true`。需分析 OpenClaw channel status 的使用场景后确认方案。

@@ -126,6 +126,7 @@ export const enMessages = {
 		conceptSession: 'Sessions: ',
 		conceptSessionDesc: 'Each conversation with a bot is an independent session. The AI can only see the content within the current session — different sessions are isolated from each other.',
 		version: 'Version',
+		serverVersion: 'Server',
 	},
 	claim: {
 		title: 'Claim Claw',
@@ -168,6 +169,8 @@ export const enMessages = {
 		unbindFailed: 'Failed to unbind',
 		online: 'Online',
 		offline: 'Offline',
+		pluginVersion: 'Plugin: ',
+		clawVersion: 'OpenClaw: ',
 	},
 	pluginUpgrade: {
 		outdated: 'This Claw\'s plugin is outdated and some features may not work. Please run: openclaw plugins update openclaw-coclaw',

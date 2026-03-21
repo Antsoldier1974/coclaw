@@ -21,6 +21,8 @@ export const useBotsStore = defineStore('bots', {
 		fetched: false,
 		/** 各 bot 插件版本是否满足最低要求 (botId → boolean) */
 		pluginVersionOk: {},
+		/** 各 bot 的插件与 OpenClaw 版本 (botId → { version, clawVersion }) */
+		pluginInfo: {},
 	}),
 	actions: {
 		setBots(items) {
@@ -104,8 +106,10 @@ export const useBotsStore = defineStore('bots', {
 		__listenForReady(botIds, manager) {
 			const fire = async (id, conn) => {
 				// 静默检查插件版本，记录结果但不阻断
-				const versionOk = await checkPluginVersion(conn);
+				const info = await checkPluginVersion(conn);
+				const versionOk = info.ok;
 				this.pluginVersionOk = { ...this.pluginVersionOk, [id]: versionOk };
+				this.pluginInfo = { ...this.pluginInfo, [id]: { version: info.version, clawVersion: info.clawVersion } };
 				if (!versionOk) {
 					console.warn('[bots] plugin version outdated for botId=%s', id);
 				}

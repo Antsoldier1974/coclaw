@@ -60,6 +60,86 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 	assert.equal(typeof upgradeService.stop, 'function');
 });
 
+test('coclaw.info should return version and clawVersion', async () => {
+	__resetPluginVersion();
+	const handlers = new Map();
+	const MOCK_CLAW_VERSION = '2026.3.14';
+	plugin.register({
+		pluginConfig: {},
+		runtime: { version: MOCK_CLAW_VERSION },
+		logger: { warn() {}, error() {}, log() {} },
+		registerChannel() {},
+		registerCommand() {},
+		registerCli() {},
+		registerService() {},
+		registerGatewayMethod(name, handler) {
+			handlers.set(name, handler);
+		},
+	});
+
+	let infoOut = null;
+	await handlers.get('coclaw.info')({
+		respond(ok, payload) {
+			infoOut = { ok, payload };
+		},
+	});
+	assert.equal(infoOut.ok, true);
+	assert.equal(typeof infoOut.payload.version, 'string');
+	assert.equal(infoOut.payload.clawVersion, MOCK_CLAW_VERSION);
+	assert.ok(Array.isArray(infoOut.payload.capabilities));
+});
+
+test('coclaw.info should omit clawVersion when runtime.version is absent', async () => {
+	__resetPluginVersion();
+	const handlers = new Map();
+	plugin.register({
+		pluginConfig: {},
+		logger: { warn() {}, error() {}, log() {} },
+		registerChannel() {},
+		registerCommand() {},
+		registerCli() {},
+		registerService() {},
+		registerGatewayMethod(name, handler) {
+			handlers.set(name, handler);
+		},
+	});
+
+	let infoOut = null;
+	await handlers.get('coclaw.info')({
+		respond(ok, payload) {
+			infoOut = { ok, payload };
+		},
+	});
+	assert.equal(infoOut.ok, true);
+	assert.equal(infoOut.payload.clawVersion, undefined);
+});
+
+test('coclaw.info should omit clawVersion when runtime.version is unknown', async () => {
+	__resetPluginVersion();
+	const handlers = new Map();
+	plugin.register({
+		pluginConfig: {},
+		runtime: { version: 'unknown' },
+		logger: { warn() {}, error() {}, log() {} },
+		registerChannel() {},
+		registerCommand() {},
+		registerCli() {},
+		registerService() {},
+		registerGatewayMethod(name, handler) {
+			handlers.set(name, handler);
+		},
+	});
+
+	let infoOut = null;
+	await handlers.get('coclaw.info')({
+		respond(ok, payload) {
+			infoOut = { ok, payload };
+		},
+	});
+	assert.equal(infoOut.ok, true);
+	assert.equal(infoOut.payload.clawVersion, undefined);
+});
+
 test('gateway methods respond and catch errors', async () => {
 	const handlers = new Map();
 	plugin.register({

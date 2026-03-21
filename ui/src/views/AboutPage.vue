@@ -54,6 +54,7 @@
 			</UButton>
 			<p class="mt-1 text-center text-xs text-dimmed">
 				{{ $t('about.version') }} {{ appVersion }}
+				<span v-if="serverVersion" class="ml-2">{{ $t('about.serverVersion') }} {{ serverVersion }}</span>
 			</p>
 		</div>
 	</footer>
@@ -63,6 +64,7 @@
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import UserInfoRows from '../components/user/UserInfoRows.vue';
+import { fetchServerInfo } from '../services/server-info.api.js';
 import { useAuthStore } from '../stores/auth.store.js';
 import logoSrc from '../assets/coclaw-logo.jpg';
 
@@ -81,7 +83,17 @@ export default {
 		return {
 			logoSrc,
 			appVersion: __APP_VERSION__,
+			serverVersion: null,
 		};
+	},
+	async mounted() {
+		try {
+			const info = await fetchServerInfo();
+			this.serverVersion = info?.version ?? null;
+		}
+		catch {
+			// 静默忽略
+		}
 	},
 	computed: {
 		isLoggedIn() {

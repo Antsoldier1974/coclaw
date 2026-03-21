@@ -14,40 +14,53 @@ function mockConnError(err) {
 }
 
 describe('checkPluginVersion', () => {
-	test('版本满足时返回 true', async () => {
-		const conn = mockConn({ version: '0.4.0' });
-		expect(await checkPluginVersion(conn)).toBe(true);
+	test('版本满足时返回 ok=true 和版本信息', async () => {
+		const conn = mockConn({ version: '0.4.0', clawVersion: '2026.3.14' });
+		const result = await checkPluginVersion(conn);
+		expect(result).toEqual({ ok: true, version: '0.4.0', clawVersion: '2026.3.14' });
 		expect(conn.request).toHaveBeenCalledWith('coclaw.info', {});
 	});
 
-	test('版本高于最低要求时返回 true', async () => {
-		const conn = mockConn({ version: '1.0.0' });
-		expect(await checkPluginVersion(conn)).toBe(true);
+	test('版本高于最低要求时返回 ok=true', async () => {
+		const conn = mockConn({ version: '1.0.0', clawVersion: '2026.3.14' });
+		expect((await checkPluginVersion(conn)).ok).toBe(true);
 	});
 
-	test('版本低于最低要求时返回 false', async () => {
+	test('版本低于最低要求时返回 ok=false', async () => {
 		const conn = mockConn({ version: '0.3.9' });
-		expect(await checkPluginVersion(conn)).toBe(false);
+		const result = await checkPluginVersion(conn);
+		expect(result.ok).toBe(false);
+		expect(result.version).toBe('0.3.9');
 	});
 
-	test('版本 0.3.0 返回 false', async () => {
+	test('版本 0.3.0 返回 ok=false', async () => {
 		const conn = mockConn({ version: '0.3.0' });
-		expect(await checkPluginVersion(conn)).toBe(false);
+		expect((await checkPluginVersion(conn)).ok).toBe(false);
 	});
 
-	test('RPC 调用失败时返回 false（旧版插件无此方法）', async () => {
+	test('RPC 调用失败时返回 ok=false（旧版插件无此方法）', async () => {
 		const conn = mockConnError(new Error('method not found'));
-		expect(await checkPluginVersion(conn)).toBe(false);
+		const result = await checkPluginVersion(conn);
+		expect(result).toEqual({ ok: false, version: null, clawVersion: null });
 	});
 
-	test('返回结果中无 version 字段时返回 false', async () => {
+	test('返回结果中无 version 字段时返回 ok=false', async () => {
 		const conn = mockConn({});
-		expect(await checkPluginVersion(conn)).toBe(false);
+		const result = await checkPluginVersion(conn);
+		expect(result.ok).toBe(false);
+		expect(result.version).toBe(null);
 	});
 
-	test('version 非字符串时返回 false', async () => {
+	test('version 非字符串时返回 ok=false', async () => {
 		const conn = mockConn({ version: 42 });
-		expect(await checkPluginVersion(conn)).toBe(false);
+		expect((await checkPluginVersion(conn)).ok).toBe(false);
+	});
+
+	test('clawVersion 缺失时返回 null', async () => {
+		const conn = mockConn({ version: '0.5.0' });
+		const result = await checkPluginVersion(conn);
+		expect(result.ok).toBe(true);
+		expect(result.clawVersion).toBe(null);
 	});
 
 	test('MIN_PLUGIN_VERSION 为 0.4.0', () => {

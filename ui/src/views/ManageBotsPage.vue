@@ -32,6 +32,10 @@
 							</UBadge>
 						</p>
 						<p class="text-xs text-dimmed">{{ $t('bots.updatedAt') }}{{ formatTime(bot.updatedAt) }}</p>
+						<p v-if="getPluginInfo(bot.id)" class="text-xs text-dimmed">
+							<span v-if="getPluginInfo(bot.id).version">{{ $t('bots.pluginVersion') }}{{ getPluginInfo(bot.id).version }}</span>
+							<span v-if="getPluginInfo(bot.id).clawVersion" class="ml-2">{{ $t('bots.clawVersion') }}{{ getPluginInfo(bot.id).clawVersion }}</span>
+						</p>
 					</div>
 					<UButton
 						color="error"
@@ -125,6 +129,9 @@ export default {
 				return String(value);
 			}
 			return date.toLocaleString();
+		},
+		getPluginInfo(botId) {
+			return this.botsStore?.pluginInfo?.[String(botId)] ?? null;
 		},
 		getAgents(botId) {
 			return this.agentsStore?.getAgentsByBot(botId) ?? [];

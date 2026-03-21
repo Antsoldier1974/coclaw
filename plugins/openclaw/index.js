@@ -229,7 +229,10 @@ const plugin = {
 			try {
 				await waitForSessionsReady();
 				const version = await getPluginVersion();
-				respond(true, { version, capabilities: ['topics', 'chatHistory'] });
+				const rawClawVersion = api.runtime?.version;
+				// OpenClaw 打包后 resolveVersion() 路径失配导致返回 'unknown'，此时不传该字段
+				const clawVersion = (rawClawVersion && rawClawVersion !== 'unknown') ? rawClawVersion : undefined;
+				respond(true, { version, clawVersion, capabilities: ['topics', 'chatHistory'] });
 			}
 			catch (err) {
 				respondError(respond, err);

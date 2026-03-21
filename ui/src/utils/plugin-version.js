@@ -24,25 +24,26 @@ function compareSemver(a, b) {
 }
 
 /**
- * 检查插件版本是否满足最低要求
+ * 检查插件版本并获取插件信息
  * @param {object} conn - BotConnection 实例
- * @returns {Promise<boolean>} true 表示版本满足
+ * @returns {Promise<{ ok: boolean, version: string|null, clawVersion: string|null }>}
  */
 export async function checkPluginVersion(conn) {
 	try {
 		const result = await conn.request('coclaw.info', {});
 		const version = result?.version;
+		const clawVersion = result?.clawVersion ?? null;
 		if (!version || typeof version !== 'string') {
 			console.debug('[plugin-version] coclaw.info returned no version');
-			return false;
+			return { ok: false, version: null, clawVersion };
 		}
 		const ok = compareSemver(version, MIN_PLUGIN_VERSION) >= 0;
-		console.debug('[plugin-version] version=%s min=%s ok=%s', version, MIN_PLUGIN_VERSION, ok);
-		return ok;
+		console.debug('[plugin-version] version=%s clawVersion=%s min=%s ok=%s', version, clawVersion, MIN_PLUGIN_VERSION, ok);
+		return { ok, version, clawVersion };
 	}
 	catch (err) {
 		// RPC 方法不存在（旧版插件）或其他错误
 		console.debug('[plugin-version] coclaw.info failed: %s', err?.message);
-		return false;
+		return { ok: false, version: null, clawVersion: null };
 	}
 }

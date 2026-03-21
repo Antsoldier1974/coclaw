@@ -19,7 +19,7 @@ vi.mock('../services/bots.api.js', () => ({
 }));
 
 vi.mock('../utils/plugin-version.js', () => ({
-	checkPluginVersion: vi.fn().mockResolvedValue(true),
+	checkPluginVersion: vi.fn().mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' }),
 	MIN_PLUGIN_VERSION: '0.4.0',
 }));
 
@@ -363,9 +363,9 @@ describe('loadBots', () => {
 		});
 	});
 
-	test('stores pluginVersionOk per bot after version check', async () => {
+	test('stores pluginVersionOk and pluginInfo per bot after version check', async () => {
 		const { checkPluginVersion } = await import('../utils/plugin-version.js');
-		checkPluginVersion.mockResolvedValue(true);
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -381,12 +381,13 @@ describe('loadBots', () => {
 
 		await vi.waitFor(() => {
 			expect(store.pluginVersionOk['1']).toBe(true);
+			expect(store.pluginInfo['1']).toEqual({ version: '0.6.0', clawVersion: '2026.3.14' });
 		});
 	});
 
 	test('proceeds to loadAgents even when plugin version check fails', async () => {
 		const { checkPluginVersion } = await import('../utils/plugin-version.js');
-		checkPluginVersion.mockResolvedValue(false);
+		checkPluginVersion.mockResolvedValue({ ok: false, version: null, clawVersion: null });
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();

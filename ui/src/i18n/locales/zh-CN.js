@@ -126,6 +126,7 @@ export const zhCNMessages = {
 		conceptSession: '会话：',
 		conceptSessionDesc: '每次与机器人的对话都是一个独立的会话。AI 只能看到当前会话中的内容，不同会话之间互相隔离。',
 		version: '版本',
+		serverVersion: '服务端',
 	},
 	claim: {
 		title: '认领 Claw',
@@ -168,6 +169,8 @@ export const zhCNMessages = {
 		unbindFailed: '解绑失败',
 		online: '在线',
 		offline: '离线',
+		pluginVersion: '插件：',
+		clawVersion: 'OpenClaw：',
 	},
 	pluginUpgrade: {
 		outdated: '该 Claw 的插件版本过低，部分功能不可用。请执行：openclaw plugins update openclaw-coclaw',
