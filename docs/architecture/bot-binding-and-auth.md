@@ -27,9 +27,10 @@
     openclaw coclaw bind "88889999"
     ```
 3.  **CLI 动作**：
-    *   插件注册的 Command Handler 被触发。
-    *   CLI 工具向 `https://coclaw.net/api/v1/bots/bind` 发送 POST 请求。
-    *   Payload: `{ code: "88889999" }`。
+    *   CLI 通过 `coclaw.bind` gateway RPC 将请求发送到 gateway 进程。
+    *   Gateway 内的 RPC handler 停止 bridge → 执行绑定 → 写入 config → 重启 bridge。
+    *   如果已有绑定，handler 会先强制解绑旧 bot（非 best-effort），失败时中止操作并返回错误。server 返回 401/404/410 视为旧 bot 已不存在，允许继续。
+    *   Gateway handler 向 `POST /api/v1/bots/bind` 发送请求，Payload: `{ code: "88889999" }`。
 
 ### 第三阶段：服务端验证与颁发 (Server)
 
@@ -43,9 +44,9 @@
 
 ### 第四阶段：配置写入与连接建立
 
-1.  **写入**：插件将 `botId` 与明文 `token` 写入本地绑定配置（`~/.openclaw/coclaw/bindings.json`）。
+1.  **写入**：Gateway handler 将 `botId` 与明文 `token` 通过 `writeConfig`（原子写入 + mutex 保护）写入本地绑定配置（`~/.openclaw/coclaw/bindings.json`）。
 2.  **连接条件**：仅当本地存在有效 token 时，插件才会连接 server 的实时控制通道。
-3.  **连接**：插件建立 `WS /api/v1/bots/stream?token=...`，用于接收解绑/凭证失效控制消息。
+3.  **连接**：Gateway handler 调用 `restartRealtimeBridge()` 建立 `WS /api/v1/bots/stream?token=...`，用于接收解绑/凭证失效控制消息。
 
 ## 3. 鉴权机制
 
@@ -53,7 +54,7 @@
 
 ### 3.1 解绑与在线约定（当前实现）
 
-*   **多 Bot（当前实现）**：同一用户可绑定多个 Bot（每次绑定创建新记录）。
+*   **多 Bot（当前实现）**：同一用户可绑定多个 Bot（每次绑定创建新记录）。插件侧在重绑时强制先解绑旧 bot（mandatory unbind），但多 Claw 场景下用户仍可拥有多个 bot 记录。
 *   **解绑（Unbind）**：解绑时服务端直接删除 Bot 记录（先删再踢线）。
 *   **在线收敛策略（当前实现）**：
     *   删除成功后服务端向在线 bot 下发 `bot.unbound` 控制消息，并主动断开其 ws 连接。
@@ -142,11 +143,12 @@
 
 插件通过 `api.registerCommand` 注册自定义子命令，实现“零手动配置”体验。
 
-*   **命令**: `openclaw coclaw bind <code>` / `openclaw coclaw unbind`
-*   **逻辑**:
-    1.  调用 CoClaw API 换取 Token。
-    2.  插件将凭据写入本地 `~/.openclaw/coclaw/bindings.json`。
-    3.  插件检测到本地有 token 后，建立到 server 的实时通道。
+*   **命令**: `openclaw coclaw bind <code>` / `openclaw coclaw unbind` / `openclaw coclaw enroll`
+*   **逻辑**：三条命令均为瘦 CLI，通过 `coclaw.bind`/`coclaw.unbind`/`coclaw.enroll` gateway RPC 在 gateway 进程内执行：
+    1.  Gateway handler 停止 bridge（bind 前）或先执行 server API 调用（unbind）。
+    2.  调用 CoClaw API 换取 Token（bind）/ 删除 bot（unbind）/ 生成认领码（enroll）。
+    3.  写入/清理本地 `~/.openclaw/coclaw/bindings.json`（原子写入 + mutex）。
+    4.  启动/停止 bridge 连接。
 
 ### 5.4 插件内部职责分层（当前方案）
 

@@ -3,6 +3,8 @@ import os from 'node:os';
 import nodePath from 'node:path';
 
 import { getRuntime } from './runtime.js';
+import { atomicWriteJsonFile } from './utils/atomic-write.js';
+import { createMutex } from './utils/mutex.js';
 
 export const DEFAULT_ACCOUNT_ID = 'default';
 const CHANNEL_ID = 'coclaw';
@@ -42,11 +44,7 @@ async function readJson(filePath) {
 	}
 }
 
-async function writeJson(filePath, value) {
-	const dirPath = nodePath.dirname(filePath);
-	await fs.mkdir(dirPath, { recursive: true });
-	await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-}
+const bindingsMutex = createMutex();
 
 // --- 公共 API ---
 
@@ -57,35 +55,39 @@ export async function readConfig(accountId = DEFAULT_ACCOUNT_ID) {
 }
 
 export async function writeConfig(nextConfig, accountId = DEFAULT_ACCOUNT_ID) {
-	const bindingsPath = getBindingsPath();
-	const bindings = toRecord(await readJson(bindingsPath));
-	const current = toRecord(bindings[accountId]);
+	return bindingsMutex.withLock(async () => {
+		const bindingsPath = getBindingsPath();
+		const bindings = toRecord(await readJson(bindingsPath));
+		const current = toRecord(bindings[accountId]);
 
-	const next = { ...current };
-	if (nextConfig.serverUrl !== undefined) next.serverUrl = nextConfig.serverUrl;
-	if (nextConfig.botId !== undefined) next.botId = nextConfig.botId;
-	if (nextConfig.token !== undefined) next.token = nextConfig.token;
-	if (nextConfig.boundAt !== undefined) next.boundAt = nextConfig.boundAt;
+		const next = { ...current };
+		if (nextConfig.serverUrl !== undefined) next.serverUrl = nextConfig.serverUrl;
+		if (nextConfig.botId !== undefined) next.botId = nextConfig.botId;
+		if (nextConfig.token !== undefined) next.token = nextConfig.token;
+		if (nextConfig.boundAt !== undefined) next.boundAt = nextConfig.boundAt;
 
-	bindings[accountId] = next;
-	await writeJson(bindingsPath, bindings);
+		bindings[accountId] = next;
+		await atomicWriteJsonFile(bindingsPath, bindings);
+	});
 }
 
 export async function clearConfig(accountId = DEFAULT_ACCOUNT_ID) {
-	const bindingsPath = getBindingsPath();
-	const bindings = toRecord(await readJson(bindingsPath));
-	delete bindings[accountId];
+	return bindingsMutex.withLock(async () => {
+		const bindingsPath = getBindingsPath();
+		const bindings = toRecord(await readJson(bindingsPath));
+		delete bindings[accountId];
 
-	const remaining = Object.keys(bindings).length;
-	if (remaining === 0) {
-		try {
-			await fs.unlink(bindingsPath);
+		const remaining = Object.keys(bindings).length;
+		if (remaining === 0) {
+			try {
+				await fs.unlink(bindingsPath);
+			}
+			/* c8 ignore next 4 */
+			catch (err) {
+				if (err?.code !== 'ENOENT') throw err;
+			}
+		} else {
+			await atomicWriteJsonFile(bindingsPath, bindings);
 		}
-		/* c8 ignore next 4 */
-		catch (err) {
-			if (err?.code !== 'ENOENT') throw err;
-		}
-	} else {
-		await writeJson(bindingsPath, bindings);
-	}
+	});
 }

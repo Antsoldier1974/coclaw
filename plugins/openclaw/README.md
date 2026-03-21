@@ -72,7 +72,8 @@ openclaw coclaw unbind [--server <url>]
 openclaw coclaw enroll [--server <url>]
 ```
 
-- bind/unbind 成功后会通过 gateway RPC 通知插件刷新/停止 bridge 连接（无需重启 gateway）。若 gateway 未运行，通知会失败但不影响绑定结果。
+- bind/unbind/enroll 均为瘦 CLI，通过 gateway RPC（`coclaw.bind`/`coclaw.unbind`/`coclaw.enroll`）在 gateway 内执行，由 gateway 内部管理 bridge 生命周期。若 gateway 未运行，CLI 会自动尝试重启一次再重试；若仍不可用，操作失败。
+- unbind 是强制操作：server 不可达时操作失败（不清理本地 config，避免产生孤儿 bot）。server 返回 401/404/410 视为 bot 已不存在，允许继续。
 - enroll 由 OpenClaw 侧主动发起，生成认领码和链接供用户点击完成绑定。已绑定时需先 unbind 再发起。
 
 ### 方式二：IM 渠道命令
@@ -87,12 +88,14 @@ openclaw coclaw enroll [--server <url>]
 
 需要 gateway 运行中。
 
-### 方式三：独立 CLI（兼容）
+### 方式三：独立 CLI（遗留）
 
 ```bash
 node ~/.openclaw/extensions/coclaw/src/cli.js bind <binding-code> --server <url>
 node ~/.openclaw/extensions/coclaw/src/cli.js unbind --server <url>
 ```
+
+> 注意：独立 CLI 不走 gateway RPC，直接在 CLI 进程中执行 bind/unbind 并通过 `coclaw.refreshBridge`/`coclaw.stopBridge` 通知 gateway。此路径不具备瘦 CLI 的架构保证（所有 config 操作在同一进程内）。推荐使用方式一。
 
 ## 配置存储
 

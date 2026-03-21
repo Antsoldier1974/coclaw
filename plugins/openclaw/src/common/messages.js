@@ -3,17 +3,14 @@
 export function bindOk({ botId, rebound, previousBotId }) {
 	const action = rebound ? 're-bound' : 'bound';
 	const prev = previousBotId
-		? ` (previous binding to bot ${previousBotId} was auto-removed)`
+		? ` (previous Claw ${previousBotId} was auto-unbound)`
 		: '';
-	return `OK. Bot (${botId}) ${action} to CoClaw.${prev}`;
+	return `OK. Claw (${botId}) ${action} to CoClaw.${prev}`;
 }
 
-export function unbindOk({ botId, serverError }) {
+export function unbindOk({ botId }) {
 	const id = botId ?? 'unknown';
-	const tag = serverError
-		? ' (server notification failed; you can unbind the orphan bot in the CoClaw app)'
-		: '';
-	return `OK. Bot (${id}) unbound from CoClaw.${tag}`;
+	return `OK. Claw (${id}) unbound from CoClaw.`;
 }
 
 export function notBound() {

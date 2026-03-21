@@ -149,6 +149,70 @@ const plugin = {
 			}
 		});
 
+		// --- bind/unbind 共享逻辑（RPC handler + 斜杠命令共用） ---
+
+		async function doBind({ code, serverUrl }) {
+			await stopRealtimeBridge();
+			let result;
+			try {
+				result = await bindBot({
+					code,
+					serverUrl: serverUrl ?? api.pluginConfig?.serverUrl,
+				});
+			} catch (err) {
+				// bind 失败时恢复 bridge（best-effort，不覆盖原始错误）
+				await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig }).catch(() => {});
+				throw err;
+			}
+			// bind 已持久化，restart 失败不影响结果
+			await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig }).catch((err) => {
+				logger.warn?.(`[coclaw] bridge restart failed after bind: ${err?.message ?? err}`);
+			});
+			return result;
+		}
+
+		async function doUnbind({ serverUrl }) {
+			const result = await unbindBot({
+				serverUrl: serverUrl ?? api.pluginConfig?.serverUrl,
+			});
+			await stopRealtimeBridge();
+			return result;
+		}
+
+		api.registerGatewayMethod('coclaw.bind', async ({ params, respond }) => {
+			try {
+				const code = params?.code;
+				if (!code) {
+					respondInvalid(respond, 'code is required');
+					return;
+				}
+				const result = await doBind({
+					code,
+					serverUrl: params?.serverUrl,
+				});
+				respond(true, {
+					status: {
+						botId: result.botId,
+						rebound: result.rebound,
+						previousBotId: result.previousBotId,
+					},
+				});
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.unbind', async ({ params, respond }) => {
+			try {
+				const result = await doUnbind({ serverUrl: params?.serverUrl });
+				respond(true, { status: { botId: result.botId } });
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
 		// enroll 并发控制：同一时刻只允许一个活跃 enroll
 		let activeEnrollAbort = null;
 
@@ -429,13 +493,10 @@ const plugin = {
 
 				try {
 					if (action === 'bind') {
-						await stopRealtimeBridge(); // 先断开，避免 bindBot 内 unbind 触发 bot.unbound 竞态
-						const serverUrl = options.server ?? api.pluginConfig?.serverUrl;
-						const result = await bindBot({
+						const result = await doBind({
 							code: positionals[0],
-							serverUrl,
+							serverUrl: options.server,
 						});
-						await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
 						return { text: bindOk(result) };
 					}
 
@@ -483,8 +544,7 @@ const plugin = {
 					}
 
 					if (action === 'unbind') {
-						const result = await unbindBot({ serverUrl: options.server });
-						await stopRealtimeBridge();
+						const result = await doUnbind({ serverUrl: options.server });
 						return { text: unbindOk(result) };
 					}
 

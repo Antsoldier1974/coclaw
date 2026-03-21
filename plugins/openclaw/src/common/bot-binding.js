@@ -8,31 +8,53 @@ function resolveServerUrl(serverUrl) {
 	return serverUrl ?? process.env.COCLAW_SERVER_URL ?? DEFAULT_SERVER_URL;
 }
 
-export async function bindBot({ code, serverUrl }) {
+// 这些 HTTP 状态码表示 bot 在 server 端已不存在，视为解绑成功
+const ALREADY_UNBOUND_STATUSES = new Set([401, 404, 410]);
+
+function isAlreadyUnbound(err) {
+	return ALREADY_UNBOUND_STATUSES.has(err?.response?.status);
+}
+
+export async function bindBot({ code, serverUrl }, deps = {}) {
+	const {
+		readCfg = readConfig,
+		clearCfg = clearConfig,
+		writeCfg = writeConfig,
+		unbindServer = unbindWithServer,
+		bindServer = bindWithServer,
+	} = deps;
+
 	if (!code) {
 		throw new Error('binding code is required');
 	}
 
-	const config = await readConfig();
+	const config = await readCfg();
 
-	// 已绑定时自动解绑再重绑（解绑尽力而为，不阻塞新绑定）
+	// 已绑定时必须先解绑旧 bot，避免产生孤儿记录
 	let previousBotId;
 	if (config?.token) {
 		previousBotId = config.botId || 'unknown';
 		const oldBaseUrl = config.serverUrl;
 		if (oldBaseUrl) {
 			try {
-				await unbindWithServer({ baseUrl: oldBaseUrl, token: config.token });
-			} catch {
-				// 尽力而为，忽略解绑错误
+				await unbindServer({ baseUrl: oldBaseUrl, token: config.token });
+			} catch (err) {
+				if (!isAlreadyUnbound(err)) {
+					const rebindErr = new Error(
+						`Failed to unbind previous bot (${previousBotId}): ${err.message}. ` +
+						'Unbind manually first, then retry.',
+					);
+					rebindErr.code = 'UNBIND_FAILED';
+					throw rebindErr;
+				}
 			}
 		}
-		await clearConfig();
+		await clearCfg();
 	}
 
 	/* c8 ignore next */
 	const baseUrl = serverUrl ?? process.env.COCLAW_SERVER_URL ?? DEFAULT_SERVER_URL;
-	const data = await bindWithServer({
+	const data = await bindServer({
 		baseUrl,
 		code,
 	});
@@ -41,7 +63,7 @@ export async function bindBot({ code, serverUrl }) {
 		throw new Error('invalid bind response');
 	}
 
-	await writeConfig({
+	await writeCfg({
 		serverUrl: baseUrl,
 		botId: data.botId,
 		token: data.token,
@@ -128,8 +150,14 @@ export async function waitForClaimAndSave({ serverUrl, code, waitToken, signal }
 	}
 }
 
-export async function unbindBot({ serverUrl }) {
-	const config = await readConfig();
+export async function unbindBot({ serverUrl }, deps = {}) {
+	const {
+		readCfg = readConfig,
+		clearCfg = clearConfig,
+		unbindServer = unbindWithServer,
+	} = deps;
+
+	const config = await readCfg();
 	if (!config?.token) {
 		const err = new Error('not bound, nothing to unbind');
 		err.code = 'NOT_BOUND';
@@ -138,25 +166,18 @@ export async function unbindBot({ serverUrl }) {
 
 	const baseUrl = serverUrl ?? config.serverUrl;
 
-	// 用户主动解绑：无论 server 通知成功与否，都清理本地绑定
-	let data = null;
-	let serverError = null;
 	if (baseUrl) {
 		try {
-			data = await unbindWithServer({
-				baseUrl,
-				token: config.token,
-			});
-		}
-		catch (err) {
-			serverError = err;
+			await unbindServer({ baseUrl, token: config.token });
+		} catch (err) {
+			// bot 在 server 已不存在 — 视为解绑成功，继续清理本地
+			if (!isAlreadyUnbound(err)) {
+				throw err;
+			}
 		}
 	}
 
-	await clearConfig();
+	await clearCfg();
 
-	return {
-		botId: data?.botId ?? config.botId,
-		serverError,
-	};
+	return { botId: config.botId };
 }

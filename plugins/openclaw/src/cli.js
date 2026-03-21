@@ -92,7 +92,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
 				console.error(notBound());
 				return 1;
 			}
-			/* c8 ignore start -- 防御性兜底，unbindBot 当前仅抛 NOT_BOUND */
+			/* c8 ignore start -- 防御性兜底，unbindBot 主要抛 NOT_BOUND，也可能抛网络/HTTP 错误 */
 			throw err;
 		}
 		/* c8 ignore stop */

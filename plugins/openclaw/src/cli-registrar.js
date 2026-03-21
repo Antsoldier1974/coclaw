@@ -1,9 +1,7 @@
-import { bindBot, unbindBot } from './common/bot-binding.js';
 import { resolveErrorMessage } from './common/errors.js';
 import { callGatewayMethod } from './common/gateway-notify.js';
 import {
 	notBound, bindOk, unbindOk,
-	gatewayNotified, gatewayNotifyFailed,
 	claimCodeCreated,
 } from './common/messages.js';
 
@@ -43,55 +41,82 @@ async function restartGatewayProcess(spawnFn) {
 }
 /* c8 ignore stop */
 
-function resolveServerUrl(opts, config) {
-	return opts?.server
-		?? config?.plugins?.entries?.['openclaw-coclaw']?.config?.serverUrl
-		?? process.env.COCLAW_SERVER_URL;
+// bind/unbind/enroll 的 RPC 超时（覆盖默认 10s）
+// 卡点是 gateway ↔ server 的网络通信，bind 最多两次（先解绑再绑定）
+const RPC_TIMEOUT_MS = 30_000;
+
+/**
+ * 通用 RPC 调用：gateway 不可用时重启重试
+ */
+async function callWithRetry(method, deps, rpcOpts) {
+	const callRpc = () => callGatewayMethod(method, deps.spawn, rpcOpts);
+
+	let result = await callRpc();
+
+	if (isGatewayUnavailable(result)) {
+		const restartFn = deps.restartGateway ?? restartGatewayProcess;
+		try {
+			await restartFn(deps.spawn);
+		} catch {
+			// 重启失败，仍然尝试再次 RPC
+		}
+		result = await callRpc();
+	}
+
+	return result;
 }
 
 /**
- * 注册 `openclaw coclaw bind/unbind` CLI 子命令
+ * 通用 RPC 错误输出
+ */
+function handleRpcError(result, fallbackMsg) {
+	if (isGatewayUnavailable(result)) {
+		console.error('Error: Could not reach gateway. Ensure OpenClaw gateway is running.');
+		console.error('  Try: openclaw gateway start');
+	} else {
+		console.error(`Error: ${extractRpcErrorMessage(result.message) || fallbackMsg}`);
+	}
+	process.exitCode = 1;
+}
+
+/**
+ * 注册 `openclaw coclaw bind/unbind/enroll` CLI 子命令
+ * bind/unbind/enroll 均为瘦 CLI，通过 gateway RPC 执行
  * @param {object} ctx - OpenClaw CLI 注册上下文
  * @param {import('commander').Command} ctx.program - Commander.js Command 实例
- * @param {object} ctx.config - OpenClaw 配置
  * @param {object} ctx.logger - 日志实例
  * @param {object} [deps] - 可注入依赖（测试用）
  */
-export function registerCoclawCli({ program, config, logger }, deps = {}) {
-	const notifyGateway = async (method) => {
-		const action = method.endsWith('refreshBridge') ? 'refresh' : 'stop';
-		try {
-			const result = await callGatewayMethod(method, deps.spawn);
-			if (result.ok) {
-				logger.info?.(`[coclaw] ${gatewayNotified(action)}`);
-			} else {
-				logger.warn?.(`[coclaw] ${gatewayNotifyFailed()}`);
-			}
-		}
-		/* c8 ignore next 3 -- callGatewayMethod 已内部兜底，此处纯防御 */
-		catch {
-			logger.warn?.(`[coclaw] ${gatewayNotifyFailed()}`);
-		}
-	};
-
+export function registerCoclawCli({ program, logger }, deps = {}) {
 	const coclaw = program
 		.command('coclaw')
 		.description('CoClaw bind/unbind commands');
 
 	coclaw
 		.command('bind <code>')
-		.description('Bind this OpenClaw instance to CoClaw')
+		.description('Bind this Claw to CoClaw')
 		.option('--server <url>', 'CoClaw server URL')
 		.action(async (code, opts) => {
 			try {
-				// 先断开 bridge，避免 unbindWithServer 触发的 bot.unbound 竞态
-				await notifyGateway('coclaw.stopBridge');
-				const serverUrl = resolveServerUrl(opts, config);
-				const result = await bindBot({ code, serverUrl });
-				/* c8 ignore next */
-				console.log(bindOk(result));
-				await notifyGateway('coclaw.refreshBridge');
-			} catch (err) {
+				const params = { code };
+				if (opts?.server) params.serverUrl = opts.server;
+				const result = await callWithRetry('coclaw.bind', deps, { params, timeoutMs: RPC_TIMEOUT_MS });
+
+				if (!result.ok) {
+					if (result.message && /NOT_BOUND|UNBIND_FAILED/.test(result.message)) {
+						console.error(`Error: ${extractRpcErrorMessage(result.message) || 'bind failed'}`);
+						process.exitCode = 1;
+						return;
+					}
+					handleRpcError(result, 'bind failed');
+					return;
+				}
+
+				const data = result.status;
+				console.log(bindOk(data));
+			}
+			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
+			catch (err) {
 				console.error(`Error: ${resolveErrorMessage(err)}`);
 				process.exitCode = 1;
 			}
@@ -99,36 +124,16 @@ export function registerCoclawCli({ program, config, logger }, deps = {}) {
 
 	coclaw
 		.command('enroll')
-		.description('Enroll this OpenClaw instance with CoClaw (generate a claim code for the user)')
+		.description('Enroll this Claw with CoClaw (generate a claim code for the user)')
 		.option('--server <url>', 'CoClaw server URL')
 		.action(async (opts) => {
 			try {
-				const rpcOpts = opts?.server ? { params: { serverUrl: opts.server } } : undefined;
-				const callRpc = () => callGatewayMethod('coclaw.enroll', deps.spawn, rpcOpts);
-
-				let result = await callRpc();
-
-				// 仅在 gateway 不可用时重启重试，业务错误不重启
-				if (isGatewayUnavailable(result)) {
-					logger.info?.('[coclaw] enroll RPC failed, attempting gateway restart...');
-					const restartFn = deps.restartGateway ?? restartGatewayProcess;
-					try {
-						await restartFn(deps.spawn);
-					} catch {
-						// 重启失败，仍然尝试再次 RPC
-					}
-					result = await callRpc();
-				}
+				const rpcOpts = { timeoutMs: RPC_TIMEOUT_MS };
+				if (opts?.server) rpcOpts.params = { serverUrl: opts.server };
+				const result = await callWithRetry('coclaw.enroll', deps, rpcOpts);
 
 				if (!result.ok) {
-					if (isGatewayUnavailable(result)) {
-						console.error('Error: Could not reach gateway. Ensure OpenClaw gateway is running.');
-						console.error('  Try: openclaw gateway start');
-					} else {
-						// 业务错误（如已绑定）：输出 gateway 返回的错误信息
-						console.error(`Error: ${extractRpcErrorMessage(result.message) || 'enroll failed'}`);
-					}
-					process.exitCode = 1;
+					handleRpcError(result, 'enroll failed');
 					return;
 				}
 
@@ -154,24 +159,31 @@ export function registerCoclawCli({ program, config, logger }, deps = {}) {
 
 	coclaw
 		.command('unbind')
-		.description('Unbind this OpenClaw instance from CoClaw')
+		.description('Unbind this Claw from CoClaw')
 		.option('--server <url>', 'CoClaw server URL')
 		.action(async (opts) => {
 			try {
-				const result = await unbindBot({ serverUrl: opts?.server });
-				/* c8 ignore next */
-				console.log(unbindOk(result));
-				await notifyGateway('coclaw.stopBridge');
-			} catch (err) {
-				if (err.code === 'NOT_BOUND') {
-					console.error(notBound());
+				const rpcOpts = { timeoutMs: RPC_TIMEOUT_MS };
+				if (opts?.server) rpcOpts.params = { serverUrl: opts.server };
+				const result = await callWithRetry('coclaw.unbind', deps, rpcOpts);
+
+				if (!result.ok) {
+					if (result.message && /NOT_BOUND/.test(result.message)) {
+						console.error(notBound());
+					} else {
+						handleRpcError(result, 'unbind failed');
+					}
 					process.exitCode = 1;
 					return;
 				}
-				/* c8 ignore start -- 防御性兜底，unbindBot 当前仅抛 NOT_BOUND */
+
+				const data = result.status;
+				console.log(unbindOk(data));
+			}
+			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
+			catch (err) {
 				console.error(`Error: ${resolveErrorMessage(err)}`);
 				process.exitCode = 1;
 			}
-			/* c8 ignore stop */
 		});
 }

@@ -163,9 +163,13 @@ export class RealtimeBridge {
 			?? DEFAULT_GATEWAY_WS_URL;
 	}
 
-	async __clearTokenLocal() {
+	async __clearTokenLocal(unboundBotId) {
 		const cfg = await this.__readConfig();
 		if (!cfg?.token) {
+			return;
+		}
+		// 只清除匹配的 bot，避免新绑定被误清
+		if (unboundBotId && cfg.botId && cfg.botId !== unboundBotId) {
 			return;
 		}
 		await this.__clearConfig();
@@ -518,6 +522,11 @@ export class RealtimeBridge {
 			this.gatewayWs = null;
 			this.gatewayReady = false;
 			this.gatewayConnectReqId = null;
+			/* c8 ignore next 3 -- gateway 意外断开时结算未完成 RPC，避免等超时 */
+			for (const [, settle] of this.gatewayPendingRequests) {
+				settle({ ok: false, error: 'gateway_closed' });
+			}
+			this.gatewayPendingRequests.clear();
 		});
 		ws.addEventListener('error', () => {});
 	}
@@ -681,7 +690,7 @@ export class RealtimeBridge {
 			try {
 				const payload = JSON.parse(String(event.data ?? '{}'));
 				if (payload?.type === 'bot.unbound') {
-					await this.__clearTokenLocal();
+					await this.__clearTokenLocal(payload.botId);
 					try { sock.close(4001, 'bot_unbound'); }
 					/* c8 ignore next */
 					catch {}
@@ -713,7 +722,13 @@ export class RealtimeBridge {
 			this.__closeGatewayWs();
 
 			if (event?.code === 4001 || event?.code === 4003) {
-				await this.__clearTokenLocal();
+				try {
+					await this.__clearTokenLocal();
+				}
+				/* c8 ignore next 3 -- 防御性兜底，磁盘 I/O 异常时不可崩溃 gateway */
+				catch (e) {
+					this.logger.error?.('[coclaw] clearTokenLocal failed on auth-close', e);
+				}
 				return;
 			}
 

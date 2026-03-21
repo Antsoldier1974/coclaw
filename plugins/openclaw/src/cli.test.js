@@ -97,28 +97,44 @@ test('cli bind should re-throw errors from bindBot', async () => {
 	await assert.rejects(() => main(['bind'], { spawn: noopSpawn }), /binding code is required/);
 });
 
-test('cli bind should rebind when already bound', async () => {
+test('cli bind should rebind when already bound (old server returns 401)', async () => {
 	const logs = [];
 	const oldLog = console.log;
 	const oldWarn = console.warn;
 	console.log = (...args) => logs.push(args.join(' '));
 	console.warn = () => {};
 
+	// 旧 server 返回 401（bot 已不存在）
+	const oldMock = await createMockServer({ unbindStatus: 401 });
 	const mock = await createMockServer();
 	const dir = await setupDir('coclaw-cli-rebind-');
-	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: 'http://127.0.0.1:1' });
+	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: oldMock.baseUrl });
 
 	try {
 		const code = await main(['bind', 'newcode', '--server', mock.baseUrl], { spawn: noopSpawn });
 		assert.equal(code, 0);
 		assert.ok(logs.some((l) => l.includes('bound to CoClaw')));
-		assert.ok(logs.some((l) => l.includes('previous binding')));
+		assert.ok(logs.some((l) => l.includes('previous Claw')));
 	}
 	finally {
 		console.log = oldLog;
 		console.warn = oldWarn;
+		await oldMock.close();
 		await mock.close();
 	}
+});
+
+test('cli bind should fail when old server is unreachable (UNBIND_FAILED)', async () => {
+	const dir = await setupDir('coclaw-cli-rebind-fail-');
+	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: 'http://127.0.0.1:1' });
+
+	await assert.rejects(
+		() => main(['bind', 'newcode', '--server', 'http://127.0.0.1:2'], { spawn: noopSpawn }),
+		(err) => {
+			assert.equal(err.code, 'UNBIND_FAILED');
+			return true;
+		},
+	);
 });
 
 test('cli bind success should notify gateway via RPC', async () => {
@@ -266,22 +282,18 @@ test('cli unbind should return 1 when not bound', async () => {
 	}
 });
 
-test('cli unbind should succeed with warning when server fails', async () => {
-	const logs = [];
-	const oldLog = console.log;
-	console.log = (...args) => logs.push(args.join(' '));
-
+test('cli unbind should throw when server is unreachable (no orphan)', async () => {
 	const dir = await setupDir('coclaw-cli-unbind-rethrow-');
-	// 有 token 但 server 不可达
 	const bp = nodePath.join(dir, 'coclaw', 'bindings.json');
 	await fs.mkdir(nodePath.dirname(bp), { recursive: true });
 	await fs.writeFile(bp, JSON.stringify({ default: { botId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' } }), 'utf8');
 
-	try {
-		const code = await main(['unbind', '--server', 'http://127.0.0.1:1'], { spawn: noopSpawn });
-		assert.equal(code, 0);
-		assert.ok(logs.some((l) => l.includes('unbound') && l.includes('server notification failed')));
-	} finally {
-		console.log = oldLog;
-	}
+	await assert.rejects(
+		() => main(['unbind', '--server', 'http://127.0.0.1:1'], { spawn: noopSpawn }),
+		(err) => {
+			// 网络错误，unbindBot 直接抛出
+			assert.ok(err.message);
+			return true;
+		},
+	);
 });

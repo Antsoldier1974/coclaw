@@ -11,13 +11,23 @@
   - channel（coclaw）
   - services：`coclaw-realtime-bridge`（WebSocket 桥接）、`coclaw-auto-upgrade`（自动升级调度）
   - command（`/coclaw bind/unbind`）
-  - gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.enroll` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll` / `nativeui.sessions.get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById`）
+  - gateway methods（`coclaw.bind` / `coclaw.unbind` / `coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.enroll` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll` / `nativeui.sessions.get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById`）
   - CLI（`openclaw coclaw bind/unbind/enroll`）
 - 绑定信息存储在 `~/.openclaw/coclaw/bindings.json`（独立于 `openclaw.json`）。
 - 升级状态存储在 `~/.openclaw/coclaw/upgrade-state.json`，升级日志在 `upgrade-log.jsonl`。
 - 测试门禁：`pnpm verify` 通过，覆盖率 lines/statements/functions 100%，branches ≥ 95%。
 
 ## 关键里程碑
+
+### bind/unbind 瘦 CLI 化 & 强制 unbind（2026-03-21）
+- **架构变更**：`openclaw coclaw bind/unbind` CLI 命令改为瘦 CLI，通过 `coclaw.bind`/`coclaw.unbind` gateway RPC 在 gateway 进程内执行。CLI 不再直接操作 `bindings.json`。
+- **新增 gateway methods**：`coclaw.bind` / `coclaw.unbind`。gateway 内部的 `doBind`/`doUnbind` 统一管理 bind/unbind 逻辑和 bridge 生命周期，斜杠命令共用。
+- **强制 unbind**：重绑时的 auto-unbind 从 best-effort 改为强制。server 不可达时抛出 `UNBIND_FAILED`，不清理本地 config，避免产生孤儿 bot。server 返回 401/404/410 视为 bot 已不存在（`isAlreadyUnbound`），允许继续。
+- **config.js 加固**：`writeJson` 改用 `atomicWriteJsonFile`，`writeConfig`/`clearConfig` 用 `createMutex` 保护 read-modify-write。
+- **bridge botId 校验**：`__clearTokenLocal(unboundBotId)` 增加 botId 参数，只清除匹配的 bot config，防止新绑定被误清。
+- **RPC 超时**：bind/unbind/enroll 三条 CLI 命令统一使用 30s 超时（`RPC_TIMEOUT_MS`）。
+- **bind 失败恢复**：`doBind` 中 `bindBot` 失败时，`await restartRealtimeBridge()` 恢复原有连接（best-effort）。
+- 详见 ADR `docs/decisions/orphan-bot-prevention.md`。
 
 ### Enroll 流程修复与 gateway method 响应格式对齐（2026-03-20）
 - `gateway-notify.js`：`shell` 改为仅 Windows 启用（修复 JSON 参数被 shell 破坏的 bug）；新增 `escapeJsonForCmd()` 处理 Windows cmd.exe 转义；捕获 stderr 在 `exit_code_*` 时传递错误信息。

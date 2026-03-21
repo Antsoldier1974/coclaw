@@ -8,21 +8,17 @@ import {
 } from './messages.js';
 
 test('bindOk should format bind success message', () => {
-	assert.equal(bindOk({ botId: 'b1', rebound: false }), 'OK. Bot (b1) bound to CoClaw.');
-	assert.equal(bindOk({ botId: 'b2', rebound: true }), 'OK. Bot (b2) re-bound to CoClaw.');
+	assert.equal(bindOk({ botId: 'b1', rebound: false }), 'OK. Claw (b1) bound to CoClaw.');
+	assert.equal(bindOk({ botId: 'b2', rebound: true }), 'OK. Claw (b2) re-bound to CoClaw.');
 	assert.equal(
 		bindOk({ botId: 'b2', rebound: false, previousBotId: 'b1' }),
-		'OK. Bot (b2) bound to CoClaw. (previous binding to bot b1 was auto-removed)',
+		'OK. Claw (b2) bound to CoClaw. (previous Claw b1 was auto-unbound)',
 	);
 });
 
 test('unbindOk should format unbind success message', () => {
-	assert.equal(unbindOk({ botId: 'b1' }), 'OK. Bot (b1) unbound from CoClaw.');
-	assert.equal(unbindOk({}), 'OK. Bot (unknown) unbound from CoClaw.');
-	assert.equal(
-		unbindOk({ botId: 'b1', serverError: new Error('fetch fail') }),
-		'OK. Bot (b1) unbound from CoClaw. (server notification failed; you can unbind the orphan bot in the CoClaw app)',
-	);
+	assert.equal(unbindOk({ botId: 'b1' }), 'OK. Claw (b1) unbound from CoClaw.');
+	assert.equal(unbindOk({}), 'OK. Claw (unknown) unbound from CoClaw.');
 });
 
 test('notBound should return not-bound message', () => {

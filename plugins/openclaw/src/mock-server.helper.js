@@ -1,6 +1,6 @@
 import http from 'node:http';
 
-export async function createMockServer() {
+export async function createMockServer({ unbindStatus } = {}) {
 	const state = {
 		bound: false,
 		token: 'mock-token-1',
@@ -47,6 +47,12 @@ export async function createMockServer() {
 		}
 
 		if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
+			// 可配置 unbind 状态码（测试用）
+			if (unbindStatus) {
+				res.writeHead(unbindStatus, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ code: 'UNAUTHORIZED', message: 'forced status' }));
+				return;
+			}
 			const auth = req.headers.authorization;
 			if (auth !== `Bearer ${state.token}`) {
 				res.writeHead(401, { 'content-type': 'application/json' });
