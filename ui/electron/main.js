@@ -82,9 +82,14 @@ if (!gotLock) {
 			}
 		});
 
-		// 外部链接用系统浏览器打开
+		// 外部链接用系统浏览器打开（仅放行 http/https）
 		win.webContents.setWindowOpenHandler(({ url: openUrl }) => {
-			shell.openExternal(openUrl);
+			try {
+				const { protocol } = new URL(openUrl);
+				if (protocol === 'http:' || protocol === 'https:') {
+					shell.openExternal(openUrl);
+				}
+			} catch { /* 忽略无效 URL */ }
 			return { action: 'deny' };
 		});
 
