@@ -3,8 +3,22 @@
 		class="min-h-0 flex-1"
 		:class="scrollable ? 'overflow-auto overscroll-contain scrollbar-hide' : 'overflow-hidden'"
 	>
+		<!-- Capacitor header：logo + 名称 + 添加按钮 -->
+		<header v-if="showCapHeader" class="sticky top-0 z-10 flex items-center gap-2 border-b border-default bg-default pl-3.5 pr-1 py-[3px] md:hidden">
+			<img :src="logoSrc" alt="CoClaw" class="size-7 rounded" />
+			<span class="flex-1 truncate text-base font-semibold">{{ $t('layout.productName') }}</span>
+			<UButton
+				icon="i-lucide-plus"
+				color="primary"
+				variant="ghost"
+				size="xl"
+				class="cc-icon-btn-lg"
+				@click="$router.push('/bots/add')"
+			/>
+		</header>
+
 		<!-- Group 1: 机器人操作入口 -->
-		<nav class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
+		<nav v-if="botActionItems.length" class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
 				<RouterLink
 					v-for="item in botActionItems"
 					:key="item.id"
@@ -98,9 +112,12 @@
 <script>
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
+import { useEnvStore } from '../stores/env.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 import TopicItemActions from './TopicItemActions.vue';
 import defaultBotAvatar from '../assets/bot-avatars/openclaw.svg';
+import logoSrc from '../assets/coclaw-logo.jpg';
+import { isCapacitorApp } from '../utils/platform.js';
 
 function toTopicLabel(topic, t) {
 	if (typeof topic?.title === 'string' && topic.title.trim()) {
@@ -126,12 +143,18 @@ export default {
 	data() {
 		return {
 			defaultBotAvatar,
+			logoSrc,
 			agentsStore: null,
 			botsStore: null,
+			envStore: null,
 			topicsStore: null,
 		};
 	},
 	computed: {
+		/** Capacitor 无侧边栏模式下显示页面 header */
+		showCapHeader() {
+			return !this.scrollable && isCapacitorApp && this.envStore?.screen.ltMd;
+		},
 		/** 当前路由上下文解析出的活跃 agentId（仅 main session 路由时高亮 agent） */
 		activeAgentKey() {
 			const route = this.$route;
@@ -144,6 +167,15 @@ export default {
 			return '';
 		},
 		botActionItems() {
+			// Capacitor 无侧边栏模式：header 已有"+"按钮，仅用户无 bot 时显示引导项
+			if (this.showCapHeader) {
+				if (!this.botsStore?.fetched || this.botsStore.items.length > 0) {
+					return [];
+				}
+				return [
+					{ id: 'add-bot', label: this.$t('layout.addBot'), icon: 'i-lucide-plus', to: '/bots/add' },
+				];
+			}
 			const items = [
 				{ id: 'add-bot', label: this.$t('layout.addBot'), icon: 'i-lucide-plus', to: '/bots/add' },
 			];
@@ -215,6 +247,7 @@ export default {
 	mounted() {
 		this.agentsStore = useAgentsStore();
 		this.botsStore = useBotsStore();
+		this.envStore = useEnvStore();
 		this.topicsStore = useTopicsStore();
 		this.loadAllData();
 	},

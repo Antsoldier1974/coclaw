@@ -1,3 +1,4 @@
+import { ref } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { mount } from '@vue/test-utils';
 import { vi } from 'vitest';
@@ -5,6 +6,11 @@ import { vi } from 'vitest';
 import MainList from './MainList.vue';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
+
+let __mockIsCapacitorApp = false;
+vi.mock('../utils/platform.js', () => ({
+	get isCapacitorApp() { return __mockIsCapacitorApp; },
+}));
 
 vi.mock('../services/bots.api.js', () => ({
 	listBots: vi.fn().mockResolvedValue([]),
@@ -40,6 +46,12 @@ const UIconStub = {
 	template: '<span class="icon" :name="name"></span>',
 };
 
+const UButtonStub = {
+	props: ['icon', 'color', 'variant', 'size'],
+	template: '<button class="u-button-stub" @click="$emit(\'click\')"><slot /></button>',
+	emits: ['click'],
+};
+
 function createWrapper(props = {}) {
 	const pinia = createPinia();
 	setActivePinia(pinia);
@@ -53,6 +65,7 @@ function createWrapper(props = {}) {
 			stubs: {
 				RouterLink: RouterLinkStub,
 				UIcon: UIconStub,
+				UButton: UButtonStub,
 				TopicItemActions: { template: '<div class="topic-actions-stub" />' },
 			},
 			mocks: {
@@ -60,6 +73,7 @@ function createWrapper(props = {}) {
 					const map = {
 						'layout.addBot': '添加机器人',
 						'layout.manageBots': '管理机器人',
+						'layout.productName': 'CoClaw',
 						'layout.unnamedSession': '未命名会话',
 						'layout.notIndexed': '未索引',
 						'topic.newTopic': '新话题',
@@ -68,6 +82,7 @@ function createWrapper(props = {}) {
 				},
 				$route: { name: 'topics', params: {}, query: {} },
 				$router: {
+					push: vi.fn(),
 					resolve: (to) => ({
 						path: typeof to === 'string'
 							? to
@@ -231,7 +246,7 @@ test('agent item should NOT be active on topic route', async () => {
 		props: { currentPath: '/topics/t-uuid' },
 		global: {
 			plugins: [pinia],
-			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, TopicItemActions: { template: '<div />' } },
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, TopicItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addBot': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'topics-chat', params: { sessionId: 't-uuid' }, query: {} },
@@ -257,7 +272,7 @@ test('agent item should be active on main session route', async () => {
 		props: { currentPath: '/chat/b1/main' },
 		global: {
 			plugins: [pinia],
-			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, TopicItemActions: { template: '<div />' } },
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, TopicItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addBot': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'chat', params: { botId: 'b1', agentId: 'main' }, query: {} },
@@ -290,4 +305,116 @@ test('topic icon should show agent initial when no avatar', async () => {
 	const icon = topicNav.find('.rounded-full');
 	// agent display name defaults to agentId 'main' → initial 'M'
 	expect(icon.text()).toBe('M');
+});
+
+// --- showCapHeader 相关测试 ---
+
+test('should NOT show cap header when not in Capacitor', async () => {
+	__mockIsCapacitorApp = false;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	expect(wrapper.vm.showCapHeader).toBeFalsy();
+	expect(wrapper.text()).not.toContain('CoClaw');
+});
+
+test('should show cap header when Capacitor + ltMd', async () => {
+	__mockIsCapacitorApp = true;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	// 模拟 envStore.screen.ltMd 为 true
+	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
+	await wrapper.vm.$nextTick();
+
+	expect(wrapper.vm.showCapHeader).toBe(true);
+	expect(wrapper.text()).toContain('CoClaw');
+	// 应有"+"按钮
+	expect(wrapper.find('.u-button-stub').exists()).toBe(true);
+
+	__mockIsCapacitorApp = false;
+});
+
+test('should NOT show cap header when Capacitor + geMd (landscape/tablet)', async () => {
+	__mockIsCapacitorApp = true;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	// 模拟 envStore.screen.ltMd 为 false（横屏/平板）
+	wrapper.vm.envStore = { screen: { ltMd: ref(false) } };
+	await wrapper.vm.$nextTick();
+
+	expect(wrapper.vm.showCapHeader).toBe(false);
+
+	__mockIsCapacitorApp = false;
+});
+
+test('cap header "+" button should navigate to /bots/add', async () => {
+	__mockIsCapacitorApp = true;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
+	await wrapper.vm.$nextTick();
+
+	await wrapper.find('.u-button-stub').trigger('click');
+	expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/bots/add');
+
+	__mockIsCapacitorApp = false;
+});
+
+test('should hide Group 1 add-bot item when capHeader active and bots exist', async () => {
+	__mockIsCapacitorApp = true;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
+
+	const botsStore = useBotsStore();
+	botsStore.fetched = true;
+	botsStore.setBots([{ id: 'b1', name: 'Bot', online: true }]);
+	await wrapper.vm.$nextTick();
+
+	expect(wrapper.vm.showCapHeader).toBe(true);
+	expect(wrapper.vm.botActionItems).toEqual([]);
+
+	__mockIsCapacitorApp = false;
+});
+
+test('should show Group 1 add-bot item when capHeader active and no bots', async () => {
+	__mockIsCapacitorApp = true;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
+
+	const botsStore = useBotsStore();
+	botsStore.fetched = true;
+	botsStore.setBots([]);
+	await wrapper.vm.$nextTick();
+
+	expect(wrapper.vm.showCapHeader).toBe(true);
+	expect(wrapper.vm.botActionItems.length).toBe(1);
+	expect(wrapper.vm.botActionItems[0].id).toBe('add-bot');
+
+	__mockIsCapacitorApp = false;
+});
+
+test('should hide Group 1 add-bot item when capHeader active and bots not yet fetched', async () => {
+	__mockIsCapacitorApp = true;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
+
+	const botsStore = useBotsStore();
+	botsStore.fetched = false;
+	botsStore.setBots([]);
+	await wrapper.vm.$nextTick();
+
+	expect(wrapper.vm.showCapHeader).toBe(true);
+	// 未 fetch 完成前不显示引导项
+	expect(wrapper.vm.botActionItems).toEqual([]);
+
+	__mockIsCapacitorApp = false;
 });
