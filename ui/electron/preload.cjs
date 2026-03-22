@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 	// ---- 平台信息 ----
 	platform: process.platform, // 'win32' | 'darwin' | 'linux'
 
+	// ---- 壳子版本（打包时由 electron-builder extraMetadata 注入） ----
+	getShellVersion: () => ipcRenderer.invoke('app:getShellVersion'),
+
 	// ---- 对话框 ----
 	openFile: (options) => ipcRenderer.invoke('dialog:openFile', options),
 	saveFile: (options) => ipcRenderer.invoke('dialog:saveFile', options),
@@ -44,9 +47,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 	getSetting: (key) => ipcRenderer.invoke('store:get', key),
 	setSetting: (key, value) => ipcRenderer.invoke('store:set', key, value),
 
+	// ---- 下载 ----
+	downloadFile: (url) => ipcRenderer.invoke('download:start', url),
+
 	// ---- 事件监听（主进程 → 渲染进程）----
 	onDeepLink: (cb) => ipcRenderer.on('deep-link', (_e, url) => cb(url)),
 	onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, info) => cb(info)),
 	onWindowFocus: (cb) => ipcRenderer.on('window-focus', () => cb()),
 	onScreenshotTrigger: (cb) => ipcRenderer.on('screenshot-trigger', () => cb()),
+	onDownloadProgress: (cb) => ipcRenderer.on('download:progress', (_e, info) => cb(info)),
+	onDownloadDone: (cb) => ipcRenderer.on('download:done', (_e, info) => cb(info)),
 });

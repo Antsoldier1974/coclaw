@@ -12,11 +12,11 @@ let flashTimer = null;
 let isUnread = false;
 
 /**
- * 初始化系统托盘
+ * 初始化系统托盘（仅调用一次）
  * @param {Electron.App} app
- * @param {Electron.BrowserWindow} win
+ * @param {() => Electron.BrowserWindow | null} getWin - 获取当前主窗口的函数
  */
-export function initTray(app, win) {
+export function initTray(app, getWin) {
 	const iconPath = path.join(__dirname, '../build-resources/tray-icon.png');
 	const normalIcon = nativeImage.createFromPath(iconPath);
 
@@ -31,7 +31,10 @@ export function initTray(app, win) {
 	const contextMenu = Menu.buildFromTemplate([
 		{
 			label: t('显示窗口', 'Show Window'),
-			click: () => { win.show(); win.focus(); },
+			click: () => {
+				const win = getWin();
+				if (win) { win.show(); win.focus(); }
+			},
 		},
 		{ type: 'separator' },
 		{
@@ -46,6 +49,8 @@ export function initTray(app, win) {
 
 	// 左键单击：显示/隐藏窗口
 	tray.on('click', () => {
+		const win = getWin();
+		if (!win) return;
 		if (win.isVisible()) {
 			win.hide();
 		} else {
@@ -55,20 +60,32 @@ export function initTray(app, win) {
 	});
 
 	// 关闭窗口 → 根据设置隐藏到托盘或退出
-	win.on('close', (event) => {
-		if (app.isQuitting) return;
-		const minimizeToTray = store.get('minimize_to_tray', true);
-		if (minimizeToTray) {
-			event.preventDefault();
-			win.hide();
-		}
-	});
+	// 绑定到每个新窗口的 close 事件
+	function bindCloseToTray(win) {
+		win.on('close', (event) => {
+			if (app.isQuitting) return;
+			const minimizeToTray = store.get('minimize_to_tray', true);
+			if (minimizeToTray) {
+				event.preventDefault();
+				win.hide();
+			}
+		});
 
-	// 窗口获焦时通知 Web 端
-	win.on('focus', () => {
-		win.webContents.send('window-focus');
-		// 停止任务栏闪烁
-		win.flashFrame(false);
+		// 窗口获焦时通知 Web 端
+		win.on('focus', () => {
+			win.webContents.send('window-focus');
+			// 停止任务栏闪烁
+			win.flashFrame(false);
+		});
+	}
+
+	// 绑定当前窗口
+	const currentWin = getWin();
+	if (currentWin) bindCloseToTray(currentWin);
+
+	// 监听新窗口创建，自动绑定
+	app.on('browser-window-created', (_event, win) => {
+		bindCloseToTray(win);
 	});
 
 	// ---- IPC：托盘状态更新 ----

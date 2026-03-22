@@ -1,5 +1,5 @@
 import {
-	ipcMain, dialog, clipboard, shell, nativeImage,
+	ipcMain, dialog, clipboard, shell, nativeImage, session,
 	Notification, desktopCapturer, systemPreferences, app,
 } from 'electron';
 import Store from 'electron-store';
@@ -7,16 +7,18 @@ import Store from 'electron-store';
 const store = new Store();
 
 /**
- * 注册所有 IPC 处理器
- * @param {Electron.BrowserWindow} win
+ * 注册所有 IPC 处理器（仅调用一次）
+ * @param {() => Electron.BrowserWindow | null} getWin - 获取当前主窗口的函数
  */
-export function registerIpcHandlers(win) {
+export function registerIpcHandlers(getWin) {
 	// ---- 对话框 ----
 	ipcMain.handle('dialog:openFile', async (_, options) => {
-		return dialog.showOpenDialog(win, options);
+		const win = getWin();
+		return win ? dialog.showOpenDialog(win, options) : null;
 	});
 	ipcMain.handle('dialog:saveFile', async (_, options) => {
-		return dialog.showSaveDialog(win, options);
+		const win = getWin();
+		return win ? dialog.showSaveDialog(win, options) : null;
 	});
 
 	// ---- 剪贴板 ----
@@ -38,8 +40,8 @@ export function registerIpcHandlers(win) {
 	ipcMain.handle('notification:show', (_, title, body, options = {}) => {
 		const notif = new Notification({ title, body, ...options });
 		notif.on('click', () => {
-			win.show();
-			win.focus();
+			const win = getWin();
+			if (win) { win.show(); win.focus(); }
 		});
 		notif.show();
 	});
@@ -51,7 +53,8 @@ export function registerIpcHandlers(win) {
 
 	// ---- 任务栏/Dock ----
 	ipcMain.on('window:flashFrame', (_, flag) => {
-		win.flashFrame(flag);
+		const win = getWin();
+		if (win) win.flashFrame(flag);
 	});
 	ipcMain.on('app:setBadgeCount', (_, count) => {
 		if (process.platform === 'darwin') {
@@ -60,19 +63,22 @@ export function registerIpcHandlers(win) {
 	});
 	ipcMain.on('window:setOverlayIcon', (_, dataUrl, desc) => {
 		if (process.platform === 'win32') {
-			win.setOverlayIcon(nativeImage.createFromDataURL(dataUrl), desc || '');
+			const win = getWin();
+			if (win) win.setOverlayIcon(nativeImage.createFromDataURL(dataUrl), desc || '');
 		}
 	});
 	ipcMain.on('window:clearOverlayIcon', () => {
 		if (process.platform === 'win32') {
-			win.setOverlayIcon(null, '');
+			const win = getWin();
+			if (win) win.setOverlayIcon(null, '');
 		}
 	});
 	ipcMain.on('window:requestAttention', (_, type) => {
 		if (process.platform === 'darwin') {
 			app.dock.bounce(type === 'critical' ? 'critical' : 'informational');
 		} else {
-			win.flashFrame(true);
+			const win = getWin();
+			if (win) win.flashFrame(true);
 		}
 	});
 
@@ -93,6 +99,49 @@ export function registerIpcHandlers(win) {
 			return systemPreferences.getMediaAccessStatus('screen');
 		}
 		return 'granted';
+	});
+
+	// ---- 下载管理 ----
+	// Web 端主动触发下载（使用 Electron 原生 downloadURL）
+	ipcMain.handle('download:start', (_, url) => {
+		const win = getWin();
+		if (win) win.webContents.downloadURL(url);
+	});
+
+	// 拦截所有下载（含 <a download> 和 downloadURL 触发的）
+	session.defaultSession.on('will-download', (_event, item) => {
+		item.on('updated', (_e, state) => {
+			if (state === 'progressing' && !item.isPaused()) {
+				const win = getWin();
+				if (win) {
+					win.webContents.send('download:progress', {
+						url: item.getURL(),
+						filename: item.getFilename(),
+						percent: item.getTotalBytes() > 0
+							? item.getReceivedBytes() / item.getTotalBytes()
+							: 0,
+						transferredBytes: item.getReceivedBytes(),
+						totalBytes: item.getTotalBytes(),
+					});
+				}
+			}
+		});
+		item.once('done', (_e, state) => {
+			const win = getWin();
+			if (win) {
+				win.webContents.send('download:done', {
+					url: item.getURL(),
+					filename: item.getFilename(),
+					savePath: item.getSavePath(),
+					state, // 'completed' | 'cancelled' | 'interrupted'
+				});
+			}
+		});
+	});
+
+	// ---- 应用信息 ----
+	ipcMain.handle('app:getShellVersion', () => {
+		return app.getVersion();
 	});
 
 	// ---- 设置 ----

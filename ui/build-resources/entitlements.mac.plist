@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened Runtime: 允许加载未签名的动态库（Electron 框架需要） -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<!-- Hardened Runtime: 禁用库验证（Electron 子进程需要） -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<!-- 网络：允许出站连接（远程加载 Web 页面） -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- 麦克风访问 -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- 摄像头访问 -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<!-- JIT 编译（Electron V8 引擎需要） -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>

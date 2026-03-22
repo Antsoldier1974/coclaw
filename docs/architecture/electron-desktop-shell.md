@@ -133,25 +133,21 @@ win.loadURL('https://im.coclaw.net');
 ```
 ui/
 ├── electron/
-│   ├── main.js                # 主进程入口
-│   ├── preload.js             # 预加载脚本（contextBridge）
+│   ├── main.js                # 主进程入口（含 createWindow、activate、Dock 菜单）
+│   ├── preload.cjs            # 预加载脚本（contextBridge，CommonJS）
 │   ├── tray.js                # 系统托盘逻辑
-│   ├── ipc-handlers.js        # IPC 处理器注册（dialog/clipboard/badge/...）
-│   ├── permissions.js          # 权限自动授予逻辑
+│   ├── ipc-handlers.js        # IPC 处理器注册（dialog/clipboard/badge/download/...）
+│   ├── permissions.js         # 权限自动授予逻辑
 │   ├── deep-link.js           # Deep Link 处理
 │   ├── updater.js             # 自动更新逻辑
-│   └── store.js               # 用户偏好存储（electron-store）
+│   └── locale.js              # 系统语言检测与本地化文本
 ├── build-resources/
 │   ├── icon.ico               # Windows 应用图标
 │   ├── icon.icns              # macOS 应用图标
 │   ├── icon.png               # 通用（1024×1024）
-│   ├── tray-icon.png          # 托盘图标（正常状态）
-│   ├── tray-icon-unread.png   # 托盘图标（未读状态）
-│   ├── tray-iconTemplate.png  # macOS 托盘 template image
-│   ├── tray-iconTemplate@2x.png
-│   ├── installerIcon.ico      # Windows 安装程序图标
-│   ├── entitlements.mas.plist       # macOS App Store 沙箱权限
-│   └── entitlements.mas.inherit.plist  # macOS 子进程继承权限
+│   ├── tray-icon.png          # 托盘图标
+│   ├── entitlements.mac.plist          # macOS Hardened Runtime 权限
+│   └── entitlements.mac.inherit.plist  # macOS 子进程继承权限
 ├── electron-builder.yml       # electron-builder 配置
 ├── src/                       # 前端代码（现有，不变）
 ├── android/                   # Android 壳子（现有）
@@ -164,67 +160,62 @@ ui/
 ### 4.1 main.js — 应用入口
 
 ```js
-const { app, BrowserWindow, session } = require('electron');
-const path = require('node:path');
-const { initTray } = require('./tray');
-const { registerIpcHandlers } = require('./ipc-handlers');
-const { setupPermissions } = require('./permissions');
-const { handleDeepLink, setupSingleInstance } = require('./deep-link');
-const { initUpdater } = require('./updater');
-const windowStateKeeper = require('electron-window-state');
+// main.js（简化，完整代码见 electron/main.js）
+import { app, BrowserWindow, Menu, session } from 'electron';
+import windowStateKeeper from 'electron-window-state';
+// ... 其他 import
 
-// 单实例锁（Deep Link 需要）
 const gotLock = setupSingleInstance(app);
 if (!gotLock) {
   app.quit();
 } else {
-  app.whenReady().then(() => {
-    // 权限处理
-    setupPermissions(session.defaultSession);
-
-    // 窗口状态持久化
-    const mainWindowState = windowStateKeeper({
-      defaultWidth: 420,
-      defaultHeight: 780,
-    });
-
+  // 窗口创建提取为函数，供 activate 事件复用
+  function createWindow() {
+    const mainWindowState = windowStateKeeper({ defaultWidth: 420, defaultHeight: 780 });
     const win = new BrowserWindow({
-      x: mainWindowState.x,
-      y: mainWindowState.y,
-      width: mainWindowState.width,
-      height: mainWindowState.height,
-      minWidth: 360,
-      minHeight: 640,
-      title: 'CoClaw',
-      webPreferences: {
-        preload: path.join(__dirname, 'preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-      // macOS 标题栏
+      /* ... 窗口配置 ... */
       ...(process.platform === 'darwin' && {
         titleBarStyle: 'hiddenInset',
         trafficLightPosition: { x: 10, y: 10 },
       }),
     });
-
     mainWindowState.manage(win);
-    win.loadURL('https://im.coclaw.net');
-
-    // 注册 IPC 处理器
+    win.loadURL(isDev ? DEV_URL : REMOTE_URL);
     registerIpcHandlers(win);
-
-    // 系统托盘
     initTray(app, win);
+    if (!isDev) initUpdater(win);
+    return win;
+  }
 
-    // 自动更新
-    initUpdater();
+  app.whenReady().then(() => {
+    if (process.platform === 'win32') app.setAppUserModelId('net.coclaw.im');
 
-    // macOS AppUserModelId（Windows 通知需要）
-    if (process.platform === 'win32') {
-      app.setAppUserModelId('net.coclaw.im');
+    // macOS：完整菜单栏（App + Edit + View + Window）+ Dock 菜单
+    if (process.platform === 'darwin') {
+      Menu.setApplicationMenu(Menu.buildFromTemplate([/* ... */]));
+      app.dock.setMenu(Menu.buildFromTemplate([/* ... */]));
+    } else {
+      Menu.setApplicationMenu(null);
     }
+
+    setupPermissions(session.defaultSession);
+    registerProtocol(app);
+    createWindow();
+  });
+
+  // macOS：点击 Dock 图标时，若无窗口则重建
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    } else {
+      const win = BrowserWindow.getAllWindows()[0];
+      win.show();
+      win.focus();
+    }
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
   });
 }
 ```
@@ -237,6 +228,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   // ---- 平台信息 ----
   platform: process.platform,  // 'win32' | 'darwin' | 'linux'
+
+  // ---- 壳子版本 ----
+  getShellVersion: () => ipcRenderer.invoke('app:getShellVersion'),
 
   // ---- 对话框 ----
   openFile: (options) => ipcRenderer.invoke('dialog:openFile', options),
@@ -272,7 +266,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ---- 截图 ----
   getScreenSources: () => ipcRenderer.invoke('screenshot:getSources'),
   getScreenPermission: () => ipcRenderer.invoke('screenshot:checkPermission'),
-  captureScreen: (sourceId) => ipcRenderer.invoke('screenshot:capture', sourceId),
+
+  // ---- 下载 ----
+  downloadFile: (url) => ipcRenderer.invoke('download:start', url),
 
   // ---- 设置 ----
   getSetting: (key) => ipcRenderer.invoke('store:get', key),
@@ -283,6 +279,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, info) => cb(info)),
   onWindowFocus: (cb) => ipcRenderer.on('window-focus', () => cb()),
   onScreenshotTrigger: (cb) => ipcRenderer.on('screenshot-trigger', () => cb()),
+  onDownloadProgress: (cb) => ipcRenderer.on('download:progress', (_e, info) => cb(info)),
+  onDownloadDone: (cb) => ipcRenderer.on('download:done', (_e, info) => cb(info)),
 });
 ```
 

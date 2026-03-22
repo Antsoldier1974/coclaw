@@ -7,7 +7,7 @@ import { registerIpcHandlers } from './ipc-handlers.js';
 import { setupPermissions } from './permissions.js';
 import { setupSingleInstance, registerProtocol } from './deep-link.js';
 import { initUpdater } from './updater.js';
-import { getAppTitle } from './locale.js';
+import { getAppTitle, t } from './locale.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
@@ -15,56 +15,24 @@ const isDev = !app.isPackaged;
 const REMOTE_URL = 'https://im.coclaw.net';
 const DEV_URL = 'http://localhost:5173';
 
+/** 当前主窗口引用，供各模块通过 getMainWindow() 获取 */
+let mainWin = null;
+
+/** 获取当前主窗口（可能为 null） */
+export function getMainWindow() {
+	return mainWin;
+}
+
 // 单实例锁（Deep Link 需要）
 const gotLock = setupSingleInstance(app);
 if (!gotLock) {
 	app.quit();
 } else {
-	app.whenReady().then(() => {
-		// Windows 通知需要 AppUserModelId
-		if (process.platform === 'win32') {
-			app.setAppUserModelId('net.coclaw.im');
-		}
-
-		// 移除默认菜单栏（Windows/Linux）；macOS 保留最小菜单以支持 Cmd+C/V/X/A
-		if (process.platform === 'darwin') {
-			Menu.setApplicationMenu(Menu.buildFromTemplate([
-				{
-					label: app.name,
-					submenu: [
-						{ role: 'about' },
-						{ type: 'separator' },
-						{ role: 'hide' },
-						{ role: 'hideOthers' },
-						{ role: 'unhide' },
-						{ type: 'separator' },
-						{ role: 'quit' },
-					],
-				},
-				{
-					label: 'Edit',
-					submenu: [
-						{ role: 'undo' },
-						{ role: 'redo' },
-						{ type: 'separator' },
-						{ role: 'cut' },
-						{ role: 'copy' },
-						{ role: 'paste' },
-						{ role: 'selectAll' },
-					],
-				},
-			]));
-		} else {
-			Menu.setApplicationMenu(null);
-		}
-
-		// 权限处理
-		setupPermissions(session.defaultSession);
-
-		// 注册 Deep Link 协议
-		registerProtocol(app);
-
-		// 窗口状态持久化
+	/**
+	 * 创建主窗口（首次启动 + macOS activate 复用）
+	 * 仅创建 BrowserWindow 和绑定窗口级事件，不注册全局 IPC/tray/updater
+	 */
+	function createWindow() {
 		const mainWindowState = windowStateKeeper({
 			defaultWidth: 420,
 			defaultHeight: 780,
@@ -95,6 +63,7 @@ if (!gotLock) {
 		});
 
 		mainWindowState.manage(win);
+		mainWin = win;
 
 		// 加载页面
 		const url = isDev ? DEV_URL : REMOTE_URL;
@@ -119,15 +88,109 @@ if (!gotLock) {
 			return { action: 'deny' };
 		});
 
-		// 注册 IPC 处理器
-		registerIpcHandlers(win);
+		// 窗口销毁时清理引用
+		win.on('closed', () => {
+			mainWin = null;
+		});
 
-		// 系统托盘
-		initTray(app, win);
+		return win;
+	}
+
+	app.whenReady().then(() => {
+		// Windows 通知需要 AppUserModelId
+		if (process.platform === 'win32') {
+			app.setAppUserModelId('net.coclaw.im');
+		}
+
+		// macOS：完整菜单栏（App + Edit + View + Window）
+		if (process.platform === 'darwin') {
+			Menu.setApplicationMenu(Menu.buildFromTemplate([
+				{
+					label: app.name,
+					submenu: [
+						{ role: 'about' },
+						{ type: 'separator' },
+						{ role: 'hide' },
+						{ role: 'hideOthers' },
+						{ role: 'unhide' },
+						{ type: 'separator' },
+						{ role: 'quit' },
+					],
+				},
+				{
+					label: 'Edit',
+					submenu: [
+						{ role: 'undo' },
+						{ role: 'redo' },
+						{ type: 'separator' },
+						{ role: 'cut' },
+						{ role: 'copy' },
+						{ role: 'paste' },
+						{ role: 'pasteAndMatchStyle' },
+						{ role: 'delete' },
+						{ role: 'selectAll' },
+					],
+				},
+				{
+					label: 'View',
+					submenu: [
+						{ role: 'reload' },
+						{ role: 'forceReload' },
+						{ role: 'toggleDevTools' },
+						{ type: 'separator' },
+						{ role: 'resetZoom' },
+						{ role: 'zoomIn' },
+						{ role: 'zoomOut' },
+						{ type: 'separator' },
+						{ role: 'togglefullscreen' },
+					],
+				},
+				{
+					label: 'Window',
+					submenu: [
+						{ role: 'minimize' },
+						{ role: 'zoom' },
+						{ type: 'separator' },
+						{ role: 'front' },
+					],
+				},
+			]));
+
+			// macOS Dock 右键菜单
+			app.dock.setMenu(Menu.buildFromTemplate([
+				{
+					label: t('显示窗口', 'Show Window'),
+					click: () => {
+						const win = getMainWindow();
+						if (win) {
+							win.show();
+							win.focus();
+						} else {
+							createWindow();
+						}
+					},
+				},
+			]));
+		} else {
+			Menu.setApplicationMenu(null);
+		}
+
+		// 权限处理
+		setupPermissions(session.defaultSession);
+
+		// 注册 Deep Link 协议
+		registerProtocol(app);
+
+		// 创建主窗口
+		createWindow();
+
+		// 以下只注册一次，通过 getMainWindow() 获取当前窗口
+		registerIpcHandlers(getMainWindow);
+		initTray(app, getMainWindow);
 
 		// 自动更新（仅生产模式）
 		if (!isDev) {
-			initUpdater(win);
+			initUpdater(getMainWindow);
 		}
 
 		// 全局快捷键：截图
@@ -135,10 +198,22 @@ if (!gotLock) {
 			? 'Command+Shift+A'
 			: 'Ctrl+Shift+A';
 		const registered = globalShortcut.register(screenshotKey, () => {
-			win.webContents.send('screenshot-trigger');
+			const win = getMainWindow();
+			if (win) win.webContents.send('screenshot-trigger');
 		});
 		if (!registered) {
 			console.warn(`截图快捷键 ${screenshotKey} 注册失败，可能已被其他应用占用`);
+		}
+	});
+
+	// macOS：点击 Dock 图标时，若无窗口则重建
+	app.on('activate', () => {
+		if (BrowserWindow.getAllWindows().length === 0) {
+			createWindow();
+		} else {
+			const win = BrowserWindow.getAllWindows()[0];
+			win.show();
+			win.focus();
 		}
 	});
 
