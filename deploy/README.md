@@ -7,9 +7,47 @@
 ```bash
 cd coclaw
 cp .env.example .env
-# 必须修改：SESSION_SECRET（openssl rand -base64 32）
-# 必须修改：APP_DOMAIN（你的域名）
+```
+
+必须修改：
+- `APP_DOMAIN` — 你的域名或 IP
+- `SESSION_SECRET` — 随机字符串（`openssl rand -base64 32`）
+- `HTTPS_MODE` — 根据部署场景选择（见下方）
+
+### 公网部署（HTTPS 自动签发，默认）
+
+```bash
+# .env 中设置：HTTPS_MODE=auto（默认值）、CERTBOT_EMAIL
+
+# 首次启动：先签发证书
+docker compose up -d nginx mysql server
+docker compose --profile init-cert run --rm certbot-init
+
+# 正式启动（含证书自动续期）
 docker compose --profile auto-https up -d
+```
+
+### 内网 HTTPS（自签名证书）
+
+```bash
+# .env 中设置：
+# HTTPS_MODE=custom
+# ENFORCE_HTTPS=false
+# APP_DOMAIN=192.168.1.100（或内网域名）
+
+docker compose up -d
+# 启动时自动生成自签名证书，无需额外操作
+# 也可提前将自备证书放到 certbot/conf/live/${APP_DOMAIN}/ 下
+```
+
+### 内网纯 HTTP
+
+```bash
+# .env 中设置：
+# HTTPS_MODE=off
+# ENFORCE_HTTPS=false
+
+docker compose up -d
 ```
 
 ## 目录结构
@@ -41,34 +79,23 @@ coclaw/                              # 部署根目录（远端为 ~/coclaw）
 
 ## 环境配置
 
-```bash
-cp .env.example .env
-```
-
-必须修改的项：
-- `APP_DOMAIN` — 你的域名
-- `SESSION_SECRET` — 随机字符串（`openssl rand -base64 32`）
-
-可选修改：MySQL 密码（默认值可直接使用，仅 Docker 内网可达）。
+详见"快速开始"中各场景的 `.env` 设置。MySQL 密码可选修改（默认值仅 Docker 内网可达）。
 
 ## HTTPS 模式
+
+在 `.env` 中设置 `HTTPS_MODE`，nginx 启动时 `init.sh` 自动选择对应配置：
 
 | 模式 | 场景 | 操作 |
 |------|------|------|
 | `auto` | 公网，Let's Encrypt（默认） | 设置 `CERTBOT_EMAIL`，启动加 `--profile auto-https` |
-| `custom` | 自备证书（企业 CA / 自签名） | 证书放到 `certbot/conf/live/${APP_DOMAIN}/`，需包含 `fullchain.pem` 和 `privkey.pem` |
-| `off` | 仅 HTTP（内网小团队） | 将 `nginx/app-http.conf.template` 复制为 `nginx/templates/app.conf.template`（替换原文件） |
+| `custom` | 自备证书（企业 CA / 自签名） | 可选：将证书放到 `certbot/conf/live/${APP_DOMAIN}/`（需 `fullchain.pem` + `privkey.pem`）；未提供则自动生成自签名证书 |
+| `off` | 仅 HTTP（内网小团队） | 只需设置 `HTTPS_MODE=off`，无需其他操作 |
 
 `--profile auto-https` 会启动 certbot 续期容器，每 12 小时自动检查证书到期并续期。不加该 profile 则 certbot 不启动。
 
 ## 首次证书签发（HTTPS_MODE=auto）
 
-```bash
-# 确保 80 端口可从公网访问
-docker compose up -d nginx mysql server     # 先启动（不含 certbot）
-docker compose --profile init-cert run --rm certbot-init
-docker compose --profile auto-https up -d   # 加入 certbot 续期
-```
+见"快速开始 > 公网部署"。确保 80 端口可从公网访问。
 
 ## 服务管理
 
