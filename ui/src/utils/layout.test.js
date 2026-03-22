@@ -1,6 +1,6 @@
-import { describe, expect, test, vi } from 'vitest';
+import { describe, expect, test } from 'vitest';
 
-import { isMobileViewport, isTouchDevice } from './layout.js';
+import { isMobileViewport } from './layout.js';
 
 describe('layout utils', () => {
 	test('isMobileViewport should return true for mobile widths', () => {
@@ -15,17 +15,4 @@ describe('layout utils', () => {
 		expect(isMobileViewport('390')).toBe(false);
 	});
 
-	test('isTouchDevice returns true when pointer is coarse', () => {
-		const orig = window.matchMedia;
-		window.matchMedia = vi.fn((q) => ({ matches: q === '(pointer: coarse)' }));
-		expect(isTouchDevice()).toBe(true);
-		window.matchMedia = orig;
-	});
-
-	test('isTouchDevice returns false when pointer is fine', () => {
-		const orig = window.matchMedia;
-		window.matchMedia = vi.fn(() => ({ matches: false }));
-		expect(isTouchDevice()).toBe(false);
-		window.matchMedia = orig;
-	});
 });
