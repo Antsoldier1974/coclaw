@@ -27,7 +27,6 @@ coclaw/                              # 部署根目录（远端为 ~/coclaw）
       default.conf.template          # 拦截非法访问
     app-http.conf.template           # HTTP-only 备选（不在 templates/ 中）
     includes/                        # 代理配置片段
-    ssl/                             # default server 自签名证书
   certbot/
     scripts/                         # 证书签发与续期脚本
     conf/                            # 证书存储（不入库）

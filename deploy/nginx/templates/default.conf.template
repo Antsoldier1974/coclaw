@@ -16,10 +16,3 @@ server {
 	}
 }
 
-server {
-	listen 443 ssl default_server;
-	server_name _;
-	ssl_certificate /etc/nginx/ssl/offline444.net.crt;
-	ssl_certificate_key /etc/nginx/ssl/offline444.net.key;
-	return 444;
-}

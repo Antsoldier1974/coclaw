@@ -24,7 +24,6 @@ deploy/
       proxy-common.conf
       proxy-sse.conf
       proxy-ws.conf
-    ssl/                       # 默认 server 的自签名证书
   certbot/
     scripts/
   static/                     # UI 发布产物（gitignore）
