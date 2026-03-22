@@ -376,8 +376,10 @@ export const useChatStore = defineStore('chat', {
 							if (this.__streamingTimer) clearTimeout(this.__streamingTimer);
 							this.__streamingTimer = setTimeout(() => {
 								this.__agentSettled = true;
-								this.__cleanupStreaming();
+								this.__cleanupTimersAndListeners();
+								this.__clearStreamingFlags();
 								this.sending = false;
+								this.__reconcileMessages();
 								const err = new Error('post-acceptance timeout');
 								err.code = 'POST_ACCEPTANCE_TIMEOUT';
 								timeoutReject(err);
@@ -470,8 +472,17 @@ export const useChatStore = defineStore('chat', {
 						}
 					}
 				}
-				this.__cleanupStreaming();
-				this.sending = false;
+				if (this.__accepted) {
+					// 已被服务端接受，保留消息并从服务端拉取真实状态
+					this.__cleanupTimersAndListeners();
+					this.__clearStreamingFlags();
+					this.sending = false;
+					this.__reconcileMessages();
+				}
+				else {
+					this.__cleanupStreaming();
+					this.sending = false;
+				}
 				throw err;
 			}
 		},
@@ -512,8 +523,17 @@ export const useChatStore = defineStore('chat', {
 				this.__cancelReject(err);
 				this.__cancelReject = null;
 			}
-			this.__cleanupStreaming();
-			this.sending = false;
+			if (this.__accepted) {
+				// 已被服务端接受，保留消息并从服务端拉取真实状态
+				this.__cleanupTimersAndListeners();
+				this.__clearStreamingFlags();
+				this.sending = false;
+				this.__reconcileMessages();
+			}
+			else {
+				this.__cleanupStreaming();
+				this.sending = false;
+			}
 		},
 
 		/**

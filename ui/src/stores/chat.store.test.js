@@ -735,7 +735,7 @@ describe('useChatStore', () => {
 			expect(store.__agentSettled).toBe(true);
 		});
 
-		test('post-acceptance 30min 超时：sending 置 false，抛出 POST_ACCEPTANCE_TIMEOUT', async () => {
+		test('post-acceptance 30min 超时：sending 置 false，保留消息并 reconcile，抛出 POST_ACCEPTANCE_TIMEOUT', async () => {
 			vi.useFakeTimers();
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
@@ -747,6 +747,8 @@ describe('useChatStore', () => {
 					options?.onAccepted?.({ runId: 'run-timeout' });
 					return new Promise(() => {});
 				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
 				return Promise.resolve(null);
 			});
 			mockConnections.set('1', conn);
@@ -756,14 +758,25 @@ describe('useChatStore', () => {
 			store.botId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
+			const sendPromise = store.sendMessage('hello');
+			await vi.advanceTimersByTimeAsync(0);
+			// 确认已 accepted，本地消息已创建
+			expect(store.__accepted).toBe(true);
+			const msgCountBefore = store.messages.length;
+			expect(msgCountBefore).toBeGreaterThan(0);
+
+			const reconcileSpy = vi.spyOn(store, '__reconcileMessages');
+
 			const [, result] = await Promise.allSettled([
 				vi.advanceTimersByTimeAsync(30 * 60_000),
-				store.sendMessage('hello'),
+				sendPromise,
 			]);
 
 			expect(result.status).toBe('rejected');
 			expect(result.reason).toMatchObject({ code: 'POST_ACCEPTANCE_TIMEOUT' });
 			expect(store.sending).toBe(false);
+			// 已 accepted 后超时应 reconcile 而非 removeLocalEntries
+			expect(reconcileSpy).toHaveBeenCalled();
 		});
 
 		test('__agentSettled 为 true 时，WS_CLOSED 错误被抑制，返回 { accepted: true }', async () => {
@@ -1082,7 +1095,7 @@ describe('useChatStore', () => {
 	// =====================================================================
 
 	describe('cancelSend', () => {
-		test('清理 streaming 状态并将 sending 置为 false', () => {
+		test('未 accepted 时取消：清理 streaming 并删除本地消息', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 			mockConnections.set('1', mockConn());
@@ -1091,6 +1104,7 @@ describe('useChatStore', () => {
 			store.sessionId = 'sess-1';
 			store.botId = '1';
 			store.sending = true;
+			store.__accepted = false;
 			store.streamingRunId = 'run-x';
 			store.messages = [
 				{ id: '__local_user_1', _local: true, message: { role: 'user', content: 'hi' } },
@@ -1134,7 +1148,7 @@ describe('useChatStore', () => {
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
-		test('accepted 之后取消：sendMessage 返回 { accepted: true }，不恢复输入', async () => {
+		test('accepted 之后取消：sendMessage 返回 { accepted: true }，保留消息并 reconcile', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 
@@ -1144,6 +1158,8 @@ describe('useChatStore', () => {
 					options?.onAccepted?.({ runId: 'run-cancel' });
 					return new Promise(() => {});
 				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
 				return Promise.resolve(null);
 			});
 			mockConnections.set('1', conn);
@@ -1158,10 +1174,14 @@ describe('useChatStore', () => {
 
 			expect(store.__accepted).toBe(true);
 
+			const reconcileSpy = vi.spyOn(store, '__reconcileMessages');
+
 			store.cancelSend();
 
 			const result = await sendPromise;
 			expect(result).toEqual({ accepted: true });
+			// 已 accepted 后取消应 reconcile 而非 removeLocalEntries
+			expect(reconcileSpy).toHaveBeenCalled();
 		});
 	});
 
