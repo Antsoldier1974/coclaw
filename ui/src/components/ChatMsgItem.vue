@@ -5,11 +5,12 @@
 			<div class="flex flex-col items-end">
 				<div class="max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-base leading-relaxed text-white whitespace-pre-wrap">
 					{{ item.textContent }}
-					<img
+					<ChatImg
 						v-for="(img, i) in item.images"
 						:key="i"
 						:src="imgSrc(img)"
-						class="mt-1 max-w-full rounded-lg"
+						:filename="imgFilename(img, i)"
+						custom-class="mt-1 max-w-full"
 					/>
 				</div>
 				<div class="mt-1.5 flex items-center gap-1 text-xs text-dimmed">
@@ -98,20 +99,22 @@
 						{{ step.text }}
 					</div>
 					<!-- image -->
-					<img
+					<ChatImg
 						v-else-if="step.kind === 'image'"
 						:src="imgSrc(step)"
-						class="max-h-32 rounded"
+						:filename="imgFilename(step, idx)"
+						custom-class="max-h-32"
 					/>
 				</div>
 			</div>
 
 			<!-- 正文区图像 -->
-			<img
+			<ChatImg
 				v-for="(img, i) in item.images"
 				:key="'img-' + i"
 				:src="imgSrc(img)"
-				class="mb-2 max-w-full rounded-lg"
+				:filename="imgFilename(img, i)"
+				custom-class="mb-2 max-w-full"
 			/>
 
 			<!-- 最终结果（流式中且无文本时不渲染） -->
@@ -144,12 +147,13 @@
 
 <script>
 import MarkdownBody from './MarkdownBody.vue';
+import ChatImg from './ChatImg.vue';
 import botAvatarSvg from '../assets/bot-avatars/openclaw.svg';
 import { useNotify } from '../composables/use-notify.js';
 
 export default {
 	name: 'ChatMsgItem',
-	components: { MarkdownBody },
+	components: { MarkdownBody, ChatImg },
 	props: {
 		item: {
 			type: Object,
@@ -232,6 +236,10 @@ export default {
 		},
 		imgSrc(img) {
 			return `data:${img.mimeType};base64,${img.data}`;
+		},
+		imgFilename(img, idx) {
+			const ext = img.mimeType?.split('/')[1] || 'png';
+			return `image-${idx + 1}.${ext}`;
 		},
 		copyText(text) {
 			if (!text) return;
