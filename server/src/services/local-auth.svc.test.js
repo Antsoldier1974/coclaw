@@ -48,7 +48,7 @@ test('loginByLoginName: should reject invalid input', async () => {
 test('loginByLoginName: should reject when user not found', async () => {
 	const result = await loginByLoginName({
 		loginName: 'alice',
-		password: 'pwd',
+		password: 'password123',
 	}, {
 		findByLoginName: async () => null,
 	});
@@ -60,7 +60,7 @@ test('loginByLoginName: should reject when user not found', async () => {
 test('loginByLoginName: should reject locked account', async () => {
 	const result = await loginByLoginName({
 		loginName: 'alice',
-		password: 'pwd',
+		password: 'password123',
 	}, {
 		findByLoginName: async () => makeLocalAuth({ userLocked: true }),
 	});
@@ -72,7 +72,7 @@ test('loginByLoginName: should reject locked account', async () => {
 test('loginByLoginName: should reject wrong password', async () => {
 	const result = await loginByLoginName({
 		loginName: 'alice',
-		password: 'wrong',
+		password: 'wrongpass1',
 	}, {
 		findByLoginName: async () => makeLocalAuth(),
 		scryptImpl: {
@@ -89,7 +89,7 @@ test('loginByLoginName: should return user and touch login time', async () => {
 
 	const result = await loginByLoginName({
 		loginName: 'alice',
-		password: 'correct',
+		password: 'correctpw',
 	}, {
 		findByLoginName: async () => makeLocalAuth({ userId: 987n }),
 		scryptImpl: {
@@ -171,7 +171,7 @@ test('createLocalAccount: should reject empty password', async () => {
 test('createLocalAccount: should reject invalid loginName format', async () => {
 	const result = await createLocalAccount({
 		loginName: '_a',
-		password: 'secret',
+		password: 'secret12345',
 	});
 
 	assert.equal(result.ok, false);
@@ -181,7 +181,7 @@ test('createLocalAccount: should reject invalid loginName format', async () => {
 test('createLocalAccount: should reject reserved loginName', async () => {
 	const result = await createLocalAccount({
 		loginName: 'admin',
-		password: 'secret',
+		password: 'secret12345',
 	});
 
 	assert.equal(result.ok, false);
@@ -191,7 +191,7 @@ test('createLocalAccount: should reject reserved loginName', async () => {
 test('createLocalAccount: should return LOGIN_NAME_TAKEN on P2002', async () => {
 	const result = await createLocalAccount({
 		loginName: 'alice',
-		password: 'secret',
+		password: 'secret12345',
 	}, {
 		genId: () => 778899n,
 		scryptImpl: {
@@ -214,7 +214,7 @@ test('createLocalAccount: should return ok with session user and touch login tim
 
 	const result = await createLocalAccount({
 		loginName: 'alice',
-		password: 'secret',
+		password: 'secret12345',
 	}, {
 		genId: () => 778899n,
 		scryptImpl: {
@@ -239,6 +239,16 @@ test('createLocalAccount: should return ok with session user and touch login tim
 	assert.deepEqual(createdPayload, {
 		userId: 778899n,
 		loginName: 'alice',
-		passwordHash: 'hashed:secret',
+		passwordHash: 'hashed:secret12345',
 	});
+});
+
+test('createLocalAccount: should reject password shorter than 8 chars', async () => {
+	const result = await createLocalAccount({
+		loginName: 'testuser',
+		password: 'short',
+	});
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'INVALID_INPUT');
+	assert.match(result.message, /at least 8/);
 });

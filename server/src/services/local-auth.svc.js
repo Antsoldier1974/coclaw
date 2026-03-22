@@ -131,6 +131,13 @@ export async function createLocalAccount(input, deps = {}) {
 			message: 'password is required',
 		};
 	}
+	if (password.length < 8) {
+		return {
+			ok: false,
+			code: 'INVALID_INPUT',
+			message: 'password must be at least 8 characters',
+		};
+	}
 
 	const nameCheck = validateLoginName(loginName);
 	if (!nameCheck.valid) {

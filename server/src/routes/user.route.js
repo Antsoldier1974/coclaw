@@ -273,6 +273,12 @@ function validateChangePasswordPayload(payload) {
 			message: 'newPassword is required',
 		};
 	}
+	if (payload.newPassword.length < 8) {
+		return {
+			ok: false,
+			message: 'newPassword must be at least 8 characters',
+		};
+	}
 
 	return { ok: true };
 }

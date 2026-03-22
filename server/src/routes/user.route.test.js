@@ -343,7 +343,7 @@ test('changePasswordHandler: should return 401 when not authenticated', async ()
 	const req = {
 		isAuthenticated: () => false,
 		user: null,
-		body: { oldPassword: 'a', newPassword: 'b' },
+		body: { oldPassword: 'oldpass12', newPassword: 'newpass12' },
 	};
 	const res = createRes();
 
@@ -357,7 +357,7 @@ test('changePasswordHandler: should return 401 when service returns INVALID_CRED
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 123n },
-		body: { oldPassword: 'wrong', newPassword: 'new' },
+		body: { oldPassword: 'wrongpass', newPassword: 'newpass12' },
 	};
 	const res = createRes();
 
@@ -377,7 +377,7 @@ test('changePasswordHandler: should return 400 when service returns NO_LOCAL_AUT
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 123n },
-		body: { oldPassword: 'a', newPassword: 'b' },
+		body: { oldPassword: 'oldpass12', newPassword: 'newpass12' },
 	};
 	const res = createRes();
 
@@ -397,7 +397,7 @@ test('changePasswordHandler: should return 200 on success', async () => {
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 123n },
-		body: { oldPassword: 'old', newPassword: 'new' },
+		body: { oldPassword: 'oldpass12', newPassword: 'newpass12' },
 	};
 	const res = createRes();
 
@@ -436,4 +436,17 @@ test('userRouter: should register routes without /me', () => {
 
 	const meRoute = routes.find((route) => route.path === '/me');
 	assert.equal(meRoute, undefined);
+});
+
+// --- password minimum length ---
+test('changePasswordHandler: should reject newPassword shorter than 8 chars', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 1n },
+		body: { oldPassword: 'oldpass123', newPassword: 'short' },
+	};
+	const res = { status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; } };
+	await changePasswordHandler(req, res, () => {});
+	assert.equal(res.statusCode, 400);
+	assert.match(res.body.message, /at least 8/);
 });
