@@ -2060,3 +2060,155 @@ test('RealtimeBridge stop() should cleanup webrtcPeer explicitly', async () => {
 		restoreHomedir(prevHome);
 	}
 });
+
+test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequestFromServer', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		// 触发 rtc:offer 以创建 webrtcPeer
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_req1',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+		assert.notEqual(bridge.webrtcPeer, null);
+
+		// 验证 onRequest 已注册
+		assert.equal(typeof bridge.webrtcPeer.__onRequest, 'function');
+
+		// 调用 onRequest 模拟 DataChannel 收到 req
+		// onRequest 内部 void 调用 __handleGatewayRequestFromServer，
+		// 后者 __waitGatewayReady 默认超时 1500ms
+		const reqPayload = { type: 'req', id: 'ui-dc-1', method: 'agent', params: { text: 'hi' } };
+		bridge.webrtcPeer.__onRequest(reqPayload, 'c_req1');
+
+		// 等待 __waitGatewayReady 超时 + 处理完成
+		await new Promise((r) => setTimeout(r, 2000));
+
+		// gateway 未连接，应产生 GATEWAY_OFFLINE 错误响应 → __forwardToServer
+		const offlineMsg = server.sent.find((s) => {
+			try {
+				const p = JSON.parse(String(s));
+				return p.type === 'res' && p.id === 'ui-dc-1' && p.error?.code === 'GATEWAY_OFFLINE';
+			} catch { return false; }
+		});
+		assert.ok(offlineMsg, 'should forward GATEWAY_OFFLINE error via server ws');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge gateway res/event should broadcast to webrtcPeer', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		// 触发 rtc:offer 以创建 webrtcPeer
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_bc1',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 追踪 broadcast 调用
+		const broadcasted = [];
+		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
+
+		// 模拟 gateway 连接并就绪
+		const gwWs = FakeWebSocket.instances.find((ws) => ws !== server);
+		if (gwWs) {
+			gwWs.readyState = 1;
+			bridge.gatewayReady = true;
+
+			// 模拟 gateway 发来的 res
+			const resPayload = { type: 'res', id: 'ui-1', ok: true, payload: { status: 'ok' } };
+			gwWs.emit('message', { data: JSON.stringify(resPayload) });
+
+			assert.ok(broadcasted.length >= 1, 'broadcast should be called for res');
+			assert.equal(broadcasted[0].type, 'res');
+			assert.equal(broadcasted[0].id, 'ui-1');
+
+			// 模拟 gateway 发来的 event
+			const eventPayload = { type: 'event', event: 'agent', payload: { runId: 'r1' } };
+			gwWs.emit('message', { data: JSON.stringify(eventPayload) });
+
+			assert.ok(broadcasted.length >= 2, 'broadcast should be called for event');
+			assert.equal(broadcasted[1].type, 'event');
+			assert.equal(broadcasted[1].event, 'agent');
+		}
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge GATEWAY_OFFLINE error should broadcast to webrtcPeer', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		// 触发 rtc:offer 以创建 webrtcPeer
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_bc2',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 追踪 broadcast 调用
+		const broadcasted = [];
+		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
+
+		// 不连接 gateway → __handleGatewayRequestFromServer 会产生 GATEWAY_OFFLINE
+		// 直接调用 __handleGatewayRequestFromServer
+		await bridge.__handleGatewayRequestFromServer({ id: 'req-off', method: 'test', params: {} });
+
+		const offlineBC = broadcasted.find((p) => p.error?.code === 'GATEWAY_OFFLINE');
+		assert.ok(offlineBC, 'GATEWAY_OFFLINE error should be broadcast');
+		assert.equal(offlineBC.id, 'req-off');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge GATEWAY_SEND_FAILED error should broadcast to webrtcPeer', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		// 触发 rtc:offer 以创建 webrtcPeer
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_bc3',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 追踪 broadcast 调用
+		const broadcasted = [];
+		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
+
+		// 设置 gateway 已就绪但 send 会抛异常
+		const gwWs = FakeWebSocket.instances.find((ws) => ws !== server);
+		if (gwWs) {
+			gwWs.readyState = 1;
+			bridge.gatewayReady = true;
+			bridge.gatewayWs = gwWs;
+			gwWs.send = () => { throw new Error('send failed'); };
+
+			await bridge.__handleGatewayRequestFromServer({ id: 'req-fail', method: 'test', params: {} });
+
+			const failBC = broadcasted.find((p) => p.error?.code === 'GATEWAY_SEND_FAILED');
+			assert.ok(failBC, 'GATEWAY_SEND_FAILED error should be broadcast');
+			assert.equal(failBC.id, 'req-fail');
+		}
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});

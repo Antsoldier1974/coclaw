@@ -182,7 +182,7 @@ test('WebRtcPeer: handleIce 无 session 时忽略', async () => {
 	});
 });
 
-test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel', async () => {
+test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close)', async () => {
 	const PC = MockPCFactory();
 	const logs = [];
 	const logger = {
@@ -209,13 +209,120 @@ test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel', async () => {
 	fakeChannel.onopen();
 	assert.ok(logs.some((l) => l.includes('DataChannel "rpc" opened')));
 
-	// 触发 onmessage
-	fakeChannel.onmessage({ data: 'hello' });
-	assert.ok(logs.some((l) => l.includes('DataChannel "rpc" message')));
-
 	// 触发 onclose
 	fakeChannel.onclose();
 	assert.ok(logs.some((l) => l.includes('DataChannel "rpc" closed')));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: DataChannel onmessage req → onRequest 回调', async () => {
+	const PC = MockPCFactory();
+	const requests = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onRequest: (payload, connId) => requests.push({ payload, connId }),
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_030a'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	const reqPayload = { type: 'req', id: 'ui-1', method: 'agent', params: { text: 'hi' } };
+	fakeChannel.onmessage({ data: JSON.stringify(reqPayload) });
+
+	assert.equal(requests.length, 1);
+	assert.deepEqual(requests[0].payload, reqPayload);
+	assert.equal(requests[0].connId, 'c_030a');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: DataChannel onmessage 非 req 类型 → debug 日志', async () => {
+	const PC = MockPCFactory();
+	const logs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => logs.push(m) },
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_030b'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'event', event: 'test' }) });
+	assert.ok(logs.some((l) => l.includes('unknown DC message type: event')));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: DataChannel onmessage 无效 JSON → warn', async () => {
+	const PC = MockPCFactory();
+	const warns = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_030c'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	fakeChannel.onmessage({ data: 'not-json' });
+	assert.ok(warns.some((l) => l.includes('DC message parse failed')));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: DataChannel onmessage Buffer data → 正常解析', async () => {
+	const PC = MockPCFactory();
+	const requests = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onRequest: (payload, connId) => requests.push({ payload, connId }),
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_030d'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	// 模拟 Buffer data
+	const reqPayload = { type: 'req', id: 'ui-2', method: 'test', params: {} };
+	const buf = Buffer.from(JSON.stringify(reqPayload));
+	fakeChannel.onmessage({ data: buf });
+
+	assert.equal(requests.length, 1);
+	assert.deepEqual(requests[0].payload, reqPayload);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 无 onRequest 时 req 消息不崩溃', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		// 不传 onRequest
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_030e'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	// 不应抛异常
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'x', method: 'test' }) });
 
 	await peer.closeAll();
 });
@@ -432,6 +539,85 @@ test('WebRtcPeer: DataChannel onclose 清除 rpcChannel', async () => {
 	assert.equal(peer.__sessions.get('c_100').rpcChannel, null);
 
 	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast 发送到所有已打开的 rpcChannel', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_b01'));
+	await peer.handleSignaling(makeOffer('c_b02'));
+
+	const sentByChannel = { c_b01: [], c_b02: [] };
+	const dc1 = { label: 'rpc', readyState: 'open', send: (d) => sentByChannel.c_b01.push(d), onopen: null, onclose: null, onmessage: null };
+	const dc2 = { label: 'rpc', readyState: 'open', send: (d) => sentByChannel.c_b02.push(d), onopen: null, onclose: null, onmessage: null };
+	PC.instances[0].ondatachannel({ channel: dc1 });
+	PC.instances[1].ondatachannel({ channel: dc2 });
+
+	const payload = { type: 'event', event: 'agent', payload: { runId: 'r1' } };
+	peer.broadcast(payload);
+
+	const expected = JSON.stringify(payload);
+	assert.equal(sentByChannel.c_b01.length, 1);
+	assert.equal(sentByChannel.c_b01[0], expected);
+	assert.equal(sentByChannel.c_b02.length, 1);
+	assert.equal(sentByChannel.c_b02[0], expected);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast 跳过未打开的 rpcChannel', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_b10'));
+	// rpcChannel 为 null（未触发 ondatachannel）
+	peer.broadcast({ type: 'res', id: 'x' });
+	// 不应报错
+
+	// 设置一个 readyState !== 'open' 的 channel
+	const dc = { label: 'rpc', readyState: 'connecting', send: () => { throw new Error('should not send'); }, onopen: null, onclose: null, onmessage: null };
+	PC.instances[0].ondatachannel({ channel: dc });
+	peer.broadcast({ type: 'res', id: 'x' });
+	// 不应报错
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast send 失败时不抛异常', async () => {
+	const PC = MockPCFactory();
+	const logs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => logs.push(m) },
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_b20'));
+	const dc = { label: 'rpc', readyState: 'open', send: () => { throw new Error('dc send error'); }, onopen: null, onclose: null, onmessage: null };
+	PC.instances[0].ondatachannel({ channel: dc });
+
+	peer.broadcast({ type: 'res', id: 'y' });
+	assert.ok(logs.some((l) => l.includes('broadcast send failed')));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast 空 sessions 不报错', () => {
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: MockPCFactory(),
+	});
+	peer.broadcast({ type: 'res', id: 'z' }); // 不应抛异常
 });
 
 test('WebRtcPeer: __logDebug 无 debug 方法时不报错', async () => {

@@ -8,11 +8,13 @@ export class WebRtcPeer {
 	/**
 	 * @param {object} opts
 	 * @param {function} opts.onSend - 将信令消息交给 RealtimeBridge 发送
+	 * @param {function} [opts.onRequest] - DataChannel 收到 req 消息时的回调 (payload, connId) => void
 	 * @param {object} [opts.logger] - pino 风格 logger
 	 * @param {function} [opts.PeerConnection] - 可替换的构造函数（测试用）
 	 */
-	constructor({ onSend, logger, PeerConnection }) {
+	constructor({ onSend, onRequest, logger, PeerConnection }) {
 		this.__onSend = onSend;
+		this.__onRequest = onRequest;
 		this.logger = logger ?? console;
 		this.__PeerConnection = PeerConnection ?? WeriftRTCPeerConnection;
 		/** @type {Map<string, { pc: object, rpcChannel: object|null }>} */
@@ -47,6 +49,18 @@ export class WebRtcPeer {
 	async closeAll() {
 		const closing = [...this.__sessions.keys()].map((id) => this.closeByConnId(id));
 		await Promise.all(closing);
+	}
+
+	/** 向所有已打开的 rpcChannel 广播 */
+	broadcast(payload) {
+		const data = JSON.stringify(payload);
+		for (const [connId, session] of this.__sessions) {
+			const dc = session.rpcChannel;
+			if (dc?.readyState === 'open') {
+				try { dc.send(data); }
+				catch (err) { this.__logDebug(`[${connId}] broadcast send failed: ${err.message}`); }
+			}
+		}
 	}
 
 	async __handleOffer(msg) {
@@ -156,8 +170,17 @@ export class WebRtcPeer {
 			if (session && dc.label === 'rpc') session.rpcChannel = null;
 		};
 		dc.onmessage = (event) => {
-			// Phase 1：仅日志
-			this.__logDebug(`[${connId}] DataChannel "${dc.label}" message: ${String(event.data).slice(0, 100)}`);
+			try {
+				const raw = typeof event.data === 'string' ? event.data : event.data.toString();
+				const payload = JSON.parse(raw);
+				if (payload.type === 'req') {
+					this.__onRequest?.(payload, connId);
+				} else {
+					this.__logDebug(`[${connId}] unknown DC message type: ${payload.type}`);
+				}
+			} catch (err) {
+				this.logger.warn?.(`[coclaw/rtc] [${connId}] DC message parse failed: ${err.message}`);
+			}
 		};
 	}
 

@@ -513,6 +513,7 @@ export class RealtimeBridge {
 			}
 			if (payload.type === 'res' || payload.type === 'event') {
 				this.__forwardToServer(payload);
+				this.webrtcPeer?.broadcast(payload);
 			}
 		});
 
@@ -581,7 +582,7 @@ export class RealtimeBridge {
 		const ready = await this.__waitGatewayReady();
 		if (!ready || !this.gatewayWs || this.gatewayWs.readyState !== 1) {
 			this.__logDebug(`gateway req drop (offline): id=${payload.id} method=${payload.method}`);
-			this.__forwardToServer({
+			const errorRes = {
 				type: 'res',
 				id: payload.id,
 				ok: false,
@@ -589,7 +590,9 @@ export class RealtimeBridge {
 					code: 'GATEWAY_OFFLINE',
 					message: 'Gateway is offline',
 				},
-			});
+			};
+			this.__forwardToServer(errorRes);
+			this.webrtcPeer?.broadcast(errorRes);
 			return;
 		}
 		try {
@@ -602,7 +605,7 @@ export class RealtimeBridge {
 			}));
 		}
 		catch {
-			this.__forwardToServer({
+			const errorRes = {
 				type: 'res',
 				id: payload.id,
 				ok: false,
@@ -610,7 +613,9 @@ export class RealtimeBridge {
 					code: 'GATEWAY_SEND_FAILED',
 					message: 'Failed to send request to gateway',
 				},
-			});
+			};
+			this.__forwardToServer(errorRes);
+			this.webrtcPeer?.broadcast(errorRes);
 		}
 	}
 
@@ -703,6 +708,9 @@ export class RealtimeBridge {
 							const { WebRtcPeer } = await import('./webrtc-peer.js');
 							this.webrtcPeer = new WebRtcPeer({
 								onSend: (msg) => this.__forwardToServer(msg),
+								onRequest: (dcPayload) => {
+									void this.__handleGatewayRequestFromServer(dcPayload);
+								},
 								logger: this.logger,
 							});
 						}
