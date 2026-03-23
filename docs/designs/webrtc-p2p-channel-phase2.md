@@ -36,6 +36,16 @@ UI  <──res── WS <── Server <── WS <── Plugin <── Gateway
 UI  <─event─ WS <── Server <── WS <── Plugin <── Gateway
 ```
 
+### Phase 2（RTC 协商中）
+
+```
+UI  ──req──> WS ──> Server ──> WS ──> Plugin ──> Gateway   （WS 兜底，用户不阻塞）
+UI  <──res── WS <── Server <── WS <── Plugin <── Gateway
+                                                              ┌─ RTC 后台建连中 ─┐
+```
+
+WS 连通后 RTC 在后台异步协商，**业务请求立即通过 WS 发送**，用户无感知等待。
+
 ### Phase 2（RTC 模式）
 
 ```
@@ -45,6 +55,7 @@ UI  <─event─ DataChannel("rpc") <────────────── 
 
 Plugin 同时将 res/event 广播给 Server WS（向后兼容，暂时保留），
 Server 继续广播给 UI WS，但 UI 在 RTC 模式下忽略这些 WS 业务消息。
+（例外：协商期间通过 WS 发出的遗留请求，其 WS 响应仍会被正常处理。）
 ```
 
 ### Phase 2（WS 降级模式）
@@ -65,17 +76,23 @@ Server 继续广播给 UI WS，但 UI 在 RTC 模式下忽略这些 WS 业务消
 
 ```
 WS 首次连通
-  → transportMode = null（连接中，不允许业务请求）
-  → 异步发起 RTC 建连（initRtcAndSelectTransport）
+  → transportMode = null（协商中，业务请求通过 WS 兜底发送）
+  → 后台异步发起 RTC 建连（initRtcAndSelectTransport），不阻塞业务初始化
   → 启动超时计时器（15 秒）
 
 情况 A：RTC DataChannel open 在计时器内触发
   → transportMode = 'rtc'
+  → 后续请求走 DataChannel；协商期间通过 WS 发出的遗留请求仍由 WS 响应处理
 
 情况 B：计时器到期，RTC 未就绪
   → transportMode = 'ws'
   → 关闭/放弃 RTC 尝试
 ```
+
+> **设计变更（相对初版草案）**：初版设计中 `transportMode === null` 时阻塞业务请求（reject `NOT_CONNECTED`）。
+> 实施后发现 RTC 协商可能耗时 2-15 秒，阻塞期间用户无法交互，体验差。
+> 改为 **null 时 WS 兜底**：业务请求立即通过 WS 发送，RTC 后台异步建连。
+> 此改动使首次连接行为与 WS 重连行为统一：**业务始终不阻塞**。
 
 **WS 重连**（与首次不同）：
 
@@ -103,7 +120,7 @@ WS 重连
 
 | transportMode | 用户看到 | 说明 |
 |---|---|---|
-| `null` | 连接中... | WS 已通，正在尝试 RTC |
+| `null` | 已连接 | WS 已通，RTC 后台协商中，用户可正常交互 |
 | `'rtc'` | 已连接 | 可选：小图标标记 P2P / Relay |
 | `'ws'` | 已连接 | 可选：小图标标记"中继模式" |
 | RTC 恢复中 | 重连中... | ICE restart / rebuild 进行中 |
@@ -184,7 +201,7 @@ Phase 1 的 WS `'state'` 监听器是一次性的。Phase 2 需要**持久**的 
 | 6 | WS 重连，RTC 仍 `connected` | 跳过 initRtcForBot，transportMode 不变 |
 | 7 | WS 重连，RTC 已 `failed` | 直接 full rebuild（新 connId） |
 | 8 | WS 断开，RTC 也 `failed` | 等 WS 恢复后 full rebuild |
-| 9 | 业务请求时 transportMode 为 null | reject，UI 层提示"连接中" |
+| 9 | 业务请求时 transportMode 为 null | 通过 WS 兜底发送（WS 未连通时 reject `WS_CLOSED`） |
 
 ---
 
@@ -213,8 +230,8 @@ Phase 1 的 WS `'state'` 监听器是一次性的。Phase 2 需要**持久**的 
 
 - 新增 `__transportMode`（`'rtc'` | `'ws'` | `null`）和 `__rtc`（WebRtcConnection 引用）
 - `setTransportMode(mode)`：RTC → WS 降级时 reject 所有 `viaRtc` 挂起请求（code: `RTC_LOST`）
-- `request()` 按 transportMode 分支发送：`'rtc'` 走 DataChannel、`'ws'` 走 WS、`null` reject
-- `__onMessage()`：RTC 模式下忽略 WS 业务消息（`res`/`event`），系统消息（`pong`、`rtc:*`、`session.expired`、`bot.unbound`）始终处理
+- `request()` 按 transportMode 分支发送：`'rtc'` 走 DataChannel、`'ws'` 或 `null` 走 WS 兜底
+- `__onMessage()`：RTC 模式下忽略 WS 业务消息（`res`/`event`），但放行 `viaRtc === false` 的遗留请求响应；系统消息（`pong`、`rtc:*`、`session.expired`、`bot.unbound`）始终处理
 - 新增 `__onRtcMessage(payload)`：处理 DataChannel 收到的 `res`/`event`，复用 `__handleRpcResponse`
 - WS close 时：RTC 模式下仅 reject `viaRtc === false` 的请求，保留 RTC 请求；`__cleanup()` 中的 `__rejectAllPending` 不需要此判断（完整拆除场景）
 
@@ -232,7 +249,7 @@ Phase 1 的 WS `'state'` 监听器是一次性的。Phase 2 需要**持久**的 
 
 #### bots.store
 
-持久监听 WS 状态（替换一次性监听）：首次 `connected` 执行完整初始化（loadAgents 等），后续 `connected` 仅重新触发传输选择。`removeBotById()` 需清理 `initializedBots`。
+持久监听 WS 状态（替换一次性监听）：首次 `connected` 执行完整初始化（loadAgents 等），后续 `connected` 仅重新触发传输选择。`initRtcAndSelectTransport` 以 fire-and-forget 方式调用（不 await），不阻塞业务初始化。`removeBotById()` 需清理 `initializedBots`。
 
 ### 7.2 Plugin 侧
 
@@ -260,7 +277,9 @@ Phase 1 的 WS `'state'` 监听器是一次性的。Phase 2 需要**持久**的 
 
 | 场景 | 处理 |
 |------|------|
-| RTC 未就绪时用户发消息 | reject（code: `NOT_CONNECTED`），UI 提示"连接中" |
+| RTC 协商中用户发消息 | 通过 WS 兜底发送，用户无感知等待 |
+| null→rtc 过渡期间的 WS 遗留响应 | `__onMessage` 检查 pending map 中 `viaRtc === false` 的 waiter，匹配则正常处理，不丢弃 |
+| null→rtc 过渡期间的 WS 遗留事件（event） | 可能丢失。窗口极窄（仅 `dc.onopen` → `setTransportMode('rtc')` 的瞬间），且 event 为尽力而为的推送，影响有限 |
 | RTC 中途断开（可恢复） | 挂起请求保持等待；ICE restart / rebuild 触发 |
 | RTC 中途断开（不可恢复） | 降级到 WS；reject 所有 `viaRtc` 请求（code: `RTC_LOST`） |
 | WS 断开但 RTC 健康 | 业务正常走 RTC；WS pending 清理时跳过 `viaRtc` 请求 |

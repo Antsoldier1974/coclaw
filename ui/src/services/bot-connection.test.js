@@ -220,7 +220,7 @@ describe('BotConnection – request()', () => {
 	});
 
 	test('rejects with WS_CLOSED when transportMode is null but WS is not connected', async () => {
-	        const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
 	        await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
 	});
 	test('rejects with RPC_FAILED when server responds ok=false', async () => {
@@ -264,10 +264,11 @@ describe('BotConnection – request()', () => {
 	});
 
 	test('rejects with WS_CLOSED when readyState is CONNECTING (transportMode=null)', async () => {
-	        MockWebSocket.reset();
-	        const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-	        conn.connect(); // WS created but open not simulated, transportMode stays null
-	        await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });	});
+		MockWebSocket.reset();
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect(); // WS created but open not simulated, transportMode stays null
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
+	});
 });
 
 describe('BotConnection – request() two-phase (onAccepted)', () => {
@@ -1140,6 +1141,7 @@ describe('BotConnection – request() via RTC', () => {
 		conn.disconnect();
 	});
 });
+
 describe('BotConnection – __onRtcMessage()', () => {
 	beforeEach(() => MockWebSocket.reset());
 

@@ -123,12 +123,13 @@ export const useBotsStore = defineStore('bots', {
 		 */
 		__listenForReady(botIds, manager) {
 			const fire = async (id, conn) => {
-			        // 传输选择（含 RTC 建连 + 15s 超时降级），后台执行，不阻塞业务初始化
-			        initRtcAndSelectTransport(id, conn).catch(() => {});
-			        // 静默检查插件版本，记录结果但不阻断
-			        const info = await checkPluginVersion(conn);
-			        const versionOk = info.ok;
-			        this.pluginVersionOk = { ...this.pluginVersionOk, [id]: versionOk };				this.pluginInfo = { ...this.pluginInfo, [id]: { version: info.version, clawVersion: info.clawVersion } };
+				// 传输选择（含 RTC 建连 + 15s 超时降级），后台执行，不阻塞业务初始化
+				initRtcAndSelectTransport(id, conn).catch(() => {});
+				// 静默检查插件版本，记录结果但不阻断
+				const info = await checkPluginVersion(conn);
+				const versionOk = info.ok;
+				this.pluginVersionOk = { ...this.pluginVersionOk, [id]: versionOk };
+				this.pluginInfo = { ...this.pluginInfo, [id]: { version: info.version, clawVersion: info.clawVersion } };
 				if (!versionOk) {
 					console.warn('[bots] plugin version outdated for botId=%s', id);
 				}

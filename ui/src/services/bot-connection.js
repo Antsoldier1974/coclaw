@@ -208,7 +208,9 @@ export class BotConnection {
 				reject(err);
 			}
 		});
-	}	/**
+	}
+
+	/**
 	 * 发送非 RPC 原始消息（用于 WebRTC 信令等）
 	 * @param {object} payload - 完整消息对象，直接 JSON 序列化发送
 	 * @returns {boolean} 是否发送成功
