@@ -25,6 +25,28 @@ services:
       retries: 20
       start_period: 20s
 
+  # TURN/STUN 服务（WebRTC 中继）
+  # 本地开发用，host 网络模式让 coturn 直接使用 WSL2/主机网络栈，
+  # 无需逐个映射 relay 端口。
+  coturn:
+    container_name: coclaw-coturn
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    command: >-
+      turnserver
+      --listening-port=3478
+      --external-ip=127.0.0.1
+      --realm=localhost
+      --lt-cred-mech
+      --use-auth-secret
+      --static-auth-secret=dev-secret-placeholder
+      --min-port=50000
+      --max-port=50010
+      --fingerprint
+      --no-cli
+      --verbose
+
 volumes:
   coclaw_mysql_data:
     name: coclaw_mysql_data
