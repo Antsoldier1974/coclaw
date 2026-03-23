@@ -1,6 +1,6 @@
 /**
  * WebRTC DataChannel 连接管理（UI 侧）
- * Phase 1：仅建连验证，不承载业务数据
+ * Phase 2：业务 RPC 通信切换到 DataChannel，WS 作为兜底
  *
  * 连接恢复策略（§7.2）：
  * - disconnected → 等待 ICE 自动恢复（短暂网络抖动自愈）
@@ -25,39 +25,86 @@ async function getBotsStore() {
 	return _botsStoreRef();
 }
 
+const RTC_TRANSPORT_TIMEOUT_MS = 15_000;
+
 /**
- * 为指定 bot 发起 WebRTC 连接
+ * 为指定 bot 初始化 RTC 并执行传输选择
+ * WS 每次连通时调用；内含防重入守卫
+ * 返回的 Promise 在传输模式确定后（'rtc' 或 'ws'）resolve
  * @param {string} botId
  * @param {import('./bot-connection.js').BotConnection} botConn
+ * @returns {Promise<void>}
  */
-export async function initRtcForBot(botId, botConn) {
+export function initRtcAndSelectTransport(botId, botConn) {
 	const existing = rtcInstances.get(botId);
-	if (existing && existing.state !== 'closed' && existing.state !== 'failed') return;
+	if (existing && existing.state !== 'closed' && existing.state !== 'failed') {
+		return Promise.resolve();
+	}
 	if (existing) existing.close();
 
 	const rtc = new WebRtcConnection(botId, botConn);
 	rtcInstances.set(botId, rtc);
 
-	// 状态变更 → 同步到 botsStore
-	rtc.onStateChange = () => {
-		getBotsStore().then((store) => {
-			store.rtcStates = { ...store.rtcStates, [botId]: rtc.state };
-			if (rtc.candidateType) {
-				store.rtcCandidateTypes = { ...store.rtcCandidateTypes, [botId]: rtc.candidateType };
-			}
-		}).catch(() => {});
-	};
+	return new Promise((resolveTransport) => {
+		let settled = false;
+		function settle() {
+			if (settled) return false;
+			settled = true;
+			resolveTransport();
+			return true;
+		}
 
-	try {
-		const resp = await httpClient.get('/api/v1/turn/creds');
-		await rtc.connect(resp.data);
-	}
-	catch (err) {
-		console.warn('[WebRTC] init failed for bot %s: %s', botId, err?.message);
-		rtc.close();
-		rtcInstances.delete(botId);
-	}
+		// 传输选择：15 秒内 DataChannel open → RTC，否则 → WS
+		const fallbackTimer = setTimeout(() => {
+			if (!settle()) return;
+			console.warn('[rtc] RTC 建连超时，降级到 WS botId=%s', botId);
+			rtc.close();
+			rtcInstances.delete(botId);
+			botConn.clearRtc();
+			botConn.setTransportMode('ws');
+		}, RTC_TRANSPORT_TIMEOUT_MS);
+
+		rtc.onReady = () => {
+			if (!settle()) return;
+			clearTimeout(fallbackTimer);
+			botConn.setRtc(rtc);
+			botConn.setTransportMode('rtc');
+		};
+
+		// 状态变更 → 同步到 botsStore + 不可恢复时降级
+		rtc.onStateChange = () => {
+			getBotsStore().then((store) => {
+				store.rtcStates = { ...store.rtcStates, [botId]: rtc.state };
+				if (rtc.candidateType) {
+					store.rtcCandidateTypes = { ...store.rtcCandidateTypes, [botId]: rtc.candidateType };
+				}
+			}).catch(() => {});
+
+			// state === 'failed' 仅在所有恢复尝试耗尽后才被设置
+			if (rtc.state === 'failed') {
+				botConn.clearRtc();
+				botConn.setTransportMode('ws');
+			}
+		};
+
+		httpClient.get('/api/v1/turn/creds')
+			.then((resp) => rtc.connect(resp.data))
+			.catch((err) => {
+				if (!settle()) return;
+				clearTimeout(fallbackTimer);
+				console.warn('[rtc] init failed, 降级到 WS botId=%s: %s', botId, err?.message);
+				rtc.close();
+				rtcInstances.delete(botId);
+				botConn.clearRtc();
+				botConn.setTransportMode('ws');
+			});
+	});
 }
+
+/**
+ * @deprecated 使用 initRtcAndSelectTransport 代替
+ */
+export const initRtcForBot = initRtcAndSelectTransport;
 
 /** 关闭指定 bot 的 WebRTC 连接 */
 export function closeRtcForBot(botId) {
@@ -101,6 +148,8 @@ export class WebRtcConnection {
 		this.__rebuildCount = 0;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
+		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
+		this.onReady = null;
 	}
 
 	/** @returns {'idle' | 'connecting' | 'connected' | 'failed' | 'closed'} */
@@ -126,6 +175,16 @@ export class WebRtcConnection {
 		}
 		this.__rpcChannel = null;
 		this.__setState('closed');
+	}
+
+	/** 通过 DataChannel 发送 JSON */
+	send(payload) {
+		this.__rpcChannel.send(JSON.stringify(payload));
+	}
+
+	/** DataChannel 是否可用 */
+	get isReady() {
+		return this.__rpcChannel?.readyState === 'open';
 	}
 
 	// --- 内部：建连 ---
@@ -218,14 +277,20 @@ export class WebRtcConnection {
 		dc.onopen = () => {
 			this.__log('info', 'DataChannel "rpc" opened');
 			this.__botConn.sendRaw({ type: 'rtc:ready' });
+			this.onReady?.();
 		};
 		dc.onclose = () => {
 			this.__log('info', 'DataChannel "rpc" closed');
 			if (this.__rpcChannel === dc) this.__rpcChannel = null;
 		};
 		dc.onmessage = (event) => {
-			// Phase 1：仅简要日志，丢弃
-			this.__log('debug', `rpc msg (discarded): ${String(event.data).slice(0, 80)}`);
+			try {
+				const payload = JSON.parse(event.data);
+				this.__botConn.__onRtcMessage(payload);
+			}
+			catch (err) {
+				console.warn('[rtc] DataChannel 消息解析失败:', err);
+			}
 		};
 	}
 

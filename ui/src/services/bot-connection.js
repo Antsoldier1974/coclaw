@@ -65,6 +65,12 @@ export class BotConnection {
 		// 事件监听
 		this.__listeners = new Map();
 
+		// 传输模式（Phase 2）
+		/** @type {'rtc' | 'ws' | null} */
+		this.__transportMode = null;
+		/** @type {import('./webrtc-connection.js').WebRtcConnection | null} */
+		this.__rtc = null;
+
 		// visibility 恢复重连
 		this.__boundVisibilityHandler = null;
 	}
@@ -72,6 +78,40 @@ export class BotConnection {
 	/** @returns {'disconnected' | 'connecting' | 'connected'} */
 	get state() {
 		return this.__state;
+	}
+
+	/** @returns {'rtc' | 'ws' | null} */
+	get transportMode() {
+		return this.__transportMode;
+	}
+
+	/** 设置 RTC 连接引用 */
+	setRtc(rtcConn) { this.__rtc = rtcConn; }
+
+	/** 清除 RTC 连接引用 */
+	clearRtc() { this.__rtc = null; }
+
+	/**
+	 * 设置传输模式
+	 * @param {'rtc' | 'ws' | null} mode
+	 */
+	setTransportMode(mode) {
+		const prev = this.__transportMode;
+		this.__transportMode = mode;
+		console.debug('[BotConn] transportMode %s→%s botId=%s', prev, mode, this.botId);
+
+		// RTC → WS 降级：reject RTC 侧的挂起请求
+		if (prev === 'rtc' && mode === 'ws') {
+			for (const [id, waiter] of this.__pending) {
+				if (waiter.viaRtc) {
+					clearTimeout(waiter.timer);
+					const err = new Error('RTC connection lost');
+					err.code = 'RTC_LOST';
+					waiter.reject(err);
+					this.__pending.delete(id);
+				}
+			}
+		}
 	}
 
 	/** 建立连接（幂等） */
@@ -106,35 +146,74 @@ export class BotConnection {
 	 * @returns {Promise<object>}
 	 */
 	request(method, params = {}, options = {}) {
-		if (!this.__ws || this.__ws.readyState !== 1) {
-			const err = new Error('not connected');
-			err.code = 'WS_CLOSED';
-			return Promise.reject(err);
+		if (this.__transportMode === 'rtc') {
+			if (!this.__rtc?.isReady) {
+				const err = new Error('RTC channel not ready');
+				err.code = 'RTC_NOT_READY';
+				return Promise.reject(err);
+			}
+			const id = `ui-${Date.now()}-${this.__counter++}`;
+			return new Promise((resolve, reject) => {
+				const waiter = { resolve, reject, viaRtc: true };
+				if (options.onAccepted) waiter.onAccepted = options.onAccepted;
+				if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
+				const timeoutMs = options.timeout ?? DEFAULT_RPC_TIMEOUT_MS;
+				waiter.timer = setTimeout(() => {
+					this.__pending.delete(id);
+					const err = new Error('rpc timeout');
+					err.code = 'RPC_TIMEOUT';
+					reject(err);
+				}, timeoutMs);
+				this.__pending.set(id, waiter);
+				try {
+					this.__rtc.send({ type: 'req', id, method, params });
+				}
+				catch {
+					this.__pending.delete(id);
+					clearTimeout(waiter.timer);
+					const err = new Error('rtc send failed');
+					err.code = 'RTC_SEND_FAILED';
+					reject(err);
+				}
+			});
 		}
-		const id = `ui-${Date.now()}-${this.__counter++}`;
-		return new Promise((resolve, reject) => {
-			const waiter = { resolve, reject };
-			if (options.onAccepted) waiter.onAccepted = options.onAccepted;
-			if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
-			const timeoutMs = options.timeout ?? DEFAULT_RPC_TIMEOUT_MS;
-			waiter.timer = setTimeout(() => {
-				this.__pending.delete(id);
-				const err = new Error('rpc timeout');
-				err.code = 'RPC_TIMEOUT';
-				reject(err);
-			}, timeoutMs);
-			this.__pending.set(id, waiter);
-			try {
-				this.__ws.send(JSON.stringify({ type: 'req', id, method, params }));
+
+		if (this.__transportMode === 'ws') {
+			if (!this.__ws || this.__ws.readyState !== 1) {
+				const err = new Error('not connected');
+				err.code = 'WS_CLOSED';
+				return Promise.reject(err);
 			}
-			catch {
-				this.__pending.delete(id);
-				if (waiter.timer) clearTimeout(waiter.timer);
-				const err = new Error('ws send failed');
-				err.code = 'WS_SEND_FAILED';
-				reject(err);
-			}
-		});
+			const id = `ui-${Date.now()}-${this.__counter++}`;
+			return new Promise((resolve, reject) => {
+				const waiter = { resolve, reject, viaRtc: false };
+				if (options.onAccepted) waiter.onAccepted = options.onAccepted;
+				if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
+				const timeoutMs = options.timeout ?? DEFAULT_RPC_TIMEOUT_MS;
+				waiter.timer = setTimeout(() => {
+					this.__pending.delete(id);
+					const err = new Error('rpc timeout');
+					err.code = 'RPC_TIMEOUT';
+					reject(err);
+				}, timeoutMs);
+				this.__pending.set(id, waiter);
+				try {
+					this.__ws.send(JSON.stringify({ type: 'req', id, method, params }));
+				}
+				catch {
+					this.__pending.delete(id);
+					if (waiter.timer) clearTimeout(waiter.timer);
+					const err = new Error('ws send failed');
+					err.code = 'WS_SEND_FAILED';
+					reject(err);
+				}
+			});
+		}
+
+		// transportMode === null: 连接中
+		const err = new Error('Not connected');
+		err.code = 'NOT_CONNECTED';
+		return Promise.reject(err);
 	}
 
 	/**
@@ -214,7 +293,20 @@ export class BotConnection {
 			if (this.__ws !== ws) return;
 			console.debug('[BotConn] ws close botId=%s code=%d reason=%s', this.botId, ev.code, ev.reason);
 			this.__clearHeartbeat();
-			this.__rejectAllPending('connection closed');
+			// RTC 模式下 WS 断开不影响 RTC 请求
+			if (this.__transportMode === 'rtc') {
+				for (const [id, waiter] of this.__pending) {
+					if (!waiter.viaRtc) {
+						clearTimeout(waiter.timer);
+						const err = new Error('connection closed');
+						err.code = 'WS_CLOSED';
+						waiter.reject(err);
+						this.__pending.delete(id);
+					}
+				}
+			} else {
+				this.__rejectAllPending('connection closed');
+			}
 			this.__ws = null;
 			if (!this.__intentionalClose) {
 				this.__setState('disconnected');
@@ -234,6 +326,7 @@ export class BotConnection {
 		}
 		catch { return; }
 
+		// 系统消息始终处理
 		if (payload?.type === 'pong') return;
 
 		// rtc 信令消息 → 转发给 WebRtcConnection
@@ -261,7 +354,14 @@ export class BotConnection {
 			return;
 		}
 
-		// server 推送事件
+		// 业务消息（res / event）：RTC 模式下忽略 WS 业务消息
+		if (this.__transportMode === 'rtc') {
+			console.debug('[BotConn] WS 业务消息忽略(RTC active):',
+				payload.type, payload.id ?? payload.event ?? '');
+			return;
+		}
+
+		// WS 模式或 transportMode === null：走原有逻辑
 		if (payload?.type === 'event' && payload.event) {
 			this.__emit(`event:${payload.event}`, payload.payload);
 			return;
@@ -270,6 +370,17 @@ export class BotConnection {
 		// RPC 响应
 		if (payload?.type === 'res' && payload.id) {
 			this.__handleRpcResponse(payload);
+		}
+	}
+
+	/** DataChannel 消息处理（由 WebRtcConnection 回调） */
+	__onRtcMessage(payload) {
+		if (this.__transportMode !== 'rtc') return;
+
+		if (payload.type === 'res' && payload.id) {
+			this.__handleRpcResponse(payload);
+		} else if (payload.type === 'event' && payload.event) {
+			this.__emit(`event:${payload.event}`, payload.payload);
 		}
 	}
 
@@ -432,6 +543,13 @@ export class BotConnection {
 			try { ws.close(1000, 'disconnect'); }
 			catch {}
 		}
+		// 完整拆除时关闭 RTC 连接并重置状态
+		// rtcInstances map 中的残留在下次 initRtcAndSelectTransport 时会被清理
+		if (this.__rtc) {
+			try { this.__rtc.close(); } catch {}
+			this.__rtc = null;
+		}
+		this.__transportMode = null;
 		this.__rejectAllPending('connection closed');
 	}
 

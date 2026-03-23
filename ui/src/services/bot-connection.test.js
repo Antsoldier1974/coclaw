@@ -67,13 +67,14 @@ class MockWebSocket {
 MockWebSocket.instances = [];
 MockWebSocket.lastInstance = null;
 
-// 工厂：创建一个连接并推进到 'connected' 状态
+// 工厂：创建一个连接并推进到 'connected' 状态（默认 WS 传输模式）
 function makeConnected(botId = 'bot1', extra = {}) {
 	MockWebSocket.reset();
 	const conn = new BotConnection(botId, { baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket, ...extra });
 	conn.connect();
 	const ws = MockWebSocket.lastInstance;
 	ws.simulateOpen();
+	conn.setTransportMode('ws');
 	return { conn, ws };
 }
 
@@ -218,9 +219,9 @@ describe('BotConnection – request()', () => {
 		expect(res).toEqual({ result: 42 });
 	});
 
-	test('rejects with WS_CLOSED when not connected', async () => {
+	test('rejects with NOT_CONNECTED when transportMode is null', async () => {
 		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'NOT_CONNECTED' });
 	});
 
 	test('rejects with RPC_FAILED when server responds ok=false', async () => {
@@ -263,11 +264,11 @@ describe('BotConnection – request()', () => {
 		await expect(conn.request('some.method')).rejects.toMatchObject({ code: 'WS_SEND_FAILED' });
 	});
 
-	test('rejects with WS_CLOSED when readyState is CONNECTING (0)', async () => {
+	test('rejects with NOT_CONNECTED when readyState is CONNECTING (transportMode=null)', async () => {
 		MockWebSocket.reset();
 		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.connect(); // WS created but open not simulated, readyState stays 0
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
+		conn.connect(); // WS created but open not simulated, transportMode stays null
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'NOT_CONNECTED' });
 	});
 });
 
@@ -470,6 +471,45 @@ describe('BotConnection – special messages', () => {
 		const { conn, ws } = makeConnected();
 		ws.simulateMessage({ type: 'session.expired' });
 		expect(conn.__intentionalClose).toBe(true);
+	});
+
+	test('session.expired 清理 RTC 状态', () => {
+		const { conn, ws } = makeConnected();
+		const mockRtc = { close: vi.fn() };
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		ws.simulateMessage({ type: 'session.expired' });
+
+		expect(mockRtc.close).toHaveBeenCalled();
+		expect(conn.__rtc).toBeNull();
+		expect(conn.transportMode).toBeNull();
+	});
+
+	test('bot.unbound 清理 RTC 状态', () => {
+		const { conn, ws } = makeConnected();
+		const mockRtc = { close: vi.fn() };
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		ws.simulateMessage({ type: 'bot.unbound' });
+
+		expect(mockRtc.close).toHaveBeenCalled();
+		expect(conn.__rtc).toBeNull();
+		expect(conn.transportMode).toBeNull();
+	});
+
+	test('disconnect() 清理 RTC 状态', () => {
+		const { conn } = makeConnected();
+		const mockRtc = { close: vi.fn() };
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		conn.disconnect();
+
+		expect(mockRtc.close).toHaveBeenCalled();
+		expect(conn.__rtc).toBeNull();
+		expect(conn.transportMode).toBeNull();
 	});
 
 	test('bot.unbound emits bot-unbound and disconnects without reconnect', async () => {
@@ -984,6 +1024,217 @@ describe('BotConnection – rtc: 事件分发', () => {
 		conn.on('event:answer', eventHandler);
 		ws.simulateMessage({ type: 'rtc:answer', payload: { sdp: 'x' } });
 		expect(eventHandler).not.toHaveBeenCalled();
+		conn.disconnect();
+	});
+});
+
+// --- Phase 2: 传输模式 ---
+
+describe('BotConnection – transportMode (Phase 2)', () => {
+	beforeEach(() => MockWebSocket.reset());
+
+	test('初始 transportMode 为 null', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		expect(conn.transportMode).toBeNull();
+	});
+
+	test('setTransportMode 设置模式', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.setTransportMode('rtc');
+		expect(conn.transportMode).toBe('rtc');
+		conn.setTransportMode('ws');
+		expect(conn.transportMode).toBe('ws');
+	});
+
+	test('setRtc/clearRtc 管理 RTC 引用', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		const mockRtc = { isReady: true, send: vi.fn() };
+		conn.setRtc(mockRtc);
+		expect(conn.__rtc).toBe(mockRtc);
+		conn.clearRtc();
+		expect(conn.__rtc).toBeNull();
+	});
+
+	test('RTC→WS 降级时 reject viaRtc 的挂起请求', () => {
+		const { conn } = makeConnected();
+		// 模拟 RTC 模式下有挂起请求
+		const waiter = { reject: vi.fn(), timer: null, viaRtc: true };
+		conn.__pending.set('test-1', waiter);
+		const wsWaiter = { reject: vi.fn(), timer: null, viaRtc: false };
+		conn.__pending.set('test-2', wsWaiter);
+
+		conn.setTransportMode('rtc');
+		conn.setTransportMode('ws'); // RTC→WS 降级
+
+		expect(waiter.reject).toHaveBeenCalled();
+		expect(waiter.reject.mock.calls[0][0].code).toBe('RTC_LOST');
+		expect(wsWaiter.reject).not.toHaveBeenCalled();
+		expect(conn.__pending.has('test-1')).toBe(false);
+		expect(conn.__pending.has('test-2')).toBe(true);
+		conn.disconnect();
+	});
+});
+
+describe('BotConnection – request() via RTC', () => {
+	beforeEach(() => MockWebSocket.reset());
+
+	test('transportMode=rtc 时通过 DataChannel 发送', () => {
+		const { conn } = makeConnected();
+		const mockRtc = { isReady: true, send: vi.fn() };
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		conn.request('test.method', { key: 'val' }).catch(() => {});
+
+		expect(mockRtc.send).toHaveBeenCalledTimes(1);
+		const sent = mockRtc.send.mock.calls[0][0];
+		expect(sent.type).toBe('req');
+		expect(sent.method).toBe('test.method');
+		expect(sent.params).toEqual({ key: 'val' });
+		conn.disconnect();
+	});
+
+	test('transportMode=rtc 且 RTC 不可用时 reject RTC_NOT_READY', async () => {
+		const { conn } = makeConnected();
+		conn.setTransportMode('rtc');
+		// 未设置 rtc 引用
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'RTC_NOT_READY' });
+		conn.disconnect();
+	});
+
+	test('transportMode=rtc 且 send 抛异常时 reject RTC_SEND_FAILED', async () => {
+		const { conn } = makeConnected();
+		const mockRtc = { isReady: true, send: vi.fn(() => { throw new Error('dc error'); }) };
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'RTC_SEND_FAILED' });
+		conn.disconnect();
+	});
+
+	test('transportMode=null 时 reject NOT_CONNECTED', async () => {
+		const { conn } = makeConnected();
+		conn.setTransportMode(null);
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'NOT_CONNECTED' });
+		conn.disconnect();
+	});
+});
+
+describe('BotConnection – __onRtcMessage()', () => {
+	beforeEach(() => MockWebSocket.reset());
+
+	test('transportMode=rtc 时处理 RTC res 消息', async () => {
+		const { conn } = makeConnected();
+		const mockRtc = { isReady: true, send: vi.fn() };
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		const p = conn.request('test');
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { result: 42 } });
+		const res = await p;
+		expect(res).toEqual({ result: 42 });
+		conn.disconnect();
+	});
+
+	test('transportMode=rtc 时处理 RTC event 消息', () => {
+		const { conn } = makeConnected();
+		conn.setTransportMode('rtc');
+		const handler = vi.fn();
+		conn.on('event:agent', handler);
+
+		conn.__onRtcMessage({ type: 'event', event: 'agent', payload: { data: 'test' } });
+		expect(handler).toHaveBeenCalledWith({ data: 'test' });
+		conn.disconnect();
+	});
+
+	test('transportMode=ws 时忽略 RTC 消息', () => {
+		const { conn } = makeConnected();
+		// transportMode 已被 makeConnected 设为 'ws'
+		const handler = vi.fn();
+		conn.on('event:agent', handler);
+
+		conn.__onRtcMessage({ type: 'event', event: 'agent', payload: { data: 'test' } });
+		expect(handler).not.toHaveBeenCalled();
+		conn.disconnect();
+	});
+});
+
+describe('BotConnection – WS 消息在 RTC 模式下被忽略', () => {
+	beforeEach(() => MockWebSocket.reset());
+
+	test('transportMode=rtc 时忽略 WS 业务消息(event)', () => {
+		const { conn, ws } = makeConnected();
+		conn.setTransportMode('rtc');
+		const handler = vi.fn();
+		conn.on('event:agent', handler);
+
+		ws.simulateMessage({ type: 'event', event: 'agent', payload: { x: 1 } });
+		expect(handler).not.toHaveBeenCalled();
+		conn.disconnect();
+	});
+
+	test('transportMode=rtc 时忽略 WS 业务消息(res)', () => {
+		const { conn, ws } = makeConnected();
+		const mockRtc = { isReady: true, send: vi.fn() };
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		// 通过 RTC 发请求
+		conn.request('test').catch(() => {}); // disconnect 时会 reject
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+
+		// WS 收到同 ID 的 res → 应被忽略
+		ws.simulateMessage({ type: 'res', id: reqId, ok: true, payload: {} });
+		// 请求应仍在 pending 中
+		expect(conn.__pending.has(reqId)).toBe(true);
+		conn.disconnect();
+	});
+
+	test('transportMode=rtc 时仍处理 rtc: 信令消息', () => {
+		const { conn, ws } = makeConnected();
+		conn.setTransportMode('rtc');
+		const handler = vi.fn();
+		conn.on('rtc', handler);
+
+		ws.simulateMessage({ type: 'rtc:answer', payload: { sdp: 'x' } });
+		expect(handler).toHaveBeenCalled();
+		conn.disconnect();
+	});
+
+	test('transportMode=rtc 时仍处理 session.expired', () => {
+		const { conn, ws } = makeConnected();
+		conn.setTransportMode('rtc');
+		const handler = vi.fn();
+		conn.on('session-expired', handler);
+
+		ws.simulateMessage({ type: 'session.expired' });
+		expect(handler).toHaveBeenCalled();
+	});
+});
+
+describe('BotConnection – WS close 时 RTC 模式保留 RTC pending', () => {
+	beforeEach(() => MockWebSocket.reset());
+
+	test('transportMode=rtc 时 WS close 仅 reject viaRtc=false 的请求', () => {
+		const { conn, ws } = makeConnected();
+		conn.setTransportMode('rtc');
+
+		const rtcWaiter = { reject: vi.fn(), timer: null, viaRtc: true };
+		const wsWaiter = { reject: vi.fn(), timer: null, viaRtc: false };
+		conn.__pending.set('rtc-1', rtcWaiter);
+		conn.__pending.set('ws-1', wsWaiter);
+
+		ws.simulateClose(1006, 'abnormal');
+
+		expect(wsWaiter.reject).toHaveBeenCalled();
+		expect(rtcWaiter.reject).not.toHaveBeenCalled();
+		expect(conn.__pending.has('rtc-1')).toBe(true);
+		expect(conn.__pending.has('ws-1')).toBe(false);
+
+		// 清理以避免 unhandled rejection
+		conn.__pending.clear();
 		conn.disconnect();
 	});
 });

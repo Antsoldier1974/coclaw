@@ -6,13 +6,18 @@ import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useTopicsStore } from './topics.store.js';
 import { checkPluginVersion } from '../utils/plugin-version.js';
-import { initRtcForBot, closeRtcForBot } from '../services/webrtc-connection.js';
+import { initRtcAndSelectTransport, closeRtcForBot } from '../services/webrtc-connection.js';
 
-// 跟踪已注册 state 监听的 botId，避免重复注册
-const _awaitingConnIds = new Set();
+// 跟踪已注册持久 state 监听的 botId，避免重复注册
+const _listeningConnIds = new Set();
+// 跟踪已完成首次初始化的 botId
+const _initializedBots = new Set();
 
 /** @internal 仅供测试重置 */
-export function __resetAwaitingConnIds() { _awaitingConnIds.clear(); }
+export function __resetAwaitingConnIds() {
+	_listeningConnIds.clear();
+	_initializedBots.clear();
+}
 
 export const useBotsStore = defineStore('bots', {
 	state: () => ({
@@ -88,6 +93,8 @@ export const useBotsStore = defineStore('bots', {
 			closeRtcForBot(id);
 			useBotConnections().disconnect(id);
 			useSessionsStore().removeSessionsByBotId(id);
+			_initializedBots.delete(id);
+			_listeningConnIds.delete(id);
 		},
 		async loadBots() {
 			this.loading = true;
@@ -110,11 +117,14 @@ export const useBotsStore = defineStore('bots', {
 			}
 		},
 		/**
-		 * 为尚未就绪的 WS 连接注册一次性 state 监听，
-		 * 连接变为 connected 时触发 loadAllSessions
+		 * 为 WS 连接注册持久 state 监听：
+		 * - 首次 connected：完整初始化（版本检查 + 传输选择 + agent/session/topic 加载）
+		 * - 后续 connected（WS 重连）：仅重新触发传输选择
 		 */
 		__listenForReady(botIds, manager) {
 			const fire = async (id, conn) => {
+				// 传输选择（含 RTC 建连 + 15s 超时降级），等待选定后再发业务请求
+				await initRtcAndSelectTransport(id, conn);
 				// 静默检查插件版本，记录结果但不阻断
 				const info = await checkPluginVersion(conn);
 				const versionOk = info.ok;
@@ -123,8 +133,6 @@ export const useBotsStore = defineStore('bots', {
 				if (!versionOk) {
 					console.warn('[bots] plugin version outdated for botId=%s', id);
 				}
-				// WebRTC 连接（非阻塞，不影响后续 agent/session 加载）
-				initRtcForBot(id, conn).catch(() => {});
 				await useAgentsStore().loadAgents(id);
 				useSessionsStore().loadAllSessions();
 				useTopicsStore().loadAllTopics();
@@ -138,21 +146,30 @@ export const useBotsStore = defineStore('bots', {
 				const conn = manager.get(id);
 				if (!conn) continue;
 				if (conn.state === 'connected') {
-					console.debug('[bots] conn already ready botId=%s → loadAgents', id);
-					catchFire(id, conn);
-					continue;
-				}
-				if (_awaitingConnIds.has(id)) continue;
-				_awaitingConnIds.add(id);
-				const onState = (state) => {
-					if (state === 'connected') {
-						conn.off('state', onState);
-						_awaitingConnIds.delete(id);
-						console.debug('[bots] conn ready botId=%s → loadAgents', id);
+					if (!_initializedBots.has(id)) {
+						_initializedBots.add(id);
+						console.debug('[bots] conn already ready botId=%s → full init', id);
 						catchFire(id, conn);
+					} else {
+						// WS 重连后已就绪，仅重新触发传输选择
+						initRtcAndSelectTransport(id, conn).catch(() => {});
 					}
-				};
-				conn.on('state', onState);
+				}
+				// 注册持久监听器（不移除，随连接生命周期存在）
+				if (_listeningConnIds.has(id)) continue;
+				_listeningConnIds.add(id);
+				conn.on('state', (state) => {
+					if (state !== 'connected') return;
+					if (!_initializedBots.has(id)) {
+						_initializedBots.add(id);
+						console.debug('[bots] conn ready botId=%s → full init', id);
+						catchFire(id, conn);
+					} else {
+						// WS 重连：仅重新触发传输选择
+						console.debug('[bots] ws reconnected botId=%s → re-select transport', id);
+						initRtcAndSelectTransport(id, conn).catch(() => {});
+					}
+				});
 			}
 		},
 	},

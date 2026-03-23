@@ -23,10 +23,10 @@ vi.mock('../utils/plugin-version.js', () => ({
 	MIN_PLUGIN_VERSION: '0.4.0',
 }));
 
-const mockInitRtcForBot = vi.fn().mockResolvedValue(undefined);
+const mockInitRtcAndSelectTransport = vi.fn().mockResolvedValue(undefined);
 const mockCloseRtcForBot = vi.fn();
 vi.mock('../services/webrtc-connection.js', () => ({
-	initRtcForBot: (...args) => mockInitRtcForBot(...args),
+	initRtcAndSelectTransport: (...args) => mockInitRtcAndSelectTransport(...args),
 	closeRtcForBot: (...args) => mockCloseRtcForBot(...args),
 }));
 
@@ -40,7 +40,7 @@ beforeEach(() => {
 	setActivePinia(createPinia());
 	vi.clearAllMocks();
 	mockManager.get.mockReset();
-	mockInitRtcForBot.mockReset().mockResolvedValue(undefined);
+	mockInitRtcAndSelectTransport.mockReset().mockResolvedValue(undefined);
 	mockCloseRtcForBot.mockReset();
 	__resetAwaitingConnIds();
 });
@@ -178,8 +178,8 @@ describe('addOrUpdateBot', () => {
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
 		});
-		// 已连接时不注册 state 监听
-		expect(fakeConn.on).not.toHaveBeenCalled();
+		// 注册持久 state 监听器（用于 WS 重连时重新触发传输选择）
+		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
 	});
 
 	test('does nothing when bot id is falsy', () => {
@@ -339,7 +339,7 @@ describe('loadBots', () => {
 		expect(store.loading).toBe(false);
 	});
 
-	test('registers state listener on non-connected connections and triggers loadAgents+loadAllSessions on connected', async () => {
+	test('registers persistent state listener on non-connected connections and triggers full init on connected', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -360,12 +360,14 @@ describe('loadBots', () => {
 
 		await store.loadBots();
 
+		// 注册持久 state 监听器（不移除）
 		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
 
 		// 模拟 WS 连接就绪
 		stateCallback('connected');
 
-		expect(fakeConn.off).toHaveBeenCalledWith('state', stateCallback);
+		// 持久监听器不调用 off
+		expect(fakeConn.off).not.toHaveBeenCalled();
 		// fire 是 async（含 checkPluginVersion），需等待
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
@@ -375,7 +377,7 @@ describe('loadBots', () => {
 		});
 	});
 
-	test('immediately triggers loadAgents+loadAllSessions for already-connected bots', async () => {
+	test('immediately triggers full init for already-connected bots and registers persistent listener', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -389,8 +391,8 @@ describe('loadBots', () => {
 
 		await store.loadBots();
 
-		// 不注册 state 监听，直接调用 loadAgents
-		expect(fakeConn.on).not.toHaveBeenCalled();
+		// 注册持久 state 监听器（用于 WS 重连时重新触发传输选择）
+		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
 		await vi.waitFor(() => {
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
@@ -459,7 +461,7 @@ describe('loadBots', () => {
 });
 
 describe('WebRTC 集成', () => {
-	test('__listenForReady 中为已 connected 的 bot 调用 initRtcForBot', async () => {
+	test('__listenForReady 中为已 connected 的 bot 调用 initRtcAndSelectTransport', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -475,11 +477,11 @@ describe('WebRTC 集成', () => {
 		await store.loadBots();
 
 		await vi.waitFor(() => {
-			expect(mockInitRtcForBot).toHaveBeenCalledWith('1', fakeConn);
+			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('1', fakeConn);
 		});
 	});
 
-	test('__listenForReady 中为 connecting 的 bot 在就绪后调用 initRtcForBot', async () => {
+	test('__listenForReady 中为 connecting 的 bot 在就绪后调用 initRtcAndSelectTransport', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -498,12 +500,12 @@ describe('WebRTC 集成', () => {
 		listBots.mockResolvedValue([{ id: '2', name: 'B' }]);
 
 		await store.loadBots();
-		expect(mockInitRtcForBot).not.toHaveBeenCalled();
+		expect(mockInitRtcAndSelectTransport).not.toHaveBeenCalled();
 
 		stateCallback('connected');
 
 		await vi.waitFor(() => {
-			expect(mockInitRtcForBot).toHaveBeenCalledWith('2', fakeConn);
+			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('2', fakeConn);
 		});
 	});
 
