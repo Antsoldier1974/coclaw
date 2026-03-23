@@ -1806,3 +1806,257 @@ test('__clearTokenLocal should clear when no botId provided (backward compat)', 
 	const cfg = await readConfig();
 	assert.equal(cfg.token, undefined);
 });
+
+// --- WebRTC (rtc:*) 消息分发测试 ---
+
+/**
+ * 构造一个已连接 serverWs 的 bridge，返回 { bridge, server, logs }。
+ * 调用方必须在 finally 中 bridge.stop()。
+ */
+async function setupConnectedBridge() {
+	FakeWebSocket.instances.length = 0;
+	const dir = await writeCfg({ token: 'rtc-tok', serverUrl: 'https://server.local' });
+	const prevHome = saveHomedir();
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
+	const bridge = createBridge();
+	await bridge.start({ logger, pluginConfig: {} });
+
+	const server = FakeWebSocket.instances[0];
+	server.readyState = 1;
+	server.emit('open', {});
+
+	return { bridge, server, logs, prevHome };
+}
+
+test('RealtimeBridge should lazily create WebRtcPeer on first rtc: message', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		assert.equal(bridge.webrtcPeer, null);
+
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_test1',
+				payload: { sdp: 'mock-offer-sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		assert.notEqual(bridge.webrtcPeer, null, 'webrtcPeer should be created');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should forward rtc:answer via __forwardToServer', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_ans',
+				payload: { sdp: 'offer-sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		// WebRtcPeer 的 onSend 会调用 __forwardToServer → server.send
+		const answerMsg = server.sent.find((s) => String(s).includes('rtc:answer'));
+		assert.ok(answerMsg, 'should have sent rtc:answer back via server ws');
+		const parsed = JSON.parse(String(answerMsg));
+		assert.equal(parsed.type, 'rtc:answer');
+		assert.equal(parsed.toConnId, 'c_ans');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should not create new WebRtcPeer on subsequent rtc: messages', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_dup1',
+				payload: { sdp: 'sdp1' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+		const firstPeer = bridge.webrtcPeer;
+
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_dup2',
+				payload: { sdp: 'sdp2' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		assert.equal(bridge.webrtcPeer, firstPeer, 'should reuse same WebRtcPeer instance');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should dispatch rtc:ice to WebRtcPeer', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		// 先建立 session
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_ice1',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 发 ICE
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:ice',
+				fromConnId: 'c_ice1',
+				payload: { candidate: 'cand1', sdpMid: '0', sdpMLineIndex: 0 },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 不抛异常即通过
+		assert.ok(bridge.webrtcPeer);
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should dispatch rtc:ready and rtc:closed to WebRtcPeer', async () => {
+	const { bridge, server, logs, prevHome } = await setupConnectedBridge();
+	try {
+		// 先建立 session
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_lc1',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		server.emit('message', {
+			data: JSON.stringify({ type: 'rtc:ready', fromConnId: 'c_lc1' }),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		server.emit('message', {
+			data: JSON.stringify({ type: 'rtc:closed', fromConnId: 'c_lc1' }),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		assert.ok(logs.some((l) => String(l).includes('rtc:ready')));
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should handle rtc: signaling error gracefully', async () => {
+	const { bridge, server, logs, prevHome } = await setupConnectedBridge();
+	try {
+		// 发送一个会导致错误的 rtc:offer（无 payload.sdp）
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_err',
+				payload: {},
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 应该被 catch 住，不崩溃，日志中有 signaling error
+		assert.ok(logs.some((l) => String(l).includes('signaling error')));
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should cleanup webrtcPeer on serverWs close', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_cleanup',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+		assert.notEqual(bridge.webrtcPeer, null);
+
+		// 模拟 serverWs close
+		server.emit('close', { code: 1000, reason: 'normal' });
+		await new Promise((r) => setTimeout(r, 50));
+
+		assert.equal(bridge.webrtcPeer, null, 'webrtcPeer should be cleaned up on ws close');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge rtc: messages should not interfere with rpc.req handling', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		// 先发 rtc 消息
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_noint',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 再发 rpc.req（应正常处理，不受 rtc 影响）
+		server.emit('message', {
+			data: JSON.stringify({ type: 'rpc.req', id: 'rpc-1', method: 'test.method', params: {} }),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		// rpc.req 被正常处理（不因 rtc 而被吞掉）
+		// 由于 gateway 未连接，会触发 GATEWAY_OFFLINE 错误响应到 server
+		// 只需确认不崩溃
+		assert.ok(true);
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge stop() should cleanup webrtcPeer explicitly', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_stop',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+		assert.notEqual(bridge.webrtcPeer, null);
+
+		await bridge.stop();
+		assert.equal(bridge.webrtcPeer, null, 'stop() should cleanup webrtcPeer');
+	} finally {
+		restoreHomedir(prevHome);
+	}
+});

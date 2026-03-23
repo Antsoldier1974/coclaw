@@ -10,6 +10,7 @@ import {
 	buildDeviceAuthPayloadV3,
 } from './device-identity.js';
 import { getRuntime } from './runtime.js';
+import { WebRtcPeer } from './webrtc-peer.js';
 
 const DEFAULT_GATEWAY_WS_URL = `ws://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || '18789'}`;
 const RECONNECT_MS = 10_000;
@@ -97,6 +98,7 @@ export class RealtimeBridge {
 		this.serverHbTimer = null;
 		this.__serverHbMissCount = 0;
 		this.__deviceIdentity = null;
+		this.webrtcPeer = null;
 	}
 
 	__resolveWebSocket() {
@@ -696,6 +698,20 @@ export class RealtimeBridge {
 					catch {}
 					return;
 				}
+				if (payload?.type?.startsWith('rtc:')) {
+					if (!this.webrtcPeer) {
+						this.webrtcPeer = new WebRtcPeer({
+							onSend: (msg) => this.__forwardToServer(msg),
+							logger: this.logger,
+						});
+					}
+					try {
+						await this.webrtcPeer.handleSignaling(payload);
+					} catch (err) {
+						this.logger.warn?.(`[coclaw/rtc] signaling error: ${err?.message}`);
+					}
+					return;
+				}
 				if (payload?.type === 'req' || payload?.type === 'rpc.req') {
 					void this.__handleGatewayRequestFromServer({
 						id: payload.id,
@@ -720,6 +736,12 @@ export class RealtimeBridge {
 			this.serverWs = null;
 			this.intentionallyClosed = false;
 			this.__closeGatewayWs();
+			if (this.webrtcPeer) {
+				try { await this.webrtcPeer.closeAll(); }
+				/* c8 ignore next 3 -- 防御性兜底，werift close 异常时不可崩溃 gateway */
+				catch (e) { this.logger.warn?.(`[coclaw/rtc] closeAll failed: ${e?.message}`); }
+				this.webrtcPeer = null;
+			}
 
 			if (event?.code === 4001 || event?.code === 4003) {
 				try {
@@ -778,6 +800,10 @@ export class RealtimeBridge {
 			this.reconnectTimer = null;
 		}
 		this.__closeGatewayWs();
+		if (this.webrtcPeer) {
+			await this.webrtcPeer.closeAll().catch(() => {});
+			this.webrtcPeer = null;
+		}
 		const sock = this.serverWs;
 		if (sock) {
 			this.intentionallyClosed = true;
