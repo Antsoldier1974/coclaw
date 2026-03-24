@@ -9,12 +9,16 @@ export class WebRtcPeer {
 	 * @param {object} opts
 	 * @param {function} opts.onSend - 将信令消息交给 RealtimeBridge 发送
 	 * @param {function} [opts.onRequest] - DataChannel 收到 req 消息时的回调 (payload, connId) => void
+	 * @param {function} [opts.onFileRpc] - rpc DC 上 coclaw.file.* 请求的回调 (payload, sendFn, connId) => void
+	 * @param {function} [opts.onFileChannel] - file:<transferId> DataChannel 的回调 (dc, connId) => void
 	 * @param {object} [opts.logger] - pino 风格 logger
 	 * @param {function} [opts.PeerConnection] - 可替换的构造函数（测试用）
 	 */
-	constructor({ onSend, onRequest, logger, PeerConnection }) {
+	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection }) {
 		this.__onSend = onSend;
 		this.__onRequest = onRequest;
+		this.__onFileRpc = onFileRpc;
+		this.__onFileChannel = onFileChannel;
 		this.logger = logger ?? console;
 		this.__PeerConnection = PeerConnection ?? WeriftRTCPeerConnection;
 		/** @type {Map<string, { pc: object, rpcChannel: object|null }>} */
@@ -126,6 +130,8 @@ export class WebRtcPeer {
 			if (channel.label === 'rpc') {
 				session.rpcChannel = channel;
 				this.__setupDataChannel(connId, channel);
+			} else if (channel.label.startsWith('file:')) {
+				this.__onFileChannel?.(channel, connId);
 			}
 		};
 
@@ -174,7 +180,16 @@ export class WebRtcPeer {
 				const raw = typeof event.data === 'string' ? event.data : event.data.toString();
 				const payload = JSON.parse(raw);
 				if (payload.type === 'req') {
-					this.__onRequest?.(payload, connId);
+					// coclaw.file.* 方法本地处理，不转发 gateway
+					if (payload.method?.startsWith('coclaw.file.') && this.__onFileRpc) {
+						const sendFn = (response) => {
+							try { dc.send(JSON.stringify(response)); }
+							catch { /* DC 可能已关闭 */ }
+						};
+						this.__onFileRpc(payload, sendFn, connId);
+					} else {
+						this.__onRequest?.(payload, connId);
+					}
 				} else {
 					this.__logDebug(`[${connId}] unknown DC message type: ${payload.type}`);
 				}

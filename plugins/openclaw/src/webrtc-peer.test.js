@@ -327,10 +327,12 @@ test('WebRtcPeer: 无 onRequest 时 req 消息不崩溃', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ondatachannel 非 rpc label 不设置 rpcChannel', async () => {
+test('WebRtcPeer: ondatachannel file:* label → onFileChannel 回调', async () => {
 	const PC = MockPCFactory();
+	const fileDCs = [];
 	const peer = new WebRtcPeer({
 		onSend: () => {},
+		onFileChannel: (dc, connId) => fileDCs.push({ dc, connId }),
 		logger: silentLogger(),
 		PeerConnection: PC,
 	});
@@ -343,7 +345,46 @@ test('WebRtcPeer: ondatachannel 非 rpc label 不设置 rpcChannel', async () =>
 
 	// rpcChannel 应该仍为 null
 	assert.equal(peer.__sessions.get('c_031').rpcChannel, null);
+	// onFileChannel 应被调用
+	assert.equal(fileDCs.length, 1);
+	assert.equal(fileDCs[0].dc, fakeChannel);
+	assert.equal(fileDCs[0].connId, 'c_031');
 
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ondatachannel file:* 无 onFileChannel 回调时不崩溃', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_031b'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'file:xyz', onopen: null, onclose: null, onmessage: null };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	// 不应抛异常
+	assert.equal(peer.__sessions.get('c_031b').rpcChannel, null);
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ondatachannel 未知 label 不设置 rpcChannel', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_031c'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'other:channel', onopen: null, onclose: null, onmessage: null };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	assert.equal(peer.__sessions.get('c_031c').rpcChannel, null);
 	await peer.closeAll();
 });
 
@@ -677,4 +718,138 @@ test('WebRtcPeer: 默认 logger 为 console', () => {
 		PeerConnection: MockPCFactory(),
 	});
 	assert.equal(peer.logger, console);
+});
+
+// --- coclaw.file.* RPC 拦截 ---
+
+test('WebRtcPeer: coclaw.file.* req → onFileRpc 回调（不转发 onRequest）', async () => {
+	const PC = MockPCFactory();
+	const requests = [];
+	const fileRpcs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onRequest: (payload) => requests.push(payload),
+		onFileRpc: (payload, sendFn, connId) => fileRpcs.push({ payload, sendFn, connId }),
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_file_01'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null, send: () => {} };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	const fileReq = { type: 'req', id: 'f1', method: 'coclaw.file.list', params: { path: '.' } };
+	fakeChannel.onmessage({ data: JSON.stringify(fileReq) });
+
+	assert.equal(fileRpcs.length, 1);
+	assert.deepEqual(fileRpcs[0].payload, fileReq);
+	assert.equal(fileRpcs[0].connId, 'c_file_01');
+	assert.equal(typeof fileRpcs[0].sendFn, 'function');
+
+	// 不应转发到 onRequest
+	assert.equal(requests.length, 0);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: coclaw.file.* sendFn 发送响应到 DC', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onFileRpc: (payload, sendFn) => {
+			sendFn({ type: 'res', id: payload.id, ok: true, payload: { files: [] } });
+		},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_file_02'));
+	const pc = PC.instances[0];
+	const sent = [];
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null, send: (d) => sent.push(d) };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'f2', method: 'coclaw.file.list', params: {} }) });
+
+	assert.equal(sent.length, 1);
+	const res = JSON.parse(sent[0]);
+	assert.equal(res.ok, true);
+	assert.equal(res.id, 'f2');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: coclaw.file.* sendFn DC 关闭时不崩溃', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onFileRpc: (payload, sendFn) => {
+			sendFn({ type: 'res', id: payload.id, ok: true });
+		},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_file_03'));
+	const pc = PC.instances[0];
+	const fakeChannel = {
+		label: 'rpc', onopen: null, onclose: null, onmessage: null,
+		send: () => { throw new Error('DC closed'); },
+	};
+	pc.ondatachannel({ channel: fakeChannel });
+
+	// 不应抛异常
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'f3', method: 'coclaw.file.delete', params: {} }) });
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 非 coclaw.file.* req 仍走 onRequest', async () => {
+	const PC = MockPCFactory();
+	const requests = [];
+	const fileRpcs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onRequest: (payload) => requests.push(payload),
+		onFileRpc: (payload, _sendFn) => fileRpcs.push(payload),
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_file_04'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null, send: () => {} };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'x1', method: 'agent', params: {} }) });
+
+	assert.equal(requests.length, 1);
+	assert.equal(fileRpcs.length, 0);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: coclaw.file.* 无 onFileRpc 时走 onRequest', async () => {
+	const PC = MockPCFactory();
+	const requests = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onRequest: (payload) => requests.push(payload),
+		// 不传 onFileRpc
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_file_05'));
+	const pc = PC.instances[0];
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null, send: () => {} };
+	pc.ondatachannel({ channel: fakeChannel });
+
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'x2', method: 'coclaw.file.list', params: {} }) });
+
+	// 无 onFileRpc 时走 onRequest
+	assert.equal(requests.length, 1);
+
+	await peer.closeAll();
 });
