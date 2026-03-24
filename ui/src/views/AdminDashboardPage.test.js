@@ -19,7 +19,7 @@ vi.mock('../composables/use-notify.js', () => ({
 	}),
 }));
 
-vi.stubEnv('VITE_APP_VERSION', '0.9.0');
+vi.stubGlobal('__APP_VERSION__', '0.9.0');
 
 const fakeDashboard = {
 	users: { total: 100, todayNew: 5, todayActive: 23 },

@@ -103,7 +103,7 @@ export default {
 		return {
 			loading: false,
 			data: null,
-			uiVersion: import.meta.env.VITE_APP_VERSION ?? '—',
+			uiVersion: __APP_VERSION__,
 		};
 	},
 	async mounted() {
