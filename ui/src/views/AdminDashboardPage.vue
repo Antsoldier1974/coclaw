@@ -29,11 +29,19 @@
 					<div class="rounded-xl bg-elevated p-4">
 						<div class="flex items-center justify-between text-sm">
 							<span class="text-dimmed">{{ $t('adminDashboard.totalBots') }}</span>
-							<span class="font-medium">{{ data.bots.total }}</span>
+							<span class="font-medium">{{ data.bots.total }} / {{ $t('adminDashboard.onlineBots') }} {{ data.bots.online }}</span>
 						</div>
 						<div class="mt-2 flex items-center justify-between text-sm">
 							<span class="text-dimmed">{{ $t('adminDashboard.serverVersion') }}</span>
 							<span class="font-medium">v{{ data.version.server }}</span>
+						</div>
+						<div class="mt-2 flex items-center justify-between text-sm">
+							<span class="text-dimmed">{{ $t('adminDashboard.uiVersion') }}</span>
+							<span class="font-medium">v{{ uiVersion }}</span>
+						</div>
+						<div class="mt-2 flex items-center justify-between text-sm">
+							<span class="text-dimmed">{{ $t('adminDashboard.pluginVersion') }}</span>
+							<span class="font-medium">v{{ data.version.plugin }}</span>
 						</div>
 					</div>
 
@@ -49,7 +57,7 @@
 							>
 								<span>
 									<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
-									<span>{{ user.name }}</span>
+									<span>{{ user.name || user.loginName || user.id }}</span>
 								</span>
 								<span class="text-xs text-dimmed">{{ formatTimeAgo(user.lastLoginAt) }}</span>
 							</li>
@@ -76,6 +84,7 @@ export default {
 		return {
 			loading: false,
 			data: null,
+			uiVersion: import.meta.env.VITE_APP_VERSION ?? '—',
 		};
 	},
 	async mounted() {

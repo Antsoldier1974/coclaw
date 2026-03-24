@@ -30,6 +30,8 @@ test('getAdminDashboard: 返回正确的汇总结构', async () => {
 	assert.equal(result.bots.online, 3);
 	assert.equal(typeof result.version.server, 'string');
 	assert.ok(result.version.server.length > 0);
+	assert.equal(typeof result.version.plugin, 'string');
+	assert.ok(result.version.plugin.length > 0);
 });
 
 test('getAdminDashboard: 自定义数据正确透传', async () => {
