@@ -216,6 +216,17 @@ export const zhCNMessages = {
 		offline: '离线',
 		pluginVersion: '插件：',
 		clawVersion: 'OpenClaw：',
+		conn: {
+			ws: 'WebSocket',
+			rtcConnecting: 'WebRTC 连接中…',
+			rtcP2P: 'WebRTC · P2P · {protocol}',
+			rtcRelay: 'WebRTC · 中继 · {protocol}',
+			rtcFailed: '已降级为 WebSocket',
+			detailTitle: '连接详情',
+			localCandidate: '本地候选',
+			remoteCandidate: '远端候选',
+			relayProtocol: '中继协议',
+		},
 	},
 	pluginUpgrade: {
 		outdated: '该 Claw 的插件版本过低，部分功能不可用。请执行：openclaw plugins update openclaw-coclaw',

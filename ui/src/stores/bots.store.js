@@ -29,10 +29,12 @@ export const useBotsStore = defineStore('bots', {
 		pluginVersionOk: {},
 		/** 各 bot 的插件与 OpenClaw 版本 (botId → { version, clawVersion }) */
 		pluginInfo: {},
+		/** 传输模式 (botId → 'ws' | 'rtc') */
+		transportModes: {},
 		/** WebRTC 连接状态 (botId → 'idle' | 'connecting' | 'connected' | 'failed' | 'closed') */
 		rtcStates: {},
-		/** WebRTC ICE candidate 类型 (botId → 'host' | 'srflx' | 'relay' | null) */
-		rtcCandidateTypes: {},
+		/** WebRTC ICE 传输详情 (botId → { localType, localProtocol, remoteType, remoteProtocol, relayProtocol }) */
+		rtcTransportInfo: {},
 	}),
 	actions: {
 		setBots(items) {
@@ -93,6 +95,13 @@ export const useBotsStore = defineStore('bots', {
 			closeRtcForBot(id);
 			useBotConnections().disconnect(id);
 			useSessionsStore().removeSessionsByBotId(id);
+			// 清理传输相关状态
+			const { [id]: _tm, ...restTm } = this.transportModes;
+			this.transportModes = restTm;
+			const { [id]: _rs, ...restRs } = this.rtcStates;
+			this.rtcStates = restRs;
+			const { [id]: _rt, ...restRt } = this.rtcTransportInfo;
+			this.rtcTransportInfo = restRt;
 			_initializedBots.delete(id);
 			_listeningConnIds.delete(id);
 		},

@@ -28,6 +28,24 @@
 					</div>
 				</div>
 
+				<!-- 连接方式（在线 bot 才显示） -->
+				<div v-if="bot.online" class="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-muted">
+					<span>{{ connLabel(bot.id) }}</span>
+					<button
+						v-if="hasConnDetail(bot.id)"
+						class="inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 opacity-70 hover:opacity-100"
+						@click="toggleDetail(bot.id)"
+					>
+						{{ $t('bots.conn.detailTitle') }}
+						<UIcon :name="expandedDetails[bot.id] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
+					</button>
+				</div>
+				<div v-if="bot.online && expandedDetails[bot.id] && getConnDetail(bot.id)" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted">
+					<p>{{ $t('bots.conn.localCandidate') }}：{{ getConnDetail(bot.id).localType }} · {{ getConnDetail(bot.id).localProtocol.toUpperCase() }}</p>
+					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ getConnDetail(bot.id).remoteType }} · {{ getConnDetail(bot.id).remoteProtocol.toUpperCase() }}</p>
+					<p>{{ $t('bots.conn.relayProtocol') }}：{{ getConnDetail(bot.id).relayProtocol?.toUpperCase() ?? '—' }}</p>
+				</div>
+
 				<div class="flex justify-end">
 					<UButton
 						color="error"
@@ -78,6 +96,7 @@ export default {
 			unbindingId: '',
 			botsStore: null,
 			dashboardStore: null,
+			expandedDetails: {},
 		};
 	},
 	computed: {
@@ -93,6 +112,32 @@ export default {
 	methods: {
 		getDashboardData(botId) {
 			return this.dashboardStore?.getDashboard(String(botId)) ?? null;
+		},
+		connLabel(botId) {
+			const id = String(botId);
+			const mode = this.botsStore?.transportModes[id];
+			if (mode === 'rtc') {
+				const rtcState = this.botsStore?.rtcStates[id];
+				if (rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
+				if (rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
+				const info = this.botsStore?.rtcTransportInfo[id];
+				if (!info) return this.$t('bots.conn.rtcConnecting');
+				if (info.localType === 'relay') {
+					return this.$t('bots.conn.rtcRelay', { protocol: (info.relayProtocol ?? 'udp').toUpperCase() });
+				}
+				return this.$t('bots.conn.rtcP2P', { protocol: (info.localProtocol ?? 'udp').toUpperCase() });
+			}
+			return this.$t('bots.conn.ws');
+		},
+		hasConnDetail(botId) {
+			return !!this.botsStore?.rtcTransportInfo[String(botId)];
+		},
+		getConnDetail(botId) {
+			return this.botsStore?.rtcTransportInfo[String(botId)] ?? null;
+		},
+		toggleDetail(botId) {
+			const id = String(botId);
+			this.expandedDetails = { ...this.expandedDetails, [id]: !this.expandedDetails[id] };
 		},
 		goToAgent(botId, agentId) {
 			if (this.botsStore?.pluginVersionOk[String(botId)] === false) {

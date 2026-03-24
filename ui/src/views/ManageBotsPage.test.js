@@ -30,6 +30,9 @@ vi.mock('../stores/bots.store.js', () => ({
 		items: mockBots,
 		loadBots: mockLoadBots,
 		pluginVersionOk: {},
+		transportModes: {},
+		rtcStates: {},
+		rtcTransportInfo: {},
 	}),
 }));
 
@@ -76,11 +79,12 @@ function createWrapper() {
 			stubs: {
 				UButton: UButtonStub,
 				UBadge: UBadgeStub,
+				UIcon: { props: ['name'], template: '<i />' },
 				InstanceOverview: InstanceOverviewStub,
 				AgentCard: AgentCardStub,
 			},
 			mocks: {
-				$t: (key, params) => {
+				$t: (key, _params) => {
 					const map = {
 						'bots.pageTitle': 'My Claws',
 						'bots.addBot': 'Add Bot',
@@ -88,6 +92,9 @@ function createWrapper() {
 						'bots.unbind': 'Unbind',
 						'bots.preparing': 'Preparing...',
 						'dashboard.offline': 'Offline',
+						'bots.conn.ws': 'WebSocket',
+						'bots.conn.rtcConnecting': 'WebRTC connecting…',
+						'bots.conn.rtcFailed': 'Degraded to WebSocket',
 					};
 					return map[key] ?? key;
 				},

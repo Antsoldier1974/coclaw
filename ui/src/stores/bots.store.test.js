@@ -517,9 +517,24 @@ describe('WebRTC 集成', () => {
 		expect(mockCloseRtcForBot).toHaveBeenCalledWith('5');
 	});
 
-	test('state 初始包含 rtcStates 和 rtcCandidateTypes', () => {
+	test('removeBotById 清理传输相关状态', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '5', name: 'Bot' }, { id: '6', name: 'Bot2' }]);
+		store.transportModes = { '5': 'rtc', '6': 'ws' };
+		store.rtcStates = { '5': 'connected', '6': 'idle' };
+		store.rtcTransportInfo = { '5': { localType: 'host' }, '6': { localType: 'relay' } };
+
+		store.removeBotById('5');
+
+		expect(store.transportModes).toEqual({ '6': 'ws' });
+		expect(store.rtcStates).toEqual({ '6': 'idle' });
+		expect(store.rtcTransportInfo).toEqual({ '6': { localType: 'relay' } });
+	});
+
+	test('state 初始包含 rtcStates、rtcTransportInfo 和 transportModes', () => {
 		const store = useBotsStore();
 		expect(store.rtcStates).toEqual({});
-		expect(store.rtcCandidateTypes).toEqual({});
+		expect(store.rtcTransportInfo).toEqual({});
+		expect(store.transportModes).toEqual({});
 	});
 });

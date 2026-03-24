@@ -50,6 +50,14 @@ export function initRtcAndSelectTransport(botId, botConn) {
 	const rtc = new WebRtcConnection(botId, botConn);
 	rtcInstances.set(botId, rtc);
 
+	/** 同步传输模式到 store */
+	function syncTransportMode(mode) {
+		botConn.setTransportMode(mode);
+		getBotsStore().then((store) => {
+			store.transportModes = { ...store.transportModes, [botId]: mode };
+		}).catch(() => {});
+	}
+
 	return new Promise((resolveTransport) => {
 		let settled = false;
 		function settle() {
@@ -66,29 +74,29 @@ export function initRtcAndSelectTransport(botId, botConn) {
 			rtc.close();
 			rtcInstances.delete(botId);
 			botConn.clearRtc();
-			botConn.setTransportMode('ws');
+			syncTransportMode('ws');
 		}, RTC_TRANSPORT_TIMEOUT_MS);
 
 		rtc.onReady = () => {
 			if (!settle()) return;
 			clearTimeout(fallbackTimer);
 			botConn.setRtc(rtc);
-			botConn.setTransportMode('rtc');
+			syncTransportMode('rtc');
 		};
 
 		// 状态变更 → 同步到 botsStore + 不可恢复时降级
 		rtc.onStateChange = () => {
 			getBotsStore().then((store) => {
 				store.rtcStates = { ...store.rtcStates, [botId]: rtc.state };
-				if (rtc.candidateType) {
-					store.rtcCandidateTypes = { ...store.rtcCandidateTypes, [botId]: rtc.candidateType };
+				if (rtc.transportInfo) {
+					store.rtcTransportInfo = { ...store.rtcTransportInfo, [botId]: rtc.transportInfo };
 				}
 			}).catch(() => {});
 
 			// state === 'failed' 仅在所有恢复尝试耗尽后才被设置
 			if (rtc.state === 'failed') {
 				botConn.clearRtc();
-				botConn.setTransportMode('ws');
+				syncTransportMode('ws');
 			}
 		};
 
@@ -101,7 +109,7 @@ export function initRtcAndSelectTransport(botId, botConn) {
 				rtc.close();
 				rtcInstances.delete(botId);
 				botConn.clearRtc();
-				botConn.setTransportMode('ws');
+				syncTransportMode('ws');
 			});
 	});
 }
@@ -147,6 +155,8 @@ export class WebRtcConnection {
 		this.__rpcChannel = null;
 		this.__state = 'idle';
 		this.__candidateType = null;
+		/** @type {{ localType: string, localProtocol: string, remoteType: string, remoteProtocol: string, relayProtocol: string|null }|null} */
+		this.__transportInfo = null;
 		this.__onRtcMsg = null;
 		this.__turnCreds = null;
 		this.__iceRestartCount = 0;
@@ -165,6 +175,7 @@ export class WebRtcConnection {
 	/** @returns {'idle' | 'connecting' | 'connected' | 'failed' | 'closed'} */
 	get state() { return this.__state; }
 	get candidateType() { return this.__candidateType; }
+	get transportInfo() { return this.__transportInfo; }
 
 	/** 发起 WebRTC 连接 */
 	async connect(turnCreds) {
@@ -246,6 +257,8 @@ export class WebRtcConnection {
 
 		this.__remoteDescSet = false;
 		this.__pendingCandidates = [];
+		this.__candidateType = null;
+		this.__transportInfo = null;
 		this.__setState('connecting');
 
 		const iceServers = this.__buildIceServers(turnCreds);
@@ -378,22 +391,43 @@ export class WebRtcConnection {
 		}
 	}
 
-	/** @private 获取并记录实际 ICE candidate 类型 */
+	/** @private 获取并记录实际 ICE candidate 类型及传输详情 */
 	__resolveCandidateType(pc) {
 		pc.getStats().then((report) => {
+			if (this.__pc !== pc) return; // PC 已被替换（rebuild），丢弃过期结果
 			for (const stat of report.values()) {
-				if (stat.type === 'candidate-pair' && stat.nominated) {
-					for (const s2 of report.values()) {
-						if (s2.type === 'local-candidate' && s2.id === stat.localCandidateId) {
-							this.__candidateType = s2.candidateType;
-							const label = s2.candidateType === 'relay' ? 'TURN' : 'P2P';
-							this.__log('info', `ICE connected via ${s2.candidateType} (${label})`);
-							// 通知外部更新 candidateType
-							if (this.onStateChange) this.onStateChange(this.__state);
-							return;
-						}
-					}
+				if (stat.type !== 'candidate-pair' || !stat.nominated) continue;
+
+				let local = null;
+				let remote = null;
+				for (const s of report.values()) {
+					if (s.type === 'local-candidate' && s.id === stat.localCandidateId) local = s;
+					if (s.type === 'remote-candidate' && s.id === stat.remoteCandidateId) remote = s;
+					if (local && remote) break;
 				}
+				if (!local) return;
+
+				this.__candidateType = local.candidateType;
+				const info = {
+					localType: local.candidateType ?? 'unknown',
+					localProtocol: local.protocol ?? 'unknown',
+					remoteType: remote?.candidateType ?? 'unknown',
+					remoteProtocol: remote?.protocol ?? 'unknown',
+					relayProtocol: local.relayProtocol ?? null,
+				};
+				this.__transportInfo = info;
+
+				const isRelay = local.candidateType === 'relay';
+				const label = isRelay ? 'TURN' : 'P2P';
+				const proto = isRelay
+					? `relayProtocol=${info.relayProtocol ?? '?'}`
+					: `protocol=${info.localProtocol}`;
+				this.__log('info',
+					`ICE connected: local=${info.localType}/${info.localProtocol}, ` +
+					`remote=${info.remoteType}/${info.remoteProtocol} (${label}, ${proto})`);
+
+				if (this.onStateChange) this.onStateChange(this.__state);
+				return;
 			}
 		}).catch(() => {});
 	}

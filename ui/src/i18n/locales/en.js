@@ -216,6 +216,17 @@ export const enMessages = {
 		offline: 'Offline',
 		pluginVersion: 'Plugin: ',
 		clawVersion: 'OpenClaw: ',
+		conn: {
+			ws: 'WebSocket',
+			rtcConnecting: 'WebRTC connecting…',
+			rtcP2P: 'WebRTC · P2P · {protocol}',
+			rtcRelay: 'WebRTC · Relay · {protocol}',
+			rtcFailed: 'Degraded to WebSocket',
+			detailTitle: 'Connection details',
+			localCandidate: 'Local candidate',
+			remoteCandidate: 'Remote candidate',
+			relayProtocol: 'Relay protocol',
+		},
 	},
 	pluginUpgrade: {
 		outdated: 'This Claw\'s plugin is outdated and some features may not work. Please run: openclaw plugins update openclaw-coclaw',
