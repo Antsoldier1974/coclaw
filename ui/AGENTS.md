@@ -68,9 +68,9 @@
 
 ## 参考项目
 
-本前端充分参考借鉴一个旧项目（chat），尤其是 layout，及可对照的各组件的组织和交互方式上。实际上这两个项目高度相似，chat 项目是与系统预置或用户自己创建的的机器人对话，而这个项目是与 OpenClaw bot 对话。
+本前端充分参考借鉴一个项目（用 qidianchat 或奇点慧语指代），尤其是 layout，及可对照的各组件的组织和交互方式上。实际上这两个项目高度相似，qidianchat 是与系统预置或用户自己创建的的机器人对话，而这个项目是与 OpenClaw agent 对话。
 
-chat 项目信息源
-- chat 项目代码组织在仓库根下的 `ref-projects/chat`，需要时也阅读其代码
+qidianchat 信息源
+- qidianchat 代码组织在仓库根下的 `ref-projects/qidianchat`，需要时也阅读其代码
 - 此 workspace 的 docs 下也存储了几个文档，如：`layout-reference.md`、`ui-refs-from-quasar-project.md`
-- 需要时还可以爬取 chat 项目（如用 playwright 爬取）。app 入口地址为 `https://127.0.0.1:8443/`。其 SSL 证书是自签名；用户名：test；密码：123456
+- 需要时还可以爬取 qidianchat 项目（如用 playwright 爬取）。app 入口地址为 `https://127.0.0.1:8443/`。其 SSL 证书是自签名；用户名：test；密码：123456
