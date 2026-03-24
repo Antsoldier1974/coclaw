@@ -61,6 +61,8 @@ services:
       ENFORCE_HTTPS: ${ENFORCE_HTTPS:-true}
       DB_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      TURN_SECRET: ${TURN_SECRET}
+      APP_DOMAIN: ${APP_DOMAIN}
       COCLAW_WS_DEBUG: ${COCLAW_WS_DEBUG:-}
     expose:
       - "3000"
@@ -99,6 +101,28 @@ services:
       timeout: 5s
       retries: 20
       start_period: 20s
+
+  # TURN/STUN 服务（WebRTC 中继）
+  # network_mode: host — TURN 需分配 relay 端口池，逐个映射不现实
+  coturn:
+    image: m.daocloud.io/docker.io/coturn/coturn:latest
+    restart: unless-stopped
+    logging: *default-logging
+    network_mode: host
+    command: >-
+      turnserver
+      --listening-port=${TURN_PORT:-3478}
+      --external-ip=${TURN_EXTERNAL_IP}
+      --realm=${APP_DOMAIN}
+      --lt-cred-mech
+      --use-auth-secret
+      --static-auth-secret=${TURN_SECRET}
+      --min-port=${TURN_MIN_PORT:-50000}
+      --max-port=${TURN_MAX_PORT:-51000}
+      --fingerprint
+      --no-cli
+      --no-stdout-log
+      --syslog
 
   certbot-renew:
     image: m.daocloud.io/docker.io/certbot/certbot:latest
