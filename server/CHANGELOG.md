@@ -1,5 +1,11 @@
 # @coclaw/server
 
+## 0.5.1
+
+### Patch Changes
+
+- fix: TURN 端口可配置化，不再硬编码 3478
+
 ## 0.1.1
 
 ### Patch Changes
