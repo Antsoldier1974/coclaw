@@ -19,14 +19,16 @@ vi.mock('../composables/use-notify.js', () => ({
 	}),
 }));
 
+vi.stubEnv('VITE_APP_VERSION', '0.9.0');
+
 const fakeDashboard = {
 	users: { total: 100, todayNew: 5, todayActive: 23 },
 	topActiveUsers: [
 		{ id: '1', name: '张三', lastLoginAt: new Date(Date.now() - 180000).toISOString() },
 		{ id: '2', name: '李四', lastLoginAt: new Date(Date.now() - 7200000).toISOString() },
 	],
-	bots: { total: 10 },
-	version: { server: '0.4.2' },
+	bots: { total: 10, online: 4 },
+	version: { server: '0.4.2', plugin: '0.3.1' },
 };
 
 const i18nMap = {
@@ -34,8 +36,11 @@ const i18nMap = {
 	'adminDashboard.totalUsers': 'Total Users',
 	'adminDashboard.todayNew': 'New Today',
 	'adminDashboard.todayActive': 'Active Today',
-	'adminDashboard.totalBots': 'Registered Claws',
+	'adminDashboard.totalBots': 'Bound Instances',
+	'adminDashboard.onlineBots': 'Online',
 	'adminDashboard.serverVersion': 'Server Version',
+	'adminDashboard.uiVersion': 'UI Version',
+	'adminDashboard.pluginVersion': 'Plugin Version',
 	'adminDashboard.topActiveUsers': 'Recently Active Users',
 	'adminDashboard.noData': 'No data',
 	'chat.loading': 'Loading...',
@@ -92,6 +97,10 @@ test('should render dashboard data after successful load', async () => {
 	expect(wrapper.text()).toContain('23');
 	expect(wrapper.text()).toContain('10');
 	expect(wrapper.text()).toContain('v0.4.2');
+	expect(wrapper.text()).toContain('v0.9.0');
+	expect(wrapper.text()).toContain('v0.3.1');
+	expect(wrapper.text()).toContain('Online');
+	expect(wrapper.text()).toContain('4');
 	expect(wrapper.text()).toContain('张三');
 	expect(wrapper.text()).toContain('李四');
 });
@@ -124,4 +133,19 @@ test('should show noData when topActiveUsers is empty', async () => {
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('No data');
+});
+
+test('should fallback to loginName when name is empty', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce({
+		...fakeDashboard,
+		topActiveUsers: [
+			{ id: '1', name: '', loginName: 'alice', lastLoginAt: new Date().toISOString() },
+			{ id: '2', name: null, loginName: null, lastLoginAt: new Date().toISOString() },
+		],
+	});
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	expect(wrapper.text()).toContain('alice');
+	expect(wrapper.text()).toContain('2');
 });

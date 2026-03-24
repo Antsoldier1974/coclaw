@@ -5,6 +5,7 @@ import { listOnlineBotIds } from '../bot-ws-hub.js';
 
 const require = createRequire(import.meta.url);
 const { version: serverVersion } = require('../../package.json');
+const { version: pluginVersion } = require('../../../plugins/openclaw/package.json');
 
 /**
  * @param {object} [deps] - 依赖注入
@@ -35,6 +36,7 @@ export async function getAdminDashboard(deps = {}) {
 		},
 		version: {
 			server: serverVersion,
+			plugin: pluginVersion,
 		},
 	};
 }
