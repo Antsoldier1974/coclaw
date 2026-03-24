@@ -125,6 +125,7 @@ import { groupSessionMessages } from '../utils/session-msg-group.js';
 import { isCapacitorApp } from '../utils/platform.js';
 import { usePullRefreshSuppress } from '../composables/use-pull-refresh.js';
 import { isMobileViewport } from '../utils/layout.js';
+import { useDraftStore } from '../stores/draft.store.js';
 
 export default {
 	name: 'ChatPage',
@@ -142,6 +143,7 @@ export default {
 			chatStore: useChatStore(),
 			botsStore: useBotsStore(),
 			topicsStore: useTopicsStore(),
+			draftStore: useDraftStore(),
 			suppressPullRefresh: suppress,
 			unsuppressPullRefresh: unsuppress,
 		};
@@ -149,7 +151,6 @@ export default {
 	data() {
 		return {
 			defaultBotAvatar,
-			inputText: '',
 			userScrolledUp: false,
 			showNoMoreHint: false,
 			__exiting: false,
@@ -160,6 +161,20 @@ export default {
 		};
 	},
 	computed: {
+		/** 草稿持久化的 key，随路由自动切换 */
+		draftKey() {
+			if (this.isNewTopic) return `new-topic:${this.newTopicBotId}:${this.newTopicAgentId}`;
+			if (this.isTopicRoute) {
+				const sid = this.$route.params?.sessionId;
+				return sid ? `topic:${sid}` : '';
+			}
+			return this.routeBotId ? `chat:${this.routeBotId}:${this.routeAgentId}` : '';
+		},
+		/** 输入框文本，映射到 draftStore */
+		inputText: {
+			get() { return this.draftKey ? this.draftStore.getDraft(this.draftKey) : ''; },
+			set(val) { if (this.draftKey) this.draftStore.setDraft(this.draftKey, val); },
+		},
 		chatRootClasses() {
 			return isCapacitorApp ? 'flex-1 min-h-0' : 'h-dvh-safe';
 		},
@@ -440,23 +455,25 @@ export default {
 
 			// 标志位：抑制路由 watcher + 禁用输入（防止 createTopic 期间重复发送）
 			this.__creatingTopic = true;
+			// 路由切换会改变 draftKey，提前清理旧 key 并保存原文
+			const oldDraftKey = this.draftKey;
 			try {
 				// 1. 创建 topic
 				const topicId = await this.topicsStore.createTopic(botId, agentId);
 				// 2. 激活 topic（跳过消息加载）
 				await this.chatStore.activateTopic(topicId, { botId, agentId, skipLoad: true });
-				// 3. 切换路由并等待完成
+				// 3. 切换路由并等待完成（draftKey 从 new-topic:... 变为 topic:${topicId}）
 				await this.$router.replace({ name: 'topics-chat', params: { sessionId: topicId } });
 				// 4. 解除抑制（路由已稳定，后续 watcher 可正常工作）
 				this.__creatingTopic = false;
-				// 5. 清空输入并发送消息（延迟到此处，避免 createTopic 期间页面闪烁空态）
-				const savedText = this.inputText;
+				// 5. 清空旧草稿并发送消息
+				if (oldDraftKey) this.draftStore.clearDraft(oldDraftKey);
 				this.inputText = '';
 				this.userScrolledUp = false;
 				this.scrollToBottom();
 				const result = await this.chatStore.sendMessage(text, files);
 				if (!result.accepted) {
-					this.inputText = savedText;
+					this.inputText = text;
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 				else {
