@@ -22,6 +22,7 @@ test('getAdminDashboard: 返回正确的汇总结构', async () => {
 	const result = await getAdminDashboard({
 		repo: mockRepo(),
 		getOnlineBotCount: () => 3,
+		fetchPluginVersion: async () => '0.7.1',
 	});
 
 	assert.equal(result.users.total, 100);
@@ -35,14 +36,14 @@ test('getAdminDashboard: 返回正确的汇总结构', async () => {
 	assert.equal(result.bots.online, 3);
 	assert.equal(typeof result.version.server, 'string');
 	assert.ok(result.version.server.length > 0);
-	assert.equal(typeof result.version.plugin, 'string');
-	assert.ok(result.version.plugin.length > 0);
+	assert.equal(result.version.plugin, '0.7.1');
 });
 
 test('getAdminDashboard: 自定义数据正确透传', async () => {
 	const result = await getAdminDashboard({
 		repo: mockRepo({ total: 50, todayNew: 2, todayActive: 10, botsTotal: 0, topActive: [], latestRegistered: [] }),
 		getOnlineBotCount: () => 0,
+		fetchPluginVersion: async () => '1.0.0',
 	});
 
 	assert.equal(result.users.total, 50);
@@ -54,7 +55,17 @@ test('getAdminDashboard: 自定义数据正确透传', async () => {
 	assert.equal(result.bots.online, 0);
 });
 
-test('getAdminDashboard: 并行调用所有 repo 方法', async () => {
+test('getAdminDashboard: npm 不可达时 pluginVersion 为 null', async () => {
+	const result = await getAdminDashboard({
+		repo: mockRepo(),
+		getOnlineBotCount: () => 0,
+		fetchPluginVersion: async () => null,
+	});
+
+	assert.equal(result.version.plugin, null);
+});
+
+test('getAdminDashboard: 并行调用所有 repo 方法和 fetchPluginVersion', async () => {
 	const calls = [];
 	const repo = {
 		countUsers: async () => { calls.push('countUsers'); return 0; },
@@ -65,13 +76,18 @@ test('getAdminDashboard: 并行调用所有 repo 方法', async () => {
 		countBots: async () => { calls.push('countBots'); return 0; },
 	};
 
-	await getAdminDashboard({ repo, getOnlineBotCount: () => 0 });
+	await getAdminDashboard({
+		repo,
+		getOnlineBotCount: () => 0,
+		fetchPluginVersion: async () => { calls.push('fetchPluginVersion'); return '0.1.0'; },
+	});
 
-	assert.equal(calls.length, 6);
+	assert.equal(calls.length, 7);
 	assert.ok(calls.includes('countUsers'));
 	assert.ok(calls.includes('countUsersCreatedSince'));
 	assert.ok(calls.includes('countUsersActiveSince'));
 	assert.ok(calls.includes('topActiveUsers'));
 	assert.ok(calls.includes('latestRegisteredUsers'));
 	assert.ok(calls.includes('countBots'));
+	assert.ok(calls.includes('fetchPluginVersion'));
 });
