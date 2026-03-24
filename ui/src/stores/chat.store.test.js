@@ -1201,6 +1201,7 @@ describe('useChatStore', () => {
 			store.messages = [{ id: 'm1' }];
 			store.chatSessionKey = 'agent:main:main';
 			store.currentSessionId = 'cur-1';
+			store.loading = true;
 			store.errorText = 'some error';
 			store.sending = true;
 			store.resetting = true;
@@ -1217,6 +1218,7 @@ describe('useChatStore', () => {
 			expect(store.messages).toHaveLength(0);
 			expect(store.chatSessionKey).toBe('');
 			expect(store.currentSessionId).toBeNull();
+			expect(store.loading).toBe(false);
 			expect(store.errorText).toBe('');
 			expect(store.sending).toBe(false);
 			expect(store.resetting).toBe(false);
@@ -2644,6 +2646,47 @@ describe('useChatStore', () => {
 			await vi.waitFor(() => {
 				expect(store.messages).toHaveLength(1);
 				expect(store.loading).toBe(false);
+			});
+		});
+
+		test('注册 listener 后 re-check：连接已就绪时立即触发 loadMessages 和 loadChatHistory', async () => {
+			// 模拟 conn 在 activateSession 判定时为 connecting，但注册 listener 后已变为 connected
+			const conn = mockConn({ state: 'connecting' });
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') {
+					return Promise.resolve({ messages: [{ role: 'user', content: 're-check' }] });
+				}
+				if (method === 'chat.history') {
+					return Promise.resolve({ sessionId: 'sess-1' });
+				}
+				if (method === 'coclaw.chatHistory.list') {
+					return Promise.resolve({ history: [{ sessionId: 'h1', archivedAt: 100 }] });
+				}
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			// activateSession 内部会检测 state !== 'connected' → loading = true
+			// 然后调用 __registerConnStateListener
+			// 在 on() 调用时模拟连接已就绪
+			const origOn = conn.on;
+			conn.on = vi.fn((...args) => {
+				origOn(...args);
+				// 模拟连接在注册后已就绪
+				conn.state = 'connected';
+			});
+
+			await store.activateSession('1', 'main');
+
+			// re-check 应该已触发 loadMessages + __loadChatHistory
+			await vi.waitFor(() => {
+				expect(store.messages).toHaveLength(1);
+				expect(store.loading).toBe(false);
+			});
+			// 验证 chatHistory 也被加载
+			await vi.waitFor(() => {
+				expect(store.historySessionIds).toHaveLength(1);
 			});
 		});
 

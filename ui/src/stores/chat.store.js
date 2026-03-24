@@ -759,6 +759,7 @@ export const useChatStore = defineStore('chat', {
 			this.messages = [];
 			this.chatSessionKey = '';
 			this.currentSessionId = null;
+			this.loading = false;
 			this.errorText = '';
 			this.sending = false;
 			this.resetting = false;
@@ -886,6 +887,14 @@ export const useChatStore = defineStore('chat', {
 			};
 			this.__connStateHandler = handler;
 			conn.on('state', handler);
+			// 注册后立即 re-check：若连接在 activateSession 判定与此刻之间
+			// 已就绪，事件不会重放，需手动触发
+			if (conn.state === 'connected' && this.loading) {
+				console.debug('[chat] re-check: conn already connected, triggering load');
+				this.loadMessages({ silent: true, limit: this.__loadedMsgLimit })
+					.then((ok) => { if (ok) this.__loadChatHistory(); })
+					.catch(() => {});
+			}
 		},
 
 		/** 移除连接状态监听 */

@@ -1093,11 +1093,92 @@ describe('BotConnection – request() via RTC', () => {
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 且 RTC 不可用时 reject RTC_NOT_READY', async () => {
-		const { conn } = makeConnected();
+	test('transportMode=rtc 且 RTC 不可用时降级到 WS 并发送请求', async () => {
+		const { conn, ws } = makeConnected();
 		conn.setTransportMode('rtc');
-		// 未设置 rtc 引用
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'RTC_NOT_READY' });
+		// 未设置 rtc 引用 → RTC 不可用，应降级并回退 WS
+		const p = conn.request('foo');
+		// 验证 transportMode 已降级
+		expect(conn.transportMode).toBe('ws');
+		expect(ws.sent.length).toBe(1);
+		const msg = JSON.parse(ws.sent[0]);
+		expect(msg.method).toBe('foo');
+
+		// 模拟 WS 响应
+		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { bar: 1 } });
+		await expect(p).resolves.toMatchObject({ bar: 1 });
+		conn.disconnect();
+	});
+
+	test('transportMode=rtc 降级到 WS 后 event 消息能正确分发', () => {
+		const { conn, ws } = makeConnected();
+		conn.setTransportMode('rtc');
+		// 触发降级
+		conn.request('foo').catch(() => {});
+		expect(conn.transportMode).toBe('ws');
+
+		// 降级后 WS event 应能正常分发
+		const handler = vi.fn();
+		conn.on('event:agent', handler);
+		ws.simulateMessage({ type: 'event', event: 'agent', payload: { text: 'hello' } });
+		expect(handler).toHaveBeenCalledWith({ text: 'hello' });
+		conn.disconnect();
+	});
+
+	test('transportMode=rtc 且 RTC 不可用且 WS 也不可用时 reject WS_CLOSED', async () => {
+		const { conn, ws } = makeConnected();
+		conn.setTransportMode('rtc');
+		// 模拟 WS 已断开
+		ws.readyState = 3;
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
+		// WS 不可用时也应降级 transportMode（避免后续请求重复尝试 RTC）
+		expect(conn.transportMode).toBe('ws');
+		conn.disconnect();
+	});
+
+	test('RTC 降级到 WS 时 reject 所有 pending RTC 请求', async () => {
+		const { conn } = makeConnected();
+		const mockRtc = {
+			isReady: true,
+			send: vi.fn().mockResolvedValue(undefined),
+		};
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		// 发起一个 RTC 请求使其 pending
+		const p = conn.request('slow.method');
+
+		// 触发降级
+		conn.setTransportMode('ws');
+
+		// pending RTC 请求应被 reject
+		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
+		conn.disconnect();
+	});
+
+	test('RTC 降级后恢复：setTransportMode(rtc) 后请求走 RTC', async () => {
+		const { conn, ws } = makeConnected();
+		conn.setTransportMode('rtc');
+		// RTC 不可用 → 降级到 WS
+		conn.request('degraded.method').catch(() => {});
+		expect(conn.transportMode).toBe('ws');
+
+		// 模拟 RTC 恢复
+		const mockRtc = {
+			isReady: true,
+			send: vi.fn().mockResolvedValue(undefined),
+		};
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		// 后续请求应走 RTC
+		conn.request('restored.method').catch(() => {});
+		expect(mockRtc.send).toHaveBeenCalled();
+		const sent = mockRtc.send.mock.calls[0][0];
+		expect(sent.method).toBe('restored.method');
+		// WS 不应收到这个请求
+		const wsMethodsSent = ws.sent.map((s) => JSON.parse(s).method);
+		expect(wsMethodsSent).not.toContain('restored.method');
 		conn.disconnect();
 	});
 

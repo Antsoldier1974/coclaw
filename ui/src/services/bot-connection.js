@@ -146,12 +146,8 @@ export class BotConnection {
 	 * @returns {Promise<object>}
 	 */
 	request(method, params = {}, options = {}) {
-		if (this.__transportMode === 'rtc') {
-			if (!this.__rtc?.isReady) {
-				const err = new Error('RTC channel not ready');
-				err.code = 'RTC_NOT_READY';
-				return Promise.reject(err);
-			}
+		// RTC 可用时走 DataChannel；RTC 不可用时 fall-through 到 WS 兜底
+		if (this.__transportMode === 'rtc' && this.__rtc?.isReady) {
 			const id = `ui-${Date.now()}-${this.__counter++}`;
 			return new Promise((resolve, reject) => {
 				const waiter = { resolve, reject, viaRtc: true };
@@ -177,7 +173,13 @@ export class BotConnection {
 			});
 		}
 
-		// transportMode === 'ws' 或 transportMode === null (协商中) 均走 WS 兜底
+		// RTC 不可用时主动降级到 WS，确保 __onMessage 不再过滤 WS event
+		if (this.__transportMode === 'rtc') {
+			console.debug('[BotConn] RTC not ready, degrade to WS botId=%s', this.botId);
+			this.setTransportMode('ws');
+		}
+
+		// transportMode === 'ws' / null 均走 WS
 		if (!this.__ws || this.__ws.readyState !== 1) {
 			const err = new Error('not connected');
 			err.code = 'WS_CLOSED';
