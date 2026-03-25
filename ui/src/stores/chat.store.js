@@ -13,6 +13,8 @@ import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 
 const MSG_PAGE_SIZE = 50;
+/** 重连刷新去抖时间 */
+const RECONNECT_REFRESH_DEBOUNCE_MS = 3000;
 
 /**
  * 创建 ChatStore 实例
@@ -81,6 +83,8 @@ export function createChatStore(storeKey, opts = {}) {
 			__slashCommandResolve: null,
 			__slashCommandReject: null,
 			__connStateHandler: null,
+			__reconnectDebounceTimer: null,
+			__silentLoadPromise: null,
 		}),
 		getters: {
 			currentSessionKey() {
@@ -151,8 +155,16 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @param {boolean} [opts.silent] - 静默刷新，不设 loading 状态
 			 */
 			async loadMessages({ silent = false, limit: limitOverride } = {}) {
+				// 飞行中守卫：silent 模式下复用已有请求
+				if (silent && this.__silentLoadPromise) return this.__silentLoadPromise;
+
 				if (this.topicMode) {
-					return this.__loadTopicMessages({ silent });
+					const p = this.__loadTopicMessages({ silent });
+					if (silent) {
+						this.__silentLoadPromise = p;
+						p.finally(() => { this.__silentLoadPromise = null; });
+					}
+					return p;
 				}
 				if (!this.chatSessionKey) {
 					this.messages = [];
@@ -178,42 +190,53 @@ export function createChatStore(storeKey, opts = {}) {
 					this.loading = true;
 					this.errorText = '';
 				}
-				try {
-					// 通过 OC 原生 sessions.get 加载当前 session 最近 N 条消息
-					const limit = limitOverride || MSG_PAGE_SIZE;
-					const result = await conn.request('sessions.get', {
-						key: this.chatSessionKey,
-						limit,
-					});
-					const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
-					// 薄包装为 JSONL 行级结构（补 type + id）
-					this.messages = wrapOcMessages(flatMsgs);
-					this.__loadedMsgLimit = limit;
-					// sessions.get 返回 .slice(-limit)，若返回数 == limit 说明可能还有更多
-					this.hasMoreMessages = flatMsgs.length >= limit;
-					this.loading = false;
-					console.debug('[chat] loadMessages ok count=%d hasMore=%s', this.messages.length, this.hasMoreMessages);
+				const doLoad = async () => {
+					try {
+						// 通过 OC 原生 sessions.get 加载当前 session 最近 N 条消息
+						const limit = limitOverride || MSG_PAGE_SIZE;
+						const result = await conn.request('sessions.get', {
+							key: this.chatSessionKey,
+							limit,
+						});
+						const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
+						// 薄包装为 JSONL 行级结构（补 type + id）
+						this.messages = wrapOcMessages(flatMsgs);
+						this.__loadedMsgLimit = limit;
+						// sessions.get 返回 .slice(-limit)，若返回数 == limit 说明可能还有更多
+						this.hasMoreMessages = flatMsgs.length >= limit;
+						this.loading = false;
+						console.debug('[chat] loadMessages ok count=%d hasMore=%s', this.messages.length, this.hasMoreMessages);
 
-					// 获取当前 sessionId（用于历史上翻）
-					const hist = await conn.request('chat.history', {
-						sessionKey: this.chatSessionKey,
-						limit: 1,
-					});
-					this.currentSessionId = hist?.sessionId ?? null;
+						// 重连后 reconcile：检查并 settle 僵尸 run / 完成 settling 过渡
+						this.__reconcileRunAfterLoad(this.messages);
 
-					return true;
-				}
-				catch (err) {
-					console.debug('[chat] loadMessages failed: %s', err?.message);
-					if (!silent) {
-						this.messages = [];
-						this.errorText = err?.message || 'Failed to load messages';
+						// 获取当前 sessionId（用于历史上翻）
+						const hist = await conn.request('chat.history', {
+							sessionKey: this.chatSessionKey,
+							limit: 1,
+						});
+						this.currentSessionId = hist?.sessionId ?? null;
+
+						return true;
 					}
-					return false;
+					catch (err) {
+						console.debug('[chat] loadMessages failed: %s', err?.message);
+						if (!silent) {
+							this.messages = [];
+							this.errorText = err?.message || 'Failed to load messages';
+						}
+						return false;
+					}
+					finally {
+						this.loading = false;
+					}
+				};
+				const p = doLoad();
+				if (silent) {
+					this.__silentLoadPromise = p;
+					p.finally(() => { this.__silentLoadPromise = null; });
 				}
-				finally {
-					this.loading = false;
-				}
+				return p;
 			},
 
 			/**
@@ -295,6 +318,10 @@ export function createChatStore(storeKey, opts = {}) {
 					const msgs = Array.isArray(result?.messages) ? result.messages : [];
 					console.debug('[chat] loadTopicMessages ok count=%d (was %d)', msgs.length, prevCount);
 					this.messages = msgs;
+
+					// 重连后 reconcile
+					this.__reconcileRunAfterLoad(this.messages);
+
 					return true;
 				}
 				catch (err) {
@@ -763,6 +790,10 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__cancelReject(err);
 					this.__cancelReject = null;
 				}
+				if (this.__reconnectDebounceTimer) {
+					clearTimeout(this.__reconnectDebounceTimer);
+					this.__reconnectDebounceTimer = null;
+				}
 				if (this.__streamingTimer) {
 					clearTimeout(this.__streamingTimer);
 					this.__streamingTimer = null;
@@ -878,8 +909,13 @@ export function createChatStore(storeKey, opts = {}) {
 				const handler = (newState) => {
 					if (newState === 'connected') {
 						if (this.sending) return;
-						console.debug('[chat] ws reconnected, reloading messages');
-						this.loadMessages({ silent: true, limit: this.__loadedMsgLimit });
+						// debounce：短时间内多次重连只触发一次刷新
+						if (this.__reconnectDebounceTimer) clearTimeout(this.__reconnectDebounceTimer);
+						this.__reconnectDebounceTimer = setTimeout(() => {
+							this.__reconnectDebounceTimer = null;
+							console.debug('[chat] ws reconnected (debounced), reloading messages');
+							this.loadMessages({ silent: true, limit: this.__loadedMsgLimit });
+						}, RECONNECT_REFRESH_DEBOUNCE_MS);
 					}
 				};
 				this.__connStateHandler = handler;
@@ -898,6 +934,10 @@ export function createChatStore(storeKey, opts = {}) {
 				const conn = this.__getConnection();
 				if (conn) conn.off('state', this.__connStateHandler);
 				this.__connStateHandler = null;
+				if (this.__reconnectDebounceTimer) {
+					clearTimeout(this.__reconnectDebounceTimer);
+					this.__reconnectDebounceTimer = null;
+				}
 			},
 
 			// --- 内部辅助 ---
@@ -926,6 +966,18 @@ export function createChatStore(storeKey, opts = {}) {
 					console.warn('[chat] reconcile failed:', err);
 					return false;
 				}
+			},
+
+			/**
+			 * loadMessages 成功后：检查并处理 agentRunsStore 中的活跃/settling run
+			 * @param {object[]} serverMessages
+			 */
+			__reconcileRunAfterLoad(serverMessages) {
+				const runsStore = useAgentRunsStore();
+				// 完成 settling 过渡（lifecycle:end 已到达，等待 loadMessages 替换数据）
+				runsStore.completeSettle(this.runKey);
+				// 检查僵尸 run（断连期间完成，lifecycle:end 丢失）
+				runsStore.reconcileAfterLoad(this.runKey, serverMessages);
 			},
 
 			__cleanupStreaming() {

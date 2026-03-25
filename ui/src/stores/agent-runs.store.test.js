@@ -127,6 +127,15 @@ describe('useAgentRunsStore', () => {
 			expect(botEntry.message.content.some((b) => b.type === 'text' && b.text === 'hello')).toBe(true);
 		});
 
+		test('更新 lastEventAt', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			expect(store.runs['run-1'].lastEventAt).toBe(0);
+			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: 'hello' } });
+			expect(store.runs['run-1'].lastEventAt).toBeGreaterThan(0);
+		});
+
 		test('未知 runId 的事件被忽略', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
@@ -136,22 +145,40 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(2);
 		});
 
-		test('lifecycle:end 事件 settle run', () => {
+		test('lifecycle:end 进入 settling 过渡态', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
 
+			// settling 过渡：run 仍存在但标记为 settling
+			const run = store.runs['run-1'];
+			expect(run.settling).toBe(true);
+			// getActiveRun 仍返回（保留 streamingMsgs）
+			expect(store.getActiveRun('agent:main:main')).toBeTruthy();
+		});
+
+		test('settling 过渡 500ms 后自动清理', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			expect(store.runs['run-1']).toBeTruthy();
+
+			vi.advanceTimersByTime(500);
+
 			expect(store.runs['run-1']).toBeUndefined();
 			expect(store.runKeyIndex['agent:main:main']).toBeUndefined();
 		});
 
-		test('lifecycle:error 事件 settle run', () => {
+		test('lifecycle:error 同样进入 settling 过渡态', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'error' } });
 
+			expect(store.runs['run-1']?.settling).toBe(true);
+			vi.advanceTimersByTime(500);
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 	});
@@ -197,6 +224,141 @@ describe('useAgentRunsStore', () => {
 
 			// 不应移除监听器（run-2 仍活跃）
 			expect(conn.off).not.toHaveBeenCalled();
+		});
+	});
+
+	// =====================================================================
+	// completeSettle
+	// =====================================================================
+
+	describe('completeSettle', () => {
+		test('在 settling 状态下立即清理 run', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			// 进入 settling
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			expect(store.runs['run-1']?.settling).toBe(true);
+
+			store.completeSettle('agent:main:main');
+
+			expect(store.runs['run-1']).toBeUndefined();
+			expect(store.runKeyIndex['agent:main:main']).toBeUndefined();
+		});
+
+		test('非 settling 状态下不操作', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.completeSettle('agent:main:main');
+
+			// run 仍在
+			expect(store.runs['run-1']).toBeTruthy();
+		});
+
+		test('不存在的 runKey 不报错', () => {
+			const store = useAgentRunsStore();
+			store.completeSettle('nonexistent');
+		});
+	});
+
+	// =====================================================================
+	// reconcileAfterLoad
+	// =====================================================================
+
+	describe('reconcileAfterLoad', () => {
+		test('服务端消息有终止 assistant + 事件流静默 → settle', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			// 模拟事件流已停止（lastEventAt 在 3s+ 之前）
+			store.runs['run-1'].lastEventAt = Date.now() - 5000;
+
+			const serverMessages = [
+				{ message: { role: 'user', content: 'hi' } },
+				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
+			];
+
+			store.reconcileAfterLoad('agent:main:main', serverMessages);
+
+			expect(store.runs['run-1']).toBeUndefined();
+		});
+
+		test('事件流仍活跃时不 settle', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			// 刚收到事件
+			store.runs['run-1'].lastEventAt = Date.now();
+
+			const serverMessages = [
+				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
+			];
+
+			store.reconcileAfterLoad('agent:main:main', serverMessages);
+
+			// 不应 settle
+			expect(store.runs['run-1']).toBeTruthy();
+		});
+
+		test('服务端消息无终止 assistant 时不 settle', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].lastEventAt = Date.now() - 5000;
+
+			const serverMessages = [
+				{ message: { role: 'user', content: 'hi' } },
+			];
+
+			store.reconcileAfterLoad('agent:main:main', serverMessages);
+
+			expect(store.runs['run-1']).toBeTruthy();
+		});
+
+		test('stopReason 为 toolUse 时不视为终止', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].lastEventAt = Date.now() - 5000;
+
+			const serverMessages = [
+				{ message: { role: 'assistant', content: '', stopReason: 'toolUse' } },
+			];
+
+			store.reconcileAfterLoad('agent:main:main', serverMessages);
+
+			expect(store.runs['run-1']).toBeTruthy();
+		});
+
+		test('settling 状态的 run 不做 reconcile（由 completeSettle 处理）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			expect(store.runs['run-1']?.settling).toBe(true);
+
+			const serverMessages = [
+				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
+			];
+			store.reconcileAfterLoad('agent:main:main', serverMessages);
+
+			// 仍在 settling，未被 reconcile 清理（因为 reconcile 跳过 settling）
+			expect(store.runs['run-1']).toBeTruthy();
+		});
+
+		test('lastEventAt=0 时视为事件流已静默', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			// lastEventAt 从未更新（断连后从未收到事件）
+			expect(store.runs['run-1'].lastEventAt).toBe(0);
+
+			const serverMessages = [
+				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
+			];
+
+			store.reconcileAfterLoad('agent:main:main', serverMessages);
+
+			expect(store.runs['run-1']).toBeUndefined();
 		});
 	});
 

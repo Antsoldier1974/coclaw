@@ -538,3 +538,85 @@ describe('WebRTC 集成', () => {
 		expect(store.transportModes).toEqual({});
 	});
 });
+
+describe('重连后批量状态刷新', () => {
+	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 agents/sessions/topics', async () => {
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+
+		let stateCallback;
+		const fakeConn = {
+			state: 'connecting',
+			disconnectedAt: Date.now() - 10_000, // 10s 前断连
+			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
+			off: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '20', name: 'Bot' });
+		// 首次 connected：全量初始化
+		stateCallback('connected');
+		await vi.waitFor(() => {
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
+		});
+
+		agentsStore.loadAgents.mockClear();
+		sessionsStore.loadAllSessions.mockClear();
+		topicsStore.loadAllTopics.mockClear();
+
+		// 模拟断连 10s 后重连
+		fakeConn.disconnectedAt = Date.now() - 10_000;
+		stateCallback('connected');
+
+		await vi.waitFor(() => {
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
+			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
+		});
+	});
+
+	test('断连时长 < BRIEF_DISCONNECT_MS 时不刷新 agents/sessions/topics', async () => {
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+
+		let stateCallback;
+		const fakeConn = {
+			state: 'connecting',
+			disconnectedAt: 0,
+			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
+			off: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '21', name: 'Bot' });
+		stateCallback('connected');
+		await vi.waitFor(() => {
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('21');
+		});
+
+		agentsStore.loadAgents.mockClear();
+		sessionsStore.loadAllSessions.mockClear();
+		topicsStore.loadAllTopics.mockClear();
+
+		// 模拟短暂抖动（2s）
+		fakeConn.disconnectedAt = Date.now() - 2000;
+		stateCallback('connected');
+		await Promise.resolve();
+
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+		expect(sessionsStore.loadAllSessions).not.toHaveBeenCalled();
+		expect(topicsStore.loadAllTopics).not.toHaveBeenCalled();
+	});
+});

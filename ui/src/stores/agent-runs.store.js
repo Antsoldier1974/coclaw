@@ -8,6 +8,8 @@ import { applyAgentEvent } from '../utils/agent-stream.js';
 
 /** post-acceptance 超时（30 分钟） */
 const POST_ACCEPT_TIMEOUT_MS = 30 * 60_000;
+/** 事件流静默超过此时长视为已停止（用于 reconcile 判断） */
+const STALE_RUN_MS = 3000;
 
 export const useAgentRunsStore = defineStore('agentRuns', {
 	state: () => ({
@@ -34,6 +36,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			const runId = state.runKeyIndex[runKey];
 			if (!runId) return null;
 			const run = state.runs[runId];
+			// settling 状态仍视为 active（保留 streamingMsgs 直到 loadMessages 替换完成）
 			return (run && !run.settled) ? run : null;
 		},
 		/**
@@ -75,6 +78,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				topicMode,
 				startTime: Date.now(),
 				settled: false,
+				settling: false,
+				lastEventAt: 0,
 				streamingMsgs: [...streamingMsgs],
 				// 非响应式内部引用
 				__conn: conn,
@@ -115,6 +120,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			const run = this.runs[runId];
 			if (!run || run.settled) return;
 
+			run.lastEventAt = Date.now();
 			const { changed, settled } = applyAgentEvent(run.streamingMsgs, payload);
 			if (changed) {
 				// 触发 Pinia 响应式更新
@@ -122,8 +128,91 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			}
 			if (settled) {
 				console.debug('[agentRuns] lifecycle settled runId=%s', runId);
-				this.__cleanupRun(runId);
+				this.__settleWithTransition(runId);
 			}
+		},
+
+		/**
+		 * 带过渡态的 settle：先标记 settling，保留 streamingMsgs 直到外部（如 loadMessages）替换 messages
+		 * 用于 lifecycle:end 到达但 loadMessages 尚未完成的场景，避免 allMessages 内容闪烁
+		 * @param {string} runId
+		 */
+		__settleWithTransition(runId) {
+			const run = this.runs[runId];
+			if (!run) return;
+			if (run.__timer) {
+				clearTimeout(run.__timer);
+				run.__timer = null;
+			}
+			run.settling = true;
+			// 延迟清理：给 loadMessages 留出时间完成
+			// 若 500ms 内 chatStore 未调用 completeSettle，兜底清理
+			run.__settleTimer = setTimeout(() => {
+				this.__cleanupRun(runId);
+			}, 500);
+			// settling 状态下 allMessages 仍能看到 streamingMsgs（由 getActiveRun getter 判断）
+			// 注意：spread 必须在设置 __settleTimer 之后，确保新对象持有正确的 timer 引用
+			this.runs[runId] = { ...run };
+		},
+
+		/**
+		 * 完成 settle 过渡（由 chatStore loadMessages 成功后调用）
+		 * @param {string} runKey
+		 */
+		completeSettle(runKey) {
+			const runId = this.runKeyIndex[runKey];
+			if (!runId) return;
+			const run = this.runs[runId];
+			if (!run || !run.settling) return;
+			if (run.__settleTimer) {
+				clearTimeout(run.__settleTimer);
+				run.__settleTimer = null;
+			}
+			this.__cleanupRun(runId);
+		},
+
+		/**
+		 * 重连后 reconcile：loadMessages 成功后检查是否应 settle 僵尸 run
+		 * @param {string} runKey
+		 * @param {object[]} serverMessages - loadMessages 返回的服务端消息
+		 */
+		reconcileAfterLoad(runKey, serverMessages) {
+			const runId = this.runKeyIndex[runKey];
+			if (!runId) return;
+			const run = this.runs[runId];
+			if (!run || run.settled || run.settling) return;
+
+			// 条件1：事件流已静默
+			if (run.lastEventAt > 0 && Date.now() - run.lastEventAt < STALE_RUN_MS) return;
+
+			// 条件2：服务端消息已包含 run 的最终结果
+			if (!this.__serverMessagesIndicateRunDone(run, serverMessages)) return;
+
+			console.debug('[agentRuns] reconcile settle runKey=%s runId=%s', runKey, runId);
+			this.__cleanupRun(runId);
+		},
+
+		/**
+		 * 检查服务端消息是否已包含 run 的最终结果
+		 * @param {object} run
+		 * @param {object[]} messages
+		 * @returns {boolean}
+		 */
+		__serverMessagesIndicateRunDone(run, messages) {
+			if (!messages?.length) return false;
+			// 检查服务端消息数是否多于 run 开始前的消息数
+			// streamingMsgs 初始包含 [user, blank_bot]，若 run 正常，服务端应有比初始更多的消息
+			// 但 streamingMsgs 可能为空（如断连后 run 已被部分清理），此时 fallback 到简单检查
+			// 从后向前找最后一条 assistant 消息
+			for (let i = messages.length - 1; i >= 0; i--) {
+				const msg = messages[i]?.message;
+				if (!msg || msg.role !== 'assistant') continue;
+				// 终止类型 stopReason 表示 run 已完成（toolUse 是中间态，不算）
+				if (msg.stopReason && msg.stopReason !== 'toolUse') return true;
+				// 找到 assistant 但无 stopReason → run 未完成
+				return false;
+			}
+			return false;
 		},
 
 		/**
@@ -137,6 +226,10 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			if (run.__timer) {
 				clearTimeout(run.__timer);
 				run.__timer = null;
+			}
+			if (run.__settleTimer) {
+				clearTimeout(run.__settleTimer);
+				run.__settleTimer = null;
 			}
 			run.settled = true;
 

@@ -134,8 +134,11 @@ function startKeepAlive() {
 function setupAppStateChange() {
 	import('@capacitor/app').then(({ App }) => {
 		App.addListener('appStateChange', ({ isActive }) => {
-			// 前后台切换钩子 — 后续接入 WS 重连/断连逻辑
 			console.log('[capacitor] appStateChange: isActive=%s', isActive);
+			if (isActive) {
+				// 通知 BotConnection 进行前台恢复（分级：即时重连/探测/假定死亡）
+				window.dispatchEvent(new CustomEvent('app:foreground'));
+			}
 		});
 		console.log('[capacitor] appStateChange listener registered');
 	});

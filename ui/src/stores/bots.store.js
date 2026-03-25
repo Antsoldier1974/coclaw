@@ -5,6 +5,7 @@ import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useTopicsStore } from './topics.store.js';
+import { BRIEF_DISCONNECT_MS } from '../services/bot-connection.js';
 import { checkPluginVersion } from '../utils/plugin-version.js';
 import { initRtcAndSelectTransport, closeRtcForBot } from '../services/webrtc-connection.js';
 
@@ -160,8 +161,16 @@ export const useBotsStore = defineStore('bots', {
 						console.debug('[bots] conn already ready botId=%s → full init', id);
 						catchFire(id, conn);
 					} else {
-						// WS 重连后已就绪，仅重新触发传输选择
+						// WS 重连后已就绪：传输选择 + 按断连时长决定是否刷新
 						initRtcAndSelectTransport(id, conn).catch(() => {});
+						if (conn.disconnectedAt > 0) {
+							const gap = Date.now() - conn.disconnectedAt;
+							if (gap >= BRIEF_DISCONNECT_MS) {
+								useAgentsStore().loadAgents(id).catch(() => {});
+								useSessionsStore().loadAllSessions().catch(() => {});
+								useTopicsStore().loadAllTopics().catch(() => {});
+							}
+						}
 					}
 				}
 				// 注册持久监听器（不移除，随连接生命周期存在）
@@ -174,9 +183,18 @@ export const useBotsStore = defineStore('bots', {
 						console.debug('[bots] conn ready botId=%s → full init', id);
 						catchFire(id, conn);
 					} else {
-						// WS 重连：仅重新触发传输选择
+						// WS 重连：传输选择 + 按断连时长决定是否刷新业务数据
 						console.debug('[bots] ws reconnected botId=%s → re-select transport', id);
 						initRtcAndSelectTransport(id, conn).catch(() => {});
+						if (conn.disconnectedAt > 0) {
+							const gap = Date.now() - conn.disconnectedAt;
+							if (gap >= BRIEF_DISCONNECT_MS) {
+								console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
+								useAgentsStore().loadAgents(id).catch(() => {});
+								useSessionsStore().loadAllSessions().catch(() => {});
+								useTopicsStore().loadAllTopics().catch(() => {});
+							}
+						}
 					}
 				});
 			}

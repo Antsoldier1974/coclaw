@@ -13,9 +13,20 @@ const DEFAULT_RPC_TIMEOUT_MS = 30 * 60_000; // 30 分钟兜底
 const INITIAL_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
 const RECONNECT_JITTER = 0.3;
+/** 前台恢复：连接探测超时 */
+const PROBE_TIMEOUT_MS = 2500;
+/** 前台恢复：超过此时长无消息则假定连接已死 */
+const ASSUME_DEAD_MS = 45_000;
+/** 短暂抖动 vs 实质断连分界 */
+const BRIEF_DISCONNECT_MS = 5000;
+/** 防重入节流（visibilitychange + app:foreground） */
+const FOREGROUND_THROTTLE_MS = 500;
 const TERMINAL_STATUSES = new Set(['ok', 'error']);
 /** SCTP 单条消息安全上限（保守值，避免触发 DataChannel 关闭） */
 const RTC_MSG_SIZE_LIMIT = 64 * 1024;
+
+// 导出常量供外部模块使用
+export { BRIEF_DISCONNECT_MS };
 
 function resolveWsUrl(httpBaseUrl, botId) {
 	const url = new URL(httpBaseUrl);
@@ -73,13 +84,39 @@ export class BotConnection {
 		/** @type {import('./webrtc-connection.js').WebRtcConnection | null} */
 		this.__rtc = null;
 
-		// visibility 恢复重连
+		// visibility / foreground 恢复重连
 		this.__boundVisibilityHandler = null;
+		this.__boundForegroundHandler = null;
+		this.__lastForegroundAt = 0; // 防重入节流
+
+		// 连接感知时间戳
+		/** @type {number} 最后一次确认连接活着的时间（收到任何 WS 消息时更新） */
+		this.__lastAliveAt = 0;
+		/** @type {number} 断连时间戳（state → disconnected 时记录） */
+		this.__disconnectedAt = 0;
+		/** @type {number | null} probe 定时器 */
+		this.__probeTimer = null;
 	}
 
 	/** @returns {'disconnected' | 'connecting' | 'connected'} */
 	get state() {
 		return this.__state;
+	}
+
+	/** @returns {number} 最后一次确认连接存活的时间戳 */
+	get lastAliveAt() {
+		return this.__lastAliveAt;
+	}
+
+	/** @returns {number} 最近一次断连的时间戳（0 表示从未断连） */
+	get disconnectedAt() {
+		return this.__disconnectedAt;
+	}
+
+	/** @returns {number} 断连持续时长（ms），若未断连返回 0 */
+	get disconnectDuration() {
+		if (!this.__disconnectedAt || this.__state !== 'disconnected') return 0;
+		return Date.now() - this.__disconnectedAt;
 	}
 
 	/** @returns {'rtc' | 'ws' | null} */
@@ -124,6 +161,10 @@ export class BotConnection {
 		if (typeof document !== 'undefined' && !this.__boundVisibilityHandler) {
 			this.__boundVisibilityHandler = () => this.__onVisibilityChange();
 			document.addEventListener('visibilitychange', this.__boundVisibilityHandler);
+		}
+		if (typeof window !== 'undefined' && !this.__boundForegroundHandler) {
+			this.__boundForegroundHandler = () => this.__onAppForeground();
+			window.addEventListener('app:foreground', this.__boundForegroundHandler);
 		}
 		this.__doConnect();
 	}
@@ -260,6 +301,9 @@ export class BotConnection {
 		if (this.__state === newState) return;
 		const prev = this.__state;
 		this.__state = newState;
+		if (newState === 'disconnected') {
+			this.__disconnectedAt = Date.now();
+		}
 		console.debug('[BotConn] state %s→%s botId=%s', prev, newState, this.botId);
 		this.__emit('state', newState);
 	}
@@ -296,6 +340,7 @@ export class BotConnection {
 			if (this.__ws !== ws) return;
 			console.debug('[BotConn] ws close botId=%s code=%d reason=%s', this.botId, ev.code, ev.reason);
 			this.__clearHeartbeat();
+			this.__clearProbe();
 			// RTC 模式下 WS 断开不影响 RTC 请求
 			if (this.__transportMode === 'rtc') {
 				for (const [id, waiter] of this.__pending) {
@@ -457,6 +502,7 @@ export class BotConnection {
 
 	__resetHbTimeout() {
 		this.__hbMissCount = 0;
+		this.__lastAliveAt = Date.now();
 		if (this.__hbTimer) clearTimeout(this.__hbTimer);
 		this.__hbTimer = setTimeout(() => {
 			this.__onHbMiss();
@@ -526,25 +572,132 @@ export class BotConnection {
 		}
 	}
 
-	// --- Visibility 恢复重连 ---
+	// --- Visibility / Foreground 恢复重连 ---
 
 	__onVisibilityChange() {
 		if (typeof document === 'undefined') return;
 		if (document.visibilityState !== 'visible') return;
-		if (this.__intentionalClose || this.__state !== 'disconnected') return;
-		console.debug('[BotConn] visibility visible → immediate reconnect botId=%s', this.botId);
+		this.__handleForegroundResume('visibility');
+	}
+
+	__onAppForeground() {
+		this.__handleForegroundResume('app:foreground');
+	}
+
+	/**
+	 * 前台恢复统一入口（visibilitychange / app:foreground 共用）
+	 * @param {string} source - 触发来源（日志用）
+	 */
+	__handleForegroundResume(source) {
+		if (this.__intentionalClose) return;
+		// 防重入节流：500ms 内不重复执行
+		const now = Date.now();
+		if (now - this.__lastForegroundAt < FOREGROUND_THROTTLE_MS) return;
+		this.__lastForegroundAt = now;
+
+		if (this.__state === 'disconnected') {
+			// 已知断开 → 即时重连
+			console.debug('[BotConn] %s → immediate reconnect botId=%s', source, this.botId);
+			this.__clearReconnect();
+			this.__reconnectDelay = INITIAL_RECONNECT_MS;
+			this.__doConnect();
+			return;
+		}
+
+		if (this.__state === 'connecting') return; // 正在重连中
+
+		// state === 'connected'：根据 lastAliveAt 判断连接是否可能已死
+		const elapsed = now - this.__lastAliveAt;
+		if (elapsed > ASSUME_DEAD_MS) {
+			console.debug('[BotConn] %s → assume dead (elapsed=%dms) botId=%s', source, elapsed, this.botId);
+			this.forceReconnect();
+		} else if (this.__lastAliveAt > 0 && elapsed > PROBE_TIMEOUT_MS) {
+			// 超过探测超时时长未收到消息 → 有必要探测
+			console.debug('[BotConn] %s → probe (elapsed=%dms) botId=%s', source, elapsed, this.botId);
+			this.probe();
+		}
+		// elapsed <= PROBE_TIMEOUT_MS → 刚刚还收到过消息，无需探测
+	}
+
+	/**
+	 * 探测连接存活性：发送 ping，若 PROBE_TIMEOUT_MS 内无响应则 forceReconnect
+	 */
+	probe() {
+		if (this.__probeTimer) return; // 已在探测中
+		if (!this.__ws || this.__ws.readyState !== 1) {
+			this.forceReconnect();
+			return;
+		}
+		const aliveAtBefore = this.__lastAliveAt;
+		try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
+		catch { this.forceReconnect(); return; }
+
+		this.__probeTimer = setTimeout(() => {
+			this.__probeTimer = null;
+			// 若期间收到过消息，lastAliveAt 会被更新
+			if (this.__lastAliveAt > aliveAtBefore) {
+				console.debug('[BotConn] probe ok botId=%s', this.botId);
+				return;
+			}
+			console.debug('[BotConn] probe timeout → forceReconnect botId=%s', this.botId);
+			this.forceReconnect();
+		}, PROBE_TIMEOUT_MS);
+	}
+
+	/**
+	 * 强制重连：关闭当前 WS → 立即重新建连
+	 * 不检查当前 state，适用于连接表面 connected 但实际已死的情况
+	 */
+	forceReconnect() {
+		if (this.__intentionalClose) return;
+		console.debug('[BotConn] forceReconnect botId=%s', this.botId);
+		this.__clearProbe();
+		this.__clearHeartbeat();
 		this.__clearReconnect();
+		const ws = this.__ws;
+		this.__ws = null;
+		if (ws) {
+			// reject 非 RTC 的 pending（RTC 侧不受影响）
+			if (this.__transportMode === 'rtc') {
+				for (const [id, waiter] of this.__pending) {
+					if (!waiter.viaRtc) {
+						clearTimeout(waiter.timer);
+						const err = new Error('connection closed');
+						err.code = 'WS_CLOSED';
+						waiter.reject(err);
+						this.__pending.delete(id);
+					}
+				}
+			} else {
+				this.__rejectAllPending('connection closed');
+			}
+			try { ws.close(4000, 'force_reconnect'); }
+			catch {}
+		}
+		this.__setState('disconnected');
 		this.__reconnectDelay = INITIAL_RECONNECT_MS;
 		this.__doConnect();
+	}
+
+	__clearProbe() {
+		if (this.__probeTimer) {
+			clearTimeout(this.__probeTimer);
+			this.__probeTimer = null;
+		}
 	}
 
 	// --- 清理 ---
 
 	__cleanup() {
 		this.__clearHeartbeat();
+		this.__clearProbe();
 		if (this.__boundVisibilityHandler && typeof document !== 'undefined') {
 			document.removeEventListener('visibilitychange', this.__boundVisibilityHandler);
 			this.__boundVisibilityHandler = null;
+		}
+		if (this.__boundForegroundHandler && typeof window !== 'undefined') {
+			window.removeEventListener('app:foreground', this.__boundForegroundHandler);
+			this.__boundForegroundHandler = null;
 		}
 		const ws = this.__ws;
 		this.__ws = null;

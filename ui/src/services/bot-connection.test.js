@@ -923,6 +923,7 @@ describe('BotConnection – visibility change reconnect', () => {
 	test('visibility→visible while connected does nothing', () => {
 		const { conn } = makeConnected();
 		expect(conn.state).toBe('connected');
+		// lastAliveAt 已由 __resetHbTimeout 在 open 后设置
 		mockDoc.simulateVisibility('visible');
 		expect(MockWebSocket.instances.length).toBe(1);
 		expect(conn.state).toBe('connected');
@@ -1381,5 +1382,314 @@ describe('BotConnection – WS close 时 RTC 模式保留 RTC pending', () => {
 		// 清理以避免 unhandled rejection
 		conn.__pending.clear();
 		conn.disconnect();
+	});
+});
+
+// =====================================================================
+// Phase 3: 连接感知增强
+// =====================================================================
+
+describe('BotConnection – lastAliveAt / disconnectedAt', () => {
+	beforeEach(() => {
+		MockWebSocket.reset();
+		vi.useFakeTimers();
+	});
+	afterEach(() => vi.useRealTimers());
+
+	test('lastAliveAt 初始为 0', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		expect(conn.lastAliveAt).toBe(0);
+	});
+
+	test('连接建立后 lastAliveAt 被设置', () => {
+		const { conn } = makeConnected();
+		expect(conn.lastAliveAt).toBeGreaterThan(0);
+	});
+
+	test('收到消息时 lastAliveAt 更新', () => {
+		const { conn, ws } = makeConnected();
+		const t1 = conn.lastAliveAt;
+		vi.advanceTimersByTime(100);
+		ws.simulateMessage({ type: 'pong' });
+		expect(conn.lastAliveAt).toBeGreaterThan(t1);
+	});
+
+	test('disconnectedAt 在断连时记录', () => {
+		const { conn, ws } = makeConnected();
+		expect(conn.disconnectedAt).toBe(0);
+		ws.simulateClose(1006);
+		expect(conn.disconnectedAt).toBeGreaterThan(0);
+	});
+
+	test('disconnectDuration 返回断连持续时长', () => {
+		const { conn, ws } = makeConnected();
+		// 主动断开以保持 disconnected 状态（不自动重连）
+		conn.disconnect();
+		vi.advanceTimersByTime(3000);
+		expect(conn.disconnectDuration).toBeGreaterThanOrEqual(3000);
+	});
+
+	test('disconnectDuration 非 disconnected 状态时返回 0', () => {
+		const { conn } = makeConnected();
+		expect(conn.disconnectDuration).toBe(0);
+	});
+});
+
+describe('BotConnection – probe()', () => {
+	beforeEach(() => {
+		MockWebSocket.reset();
+		vi.useFakeTimers();
+	});
+	afterEach(() => vi.useRealTimers());
+
+	test('发送 ping 并在超时后 forceReconnect', () => {
+		const { conn, ws } = makeConnected();
+		conn.probe();
+
+		// 应发送了 ping
+		const pings = ws.sent.filter((s) => JSON.parse(s).type === 'ping');
+		expect(pings.length).toBeGreaterThanOrEqual(1);
+
+		// 推进到超时
+		vi.advanceTimersByTime(2500);
+
+		// 应触发 forceReconnect → 新 WS 实例
+		expect(MockWebSocket.instances.length).toBe(2);
+	});
+
+	test('probe 期间收到消息则不 forceReconnect', () => {
+		const { conn, ws } = makeConnected();
+		conn.probe();
+
+		// 模拟收到 pong
+		vi.advanceTimersByTime(1000);
+		ws.simulateMessage({ type: 'pong' });
+
+		// 推进到超时
+		vi.advanceTimersByTime(2000);
+
+		// 不应创建新 WS
+		expect(MockWebSocket.instances.length).toBe(1);
+	});
+
+	test('重复调用 probe 不会创建多个定时器', () => {
+		const { conn } = makeConnected();
+		conn.probe();
+		conn.probe();
+		expect(conn.__probeTimer).not.toBeNull();
+
+		// 超时后只触发一次
+		vi.advanceTimersByTime(3000);
+		expect(MockWebSocket.instances.length).toBe(2);
+	});
+
+	test('WS 已关闭时直接 forceReconnect', () => {
+		const { conn, ws } = makeConnected();
+		ws.readyState = 3; // CLOSED
+		conn.__ws = ws;
+		conn.probe();
+		// 直接创建新连接
+		expect(MockWebSocket.instances.length).toBe(2);
+	});
+});
+
+describe('BotConnection – forceReconnect()', () => {
+	beforeEach(() => {
+		MockWebSocket.reset();
+		vi.useFakeTimers();
+	});
+	afterEach(() => vi.useRealTimers());
+
+	test('关闭旧连接并立即重连', () => {
+		const { conn, ws } = makeConnected();
+		expect(conn.state).toBe('connected');
+		conn.forceReconnect();
+
+		expect(ws.closed).toBe(true);
+		expect(ws.closeCode).toBe(4000);
+		expect(MockWebSocket.instances.length).toBe(2);
+		expect(conn.state).toBe('connecting');
+	});
+
+	test('reject 所有非 RTC 的 pending 请求', () => {
+		const { conn } = makeConnected();
+		const waiter = { reject: vi.fn(), timer: null, viaRtc: false };
+		conn.__pending.set('req-1', waiter);
+
+		conn.forceReconnect();
+
+		expect(waiter.reject).toHaveBeenCalled();
+		expect(conn.__pending.size).toBe(0);
+	});
+
+	test('RTC 模式下保留 viaRtc=true 的 pending', () => {
+		const { conn } = makeConnected();
+		conn.setTransportMode('rtc');
+
+		const rtcWaiter = { reject: vi.fn(), timer: null, viaRtc: true };
+		const wsWaiter = { reject: vi.fn(), timer: null, viaRtc: false };
+		conn.__pending.set('rtc-1', rtcWaiter);
+		conn.__pending.set('ws-1', wsWaiter);
+
+		conn.forceReconnect();
+
+		expect(wsWaiter.reject).toHaveBeenCalled();
+		expect(rtcWaiter.reject).not.toHaveBeenCalled();
+		expect(conn.__pending.has('rtc-1')).toBe(true);
+
+		conn.__pending.clear();
+	});
+
+	test('intentionalClose 时不 forceReconnect', () => {
+		const { conn } = makeConnected();
+		conn.disconnect();
+		MockWebSocket.reset();
+		conn.forceReconnect();
+		expect(MockWebSocket.instances.length).toBe(0);
+	});
+
+	test('重置 reconnectDelay', () => {
+		const { conn } = makeConnected();
+		conn.__reconnectDelay = 16000;
+		conn.forceReconnect();
+		expect(conn.__reconnectDelay).toBe(1000);
+	});
+});
+
+describe('BotConnection – foreground resume (app:foreground)', () => {
+	let savedDoc;
+	let savedWin;
+	let mockDoc;
+	let mockWin;
+
+	beforeEach(() => {
+		MockWebSocket.reset();
+		vi.useFakeTimers();
+		savedDoc = globalThis.document;
+		savedWin = globalThis.window;
+		mockDoc = {
+			visibilityState: 'visible',
+			__listeners: {},
+			addEventListener(evt, cb) {
+				if (!this.__listeners[evt]) this.__listeners[evt] = [];
+				this.__listeners[evt].push(cb);
+			},
+			removeEventListener(evt, cb) {
+				if (!this.__listeners[evt]) return;
+				this.__listeners[evt] = this.__listeners[evt].filter(fn => fn !== cb);
+			},
+		};
+		mockWin = {
+			__listeners: {},
+			addEventListener(evt, cb) {
+				if (!this.__listeners[evt]) this.__listeners[evt] = [];
+				this.__listeners[evt].push(cb);
+			},
+			removeEventListener(evt, cb) {
+				if (!this.__listeners[evt]) return;
+				this.__listeners[evt] = this.__listeners[evt].filter(fn => fn !== cb);
+			},
+			dispatchEvent(event) {
+				(this.__listeners[event.type] ?? []).forEach(cb => cb(event));
+			},
+		};
+		globalThis.document = mockDoc;
+		globalThis.window = mockWin;
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		globalThis.document = savedDoc;
+		globalThis.window = savedWin;
+	});
+
+	test('connect() 注册 app:foreground 监听器', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		expect(mockWin.__listeners['app:foreground']?.length).toBe(1);
+	});
+
+	test('disconnect() 注销 app:foreground 监听器', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+		conn.disconnect();
+		expect((mockWin.__listeners['app:foreground'] ?? []).length).toBe(0);
+	});
+
+	test('disconnected 状态下收到 foreground → 即时重连', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		const ws = MockWebSocket.lastInstance;
+		ws.simulateOpen();
+		ws.simulateClose(1006);
+		expect(conn.state).toBe('disconnected');
+
+		mockWin.dispatchEvent(new Event('app:foreground'));
+
+		expect(MockWebSocket.instances.length).toBe(2);
+		expect(conn.state).toBe('connecting');
+	});
+
+	test('connected + lastAliveAt 超过 ASSUME_DEAD → forceReconnect', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+		expect(conn.state).toBe('connected');
+
+		// 模拟长时间后台
+		vi.advanceTimersByTime(50_000);
+
+		mockWin.dispatchEvent(new Event('app:foreground'));
+
+		// 应触发 forceReconnect
+		expect(MockWebSocket.instances.length).toBe(2);
+	});
+
+	test('connected + lastAliveAt 在探测范围内 → probe', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+
+		// 模拟中等时长后台（大于 PROBE_TIMEOUT 但小于 ASSUME_DEAD）
+		vi.advanceTimersByTime(10_000);
+
+		mockWin.dispatchEvent(new Event('app:foreground'));
+
+		// 应发起 probe（发 ping），不立即创建新 WS
+		expect(MockWebSocket.instances.length).toBe(1);
+		expect(conn.__probeTimer).not.toBeNull();
+	});
+
+	test('connected + lastAliveAt 很新 → 不操作', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+
+		// lastAliveAt 刚设置，elapsed ≈ 0
+		mockWin.dispatchEvent(new Event('app:foreground'));
+
+		expect(MockWebSocket.instances.length).toBe(1);
+		expect(conn.__probeTimer).toBeNull();
+	});
+
+	test('500ms 节流：重复触发不重复执行', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+		MockWebSocket.lastInstance.simulateClose(1006);
+
+		mockWin.dispatchEvent(new Event('app:foreground'));
+		expect(MockWebSocket.instances.length).toBe(2);
+
+		// 立即再次触发 → 被节流
+		mockWin.dispatchEvent(new Event('app:foreground'));
+		expect(MockWebSocket.instances.length).toBe(2);
+
+		// 500ms 后可以再次触发
+		vi.advanceTimersByTime(500);
+		MockWebSocket.instances[1].simulateClose(1006);
+		mockWin.dispatchEvent(new Event('app:foreground'));
+		expect(MockWebSocket.instances.length).toBe(3);
 	});
 });
