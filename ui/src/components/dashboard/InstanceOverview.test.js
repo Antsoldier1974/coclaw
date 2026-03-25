@@ -69,15 +69,6 @@ describe('InstanceOverview', () => {
 		expect(wrapper.text()).toContain('2.0');
 	});
 
-	test('displays channel status icons with channel names', () => {
-		const wrapper = mountOverview({
-			instance: { name: 'Bot', online: true, channels: [{ id: 'discord', connected: true }, { id: 'slack', connected: false }] },
-		});
-		expect(wrapper.text()).toContain('✅');
-		expect(wrapper.text()).toContain('❌');
-		expect(wrapper.text()).toContain('discord');
-		expect(wrapper.text()).toContain('slack');
-	});
 
 	test('displays agent count', () => {
 		const wrapper = mountOverview({

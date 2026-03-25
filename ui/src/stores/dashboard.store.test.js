@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { useDashboardStore, __test__ } from './dashboard.store.js';
 
 const {
-	buildChannelList,
 	extractToolIds,
 	findCurrentModel,
 	filterSessionsByAgent,
@@ -40,44 +39,6 @@ import { useAgentsStore } from './agents.store.js';
 // =====================================================================
 
 describe('dashboard store helpers', () => {
-	// -----------------------------------------------------------------
-	// buildChannelList
-	// -----------------------------------------------------------------
-	describe('buildChannelList', () => {
-		test('正常数据返回频道列表', () => {
-			const data = {
-				defaultAccountId: 'acc-1',
-				discord: { accounts: [{ enabled: true }] },
-				slack: { accounts: [{ enabled: false }] },
-			};
-			const result = buildChannelList(data);
-			expect(result).toEqual([
-				{ id: 'discord', connected: true },
-				{ id: 'slack', connected: false },
-			]);
-		});
-
-		test('account 无 enabled 字段视为启用', () => {
-			const data = { telegram: { accounts: [{}] } };
-			const result = buildChannelList(data);
-			expect(result).toEqual([{ id: 'telegram', connected: true }]);
-		});
-
-		test('空数据返回空数组', () => {
-			expect(buildChannelList({})).toEqual([]);
-		});
-
-		test('null 返回空数组', () => {
-			expect(buildChannelList(null)).toEqual([]);
-		});
-
-		test('accounts 非数组时 connected 为 false', () => {
-			const data = { web: { accounts: 'invalid' } };
-			const result = buildChannelList(data);
-			expect(result).toEqual([{ id: 'web', connected: false }]);
-		});
-	});
-
 	// -----------------------------------------------------------------
 	// extractToolIds
 	// -----------------------------------------------------------------
@@ -290,10 +251,6 @@ describe('dashboard store', () => {
 				],
 			},
 			'tts.status': { enabled: true },
-			'channels.status': {
-				defaultAccountId: 'acc-1',
-				discord: { accounts: [{ enabled: true }] },
-			},
 			'tools.catalog': {
 				groups: [{ tools: [{ id: 'web_search' }, { id: 'read' }] }],
 			},
@@ -313,7 +270,6 @@ describe('dashboard store', () => {
 		expect(entry.instance.pluginVersion).toBe('0.3.0');
 		expect(entry.instance.clawVersion).toBe('0.7.0');
 		expect(entry.instance.monthlyCost).toEqual({ total: 12.5, currency: 'USD' });
-		expect(entry.instance.channels).toEqual([{ id: 'discord', connected: true }]);
 		expect(entry.instance.model).toBe('claude-3');
 		expect(entry.instance.provider).toBe('anthropic');
 
@@ -353,7 +309,6 @@ describe('dashboard store', () => {
 			'usage.cost': new Error('rpc timeout'),
 			'sessions.list': new Error('not available'),
 			'tts.status': new Error('not supported'),
-			'channels.status': new Error('failed'),
 			'tools.catalog': new Error('catalog error'),
 		});
 		mockConnections.set('bot-1', dashConn);
@@ -367,7 +322,6 @@ describe('dashboard store', () => {
 
 		// 失败的 RPC 产出 null/空值
 		expect(entry.instance.monthlyCost).toBeNull();
-		expect(entry.instance.channels).toEqual([]);
 		expect(entry.instance.model).toBe('gpt-4');
 
 		// agent 能力为空（tools.catalog 失败）
@@ -450,7 +404,6 @@ describe('dashboard store', () => {
 			'usage.cost': null,
 			'sessions.list': { sessions: [] },
 			'tts.status': {},
-			'channels.status': {},
 			'tools.catalog': { groups: [] },
 		});
 		mockConnections.set('42', dashConn);
@@ -480,7 +433,6 @@ describe('dashboard store', () => {
 			'usage.cost': null,
 			'sessions.list': { sessions: [] },
 			'tts.status': {},
-			'channels.status': {},
 			'tools.catalog': { groups: [] },
 		});
 		mockConnections.set('bot-1', dashConn);

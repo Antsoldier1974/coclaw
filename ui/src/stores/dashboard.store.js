@@ -20,7 +20,6 @@ import { generateModelTags } from '../utils/model-tags.js';
  *   pluginVersion: string|null,
  *   clawVersion: string|null,
  *   monthlyCost: object|null,
- *   channels: { id: string, connected: boolean }[],
  *   model: string|null,
  *   provider: string|null,
  * }} DashboardInstance
@@ -42,23 +41,6 @@ import { generateModelTags } from '../utils/model-tags.js';
 // =====================================================================
 // 辅助函数（模块内部）
 // =====================================================================
-
-/**
- * 从 channels.status 响应构建频道列表
- * @param {object|null} channelsData
- * @returns {{ id: string, connected: boolean }[]}
- */
-function buildChannelList(channelsData) {
-	if (!channelsData || typeof channelsData !== 'object') return [];
-	return Object.entries(channelsData)
-		.filter(([key]) => key !== 'defaultAccountId')
-		.map(([id, data]) => ({
-			id,
-			connected: Array.isArray(data?.accounts)
-				? data.accounts.some(a => a.enabled !== false)
-				: false,
-		}));
-}
 
 /**
  * 从 tools.catalog 响应提取工具 ID 列表
@@ -172,7 +154,6 @@ export const useDashboardStore = defineStore('dashboard', {
 					usageCostResult,
 					sessionsResult,
 					ttsResult,
-					channelsResult,
 					...toolResults
 				] = await Promise.allSettled([
 					conn.request('status', {}),
@@ -180,7 +161,6 @@ export const useDashboardStore = defineStore('dashboard', {
 					conn.request('usage.cost', { mode: 'month' }),
 					conn.request('sessions.list', {}),
 					conn.request('tts.status', {}),
-					conn.request('channels.status', { probe: false }),
 					...agentList.map(agent =>
 						conn.request('tools.catalog', { agentId: agent.id })
 					),
@@ -192,7 +172,6 @@ export const useDashboardStore = defineStore('dashboard', {
 				const usageCost = usageCostResult.status === 'fulfilled' ? usageCostResult.value : null;
 				const sessions = sessionsResult.status === 'fulfilled' ? sessionsResult.value : null;
 				const tts = ttsResult.status === 'fulfilled' ? ttsResult.value : null;
-				const channels = channelsResult.status === 'fulfilled' ? channelsResult.value : null;
 
 				// 构建实例总览
 				const botsStore = useBotsStore();
@@ -205,7 +184,6 @@ export const useDashboardStore = defineStore('dashboard', {
 					pluginVersion: pluginInfo.version ?? null,
 					clawVersion: pluginInfo.clawVersion ?? null,
 					monthlyCost: usageCost,
-					channels: buildChannelList(channels),
 					model: status?.model ?? null,
 					provider: status?.provider ?? null,
 				};
@@ -265,7 +243,6 @@ export const useDashboardStore = defineStore('dashboard', {
 
 /** @internal 仅供测试访问内部函数 */
 export const __test__ = {
-	buildChannelList,
 	extractToolIds,
 	findCurrentModel,
 	filterSessionsByAgent,
