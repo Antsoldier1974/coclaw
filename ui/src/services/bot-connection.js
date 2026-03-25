@@ -22,8 +22,6 @@ const BRIEF_DISCONNECT_MS = 5000;
 /** 防重入节流（visibilitychange + app:foreground） */
 const FOREGROUND_THROTTLE_MS = 500;
 const TERMINAL_STATUSES = new Set(['ok', 'error']);
-/** SCTP 单条消息安全上限（保守值，避免触发 DataChannel 关闭） */
-const RTC_MSG_SIZE_LIMIT = 64 * 1024;
 
 // 导出常量供外部模块使用
 export { BRIEF_DISCONNECT_MS };
@@ -191,35 +189,31 @@ export class BotConnection {
 	request(method, params = {}, options = {}) {
 		const rtcReady = this.__transportMode === 'rtc' && this.__rtc?.isReady;
 
-		// RTC 可用时走 DataChannel；超过 SCTP 消息上限的大 payload 临时回退到 WS
+		// RTC 可用时走 DataChannel（WebRtcConnection.send 内部自动分片）
 		if (rtcReady) {
-			if (JSON.stringify(params).length <= RTC_MSG_SIZE_LIMIT) {
-				const id = `ui-${Date.now()}-${this.__counter++}`;
-				return new Promise((resolve, reject) => {
-					const waiter = { resolve, reject, viaRtc: true };
-					if (options.onAccepted) waiter.onAccepted = options.onAccepted;
-					if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
-					const timeoutMs = options.timeout ?? DEFAULT_RPC_TIMEOUT_MS;
-					waiter.timer = setTimeout(() => {
+			const id = `ui-${Date.now()}-${this.__counter++}`;
+			return new Promise((resolve, reject) => {
+				const waiter = { resolve, reject, viaRtc: true };
+				if (options.onAccepted) waiter.onAccepted = options.onAccepted;
+				if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
+				const timeoutMs = options.timeout ?? DEFAULT_RPC_TIMEOUT_MS;
+				waiter.timer = setTimeout(() => {
+					this.__pending.delete(id);
+					const err = new Error('rpc timeout');
+					err.code = 'RPC_TIMEOUT';
+					reject(err);
+				}, timeoutMs);
+				this.__pending.set(id, waiter);
+				this.__rtc.send({ type: 'req', id, method, params })
+					.catch(() => {
+						if (!this.__pending.has(id)) return;
 						this.__pending.delete(id);
-						const err = new Error('rpc timeout');
-						err.code = 'RPC_TIMEOUT';
+						clearTimeout(waiter.timer);
+						const err = new Error('rtc send failed');
+						err.code = 'RTC_SEND_FAILED';
 						reject(err);
-					}, timeoutMs);
-					this.__pending.set(id, waiter);
-					this.__rtc.send({ type: 'req', id, method, params })
-						.catch(() => {
-							if (!this.__pending.has(id)) return;
-							this.__pending.delete(id);
-							clearTimeout(waiter.timer);
-							const err = new Error('rtc send failed');
-							err.code = 'RTC_SEND_FAILED';
-							reject(err);
-						});
-				});
-			}
-			// payload 超出 SCTP 上限，临时走 WS（不改变 transportMode）
-			console.debug('[BotConn] payload exceeds RTC limit, using WS botId=%s method=%s', this.botId, method);
+					});
+			});
 		}
 
 		// RTC 不可用时主动降级到 WS，确保 __onMessage 不再过滤 WS event

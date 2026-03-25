@@ -1,4 +1,5 @@
 import { RTCPeerConnection as WeriftRTCPeerConnection } from 'werift';
+import { chunkAndSend, createReassembler } from './utils/dc-chunking.js';
 
 /**
  * 管理多个 WebRTC PeerConnection（以 connId 为粒度）。
@@ -21,7 +22,7 @@ export class WebRtcPeer {
 		this.__onFileChannel = onFileChannel;
 		this.logger = logger ?? console;
 		this.__PeerConnection = PeerConnection ?? WeriftRTCPeerConnection;
-		/** @type {Map<string, { pc: object, rpcChannel: object|null }>} */
+		/** @type {Map<string, { pc: object, rpcChannel: object|null, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
 	}
 
@@ -58,14 +59,17 @@ export class WebRtcPeer {
 		await Promise.all(closing);
 	}
 
-	/** 向所有已打开的 rpcChannel 广播 */
+	/** 向所有已打开的 rpcChannel 广播（大消息自动分片） */
 	broadcast(payload) {
-		const data = JSON.stringify(payload);
+		const jsonStr = JSON.stringify(payload);
 		for (const [connId, session] of this.__sessions) {
 			const dc = session.rpcChannel;
 			if (dc?.readyState === 'open') {
-				try { dc.send(data); }
-				catch (err) { this.__logDebug(`[${connId}] broadcast send failed: ${err.message}`); }
+				try {
+					chunkAndSend(dc, jsonStr, session.remoteMaxMessageSize, () => session.nextMsgId++, this.logger);
+				} catch (err) {
+					this.__logDebug(`[${connId}] broadcast send failed: ${err.message}`);
+				}
 			}
 		}
 	}
@@ -122,7 +126,12 @@ export class WebRtcPeer {
 		}
 
 		const pc = new this.__PeerConnection({ iceServers });
-		const session = { pc, rpcChannel: null };
+
+		// 从 SDP 解析对端 maxMessageSize（用于分片决策）
+		const mmsMatch = msg.payload.sdp?.match(/a=max-message-size:(\d+)/);
+		const remoteMaxMessageSize = mmsMatch ? parseInt(mmsMatch[1], 10) : 65536;
+
+		const session = { pc, rpcChannel: null, remoteMaxMessageSize, nextMsgId: 1 };
 		this.__sessions.set(connId, session);
 
 		// ICE candidate → 发给 UI
@@ -206,34 +215,47 @@ export class WebRtcPeer {
 	}
 
 	__setupDataChannel(connId, dc) {
+		const reassembler = createReassembler((jsonStr) => {
+			const payload = JSON.parse(jsonStr);
+			if (payload.type === 'req') {
+				// coclaw.file.* 方法本地处理，不转发 gateway
+				if (payload.method?.startsWith('coclaw.file.') && this.__onFileRpc) {
+					const session = this.__sessions.get(connId);
+					const sendFn = (response) => {
+						try {
+							chunkAndSend(
+								dc, JSON.stringify(response),
+								session?.remoteMaxMessageSize ?? 65536,
+								() => session.nextMsgId++,
+								this.logger,
+							);
+						} catch (err) {
+							this.__logDebug(`[${connId}] sendFn failed: ${err.message}`);
+						}
+					};
+					this.__onFileRpc(payload, sendFn, connId);
+				} else {
+					this.__onRequest?.(payload, connId);
+				}
+			} else {
+				this.__logDebug(`[${connId}] unknown DC message type: ${payload.type}`);
+			}
+		}, { logger: this.logger });
+
 		dc.onopen = () => {
 			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" opened`);
 		};
 		dc.onclose = () => {
 			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" closed`);
+			reassembler.reset();
 			const session = this.__sessions.get(connId);
 			if (session && dc.label === 'rpc') session.rpcChannel = null;
 		};
 		dc.onmessage = (event) => {
 			try {
-				const raw = typeof event.data === 'string' ? event.data : event.data.toString();
-				const payload = JSON.parse(raw);
-				if (payload.type === 'req') {
-					// coclaw.file.* 方法本地处理，不转发 gateway
-					if (payload.method?.startsWith('coclaw.file.') && this.__onFileRpc) {
-						const sendFn = (response) => {
-							try { dc.send(JSON.stringify(response)); }
-							catch { /* DC 可能已关闭 */ }
-						};
-						this.__onFileRpc(payload, sendFn, connId);
-					} else {
-						this.__onRequest?.(payload, connId);
-					}
-				} else {
-					this.__logDebug(`[${connId}] unknown DC message type: ${payload.type}`);
-				}
+				reassembler.feed(event.data);
 			} catch (err) {
-				this.logger.warn?.(`[coclaw/rtc] [${connId}] DC message parse failed: ${err.message}`);
+				this.logger.warn?.(`[coclaw/rtc] [${connId}] DC message error: ${err.message}`);
 			}
 		};
 	}
