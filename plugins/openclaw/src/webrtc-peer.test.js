@@ -400,12 +400,15 @@ test('WebRtcPeer: connectionState connected 记录 candidate 类型', async () =
 	await peer.handleSignaling(makeOffer('c_040'));
 	const pc = PC.instances[0];
 
-	// 设置 nominated
-	pc.iceTransports[0].connection.nominated = { localCandidate: { type: 'srflx' } };
+	// 设置 nominated（含 local + remote 候选信息）
+	pc.iceTransports[0].connection.nominated = {
+		localCandidate: { type: 'srflx', host: '1.2.3.4', port: 12345 },
+		remoteCandidate: { type: 'host', host: '192.168.0.1', port: 54321 },
+	};
 	pc.connectionState = 'connected';
 	pc.onconnectionstatechange();
 
-	assert.ok(logs.some((l) => l.includes('ICE connected via srflx')));
+	assert.ok(logs.some((l) => l.includes('ICE nominated: local=srflx 1.2.3.4:12345 remote=host 192.168.0.1:54321')));
 });
 
 test('WebRtcPeer: connectionState connected 无 nominated 不崩溃', async () => {
@@ -435,11 +438,11 @@ test('WebRtcPeer: connectionState connected 有 nominated 但无 localCandidate.
 	await peer.handleSignaling(makeOffer('c_042'));
 	const pc = PC.instances[0];
 
-	pc.iceTransports[0].connection.nominated = { localCandidate: {} };
+	pc.iceTransports[0].connection.nominated = { localCandidate: {}, remoteCandidate: {} };
 	pc.connectionState = 'connected';
 	pc.onconnectionstatechange();
 
-	assert.ok(logs.some((l) => l.includes('ICE connected via unknown')));
+	assert.ok(logs.some((l) => l.includes('ICE nominated: local=? ?:? remote=? ?:?')));
 });
 
 test('WebRtcPeer: connectionState failed/closed 清理 session', async () => {

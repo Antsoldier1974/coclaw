@@ -146,8 +146,11 @@ export class WebRtcPeer {
 			if (state === 'connected') {
 				const nominated = pc.iceTransports?.[0]?.connection?.nominated;
 				if (nominated) {
-					const type = nominated.localCandidate?.type ?? 'unknown';
-					this.logger.info?.(`[coclaw/rtc] [${connId}] ICE connected via ${type}`);
+					const localC = nominated.localCandidate;
+					const remoteC = nominated.remoteCandidate;
+					const localInfo = `${localC?.type ?? '?'} ${localC?.host ?? '?'}:${localC?.port ?? '?'}`;
+					const remoteInfo = `${remoteC?.type ?? '?'} ${remoteC?.host ?? '?'}:${remoteC?.port ?? '?'}`;
+					this.logger.info?.(`[coclaw/rtc] [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
 				}
 			} else if (state === 'failed' || state === 'closed') {
 				const cur = this.__sessions.get(connId);
