@@ -1182,6 +1182,48 @@ describe('BotConnection – request() via RTC', () => {
 		conn.disconnect();
 	});
 
+	test('transportMode=rtc 大 payload 临时走 WS 且不改变 transportMode', async () => {
+		const { conn, ws } = makeConnected();
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue() };
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		// 构造超过 64KB 的 params
+		const largeParams = { data: 'x'.repeat(70_000) };
+		const p = conn.request('agent', largeParams);
+
+		// 应走 WS 而非 RTC
+		expect(mockRtc.send).not.toHaveBeenCalled();
+		expect(ws.sent.length).toBe(1);
+		const msg = JSON.parse(ws.sent[0]);
+		expect(msg.method).toBe('agent');
+
+		// transportMode 不应改变（临时回退，非永久降级）
+		expect(conn.transportMode).toBe('rtc');
+
+		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { ok: 1 } });
+		await expect(p).resolves.toMatchObject({ ok: 1 });
+		conn.disconnect();
+	});
+
+	test('transportMode=rtc 大 payload 走 WS 后小 payload 仍走 RTC', () => {
+		const { conn, ws } = makeConnected();
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue() };
+		conn.setRtc(mockRtc);
+		conn.setTransportMode('rtc');
+
+		// 大 payload → WS
+		conn.request('agent', { data: 'x'.repeat(70_000) }).catch(() => {});
+		expect(mockRtc.send).not.toHaveBeenCalled();
+		expect(ws.sent.length).toBe(1);
+
+		// 小 payload → RTC
+		conn.request('ping', { text: 'hi' }).catch(() => {});
+		expect(mockRtc.send).toHaveBeenCalledTimes(1);
+		expect(mockRtc.send.mock.calls[0][0].method).toBe('ping');
+		conn.disconnect();
+	});
+
 	test('transportMode=rtc 且 send 返回 rejected Promise 时 reject RTC_SEND_FAILED', async () => {
 		const { conn } = makeConnected();
 		const mockRtc = { isReady: true, send: vi.fn().mockRejectedValue(new Error('dc error')) };
