@@ -107,11 +107,17 @@ export default {
 	async mounted() {
 		// 认证过期统一监听（来源：HTTP 401 拦截 / WS session-expired）
 		// 必须在 refreshSession() 之前注册，避免 await 期间事件丢失
-		this.__onSessionExpired = () => {
+		this.__onSessionExpired = async () => {
 			if (!this.authStore.user) return; // 未登录或已在登出流程中
-			console.warn('[AuthedLayout] session expired → redirect to login');
-			this.authStore.user = null;
+			console.warn('[AuthedLayout] session expired → full cleanup + redirect to login');
 			const redirect = this.$route.fullPath;
+			try {
+				await this.authStore.logout(); // 完整清理：disconnectAll、store reset、draft persist
+			} catch (err) {
+				// logout 内部已处理 401；兜底防止意外错误阻断跳转
+				console.warn('[AuthedLayout] logout cleanup failed:', err?.message);
+				this.authStore.user = null;
+			}
 			this.$router.replace({
 				path: '/login',
 				query: redirect !== '/' ? { redirect } : {},
@@ -128,8 +134,7 @@ export default {
 			this.__lastResumeAt = now;
 			if (!this.authStore.user) return;
 			await this.authStore.refreshSession();
-			// 若 session 已过期，refreshSession 内部 fetchSessionUser 返回 null → user=null
-			// 同时 401 拦截器派发 auth:session-expired → __onSessionExpired 处理跳转
+			// 若 session 已过期，401 拦截器派发 auth:session-expired → __onSessionExpired 执行完整清理 + 跳转
 		};
 		this.__onVisibilityChange = () => {
 			if (document.visibilityState === 'visible') {

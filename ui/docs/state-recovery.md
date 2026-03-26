@@ -307,7 +307,7 @@
 
 - **文件**：`layouts/AuthedLayout.vue`
 - **触发**：`auth:session-expired` DOM 事件（来源：6.3 HTTP 401 或 6.4 WS session-expired）
-- **行为**：清空 `authStore.user`（不调 `logout()` 避免二次 401），跳转 `/login`（保留 `?redirect=`）
+- **行为**：调用 `authStore.logout()` 执行完整清理（disconnectAll、store reset、draft persist），然后跳转 `/login`（保留 `?redirect=`）。`logout()` 内部已处理 401（session 过期时 logout API 返回 401 属正常），外层 try/catch 兜底防止意外错误阻断跳转
 - **场景**：Web + Capacitor
 
 ### 6.6 前台恢复刷新 session

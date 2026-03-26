@@ -71,7 +71,14 @@ export function evalStore(page, storeId, fnBody) {
 	return page.evaluate(([id, body]) => {
 		const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
 		if (!pinia) throw new Error('Pinia not found');
-		const store = pinia._s.get(id);
+		let store = pinia._s.get(id);
+		// chat store 使用工厂模式，ID 为 'chat-session:...' 或 'chat-topic:...'
+		// 支持 'chat' 作为简写，自动匹配最后一个以 'chat-' 开头的 store
+		if (!store && id === 'chat') {
+			for (const [key, s] of pinia._s) {
+				if (key.startsWith('chat-')) store = s;
+			}
+		}
 		if (!store) throw new Error(`Store "${id}" not found`);
 		const fn = new Function('store', body);
 		return fn(store);
