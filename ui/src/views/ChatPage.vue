@@ -467,7 +467,9 @@ export default {
 				}
 			}
 			catch (err) {
-				this.notify.error(err?.message || this.$t('chat.orphanSendFailed'));
+				// 根据 err.code 映射友好文案
+				const errMsg = this.__sendErrorMessage(err);
+				this.notify.error(errMsg);
 				if (!this.chatStore?.__accepted) {
 					this.inputText = savedText;
 					this.$refs.chatInput?.restoreFiles(files);
@@ -477,6 +479,20 @@ export default {
 					if (draftKey) this.draftStore.clearDraft(draftKey);
 				}
 			}
+		},
+
+		/** 根据 err.code 返回用户友好的错误消息 */
+		__sendErrorMessage(err) {
+			const codeMap = {
+				RPC_TIMEOUT: 'chat.errRpcTimeout',
+				PRE_ACCEPTANCE_TIMEOUT: 'chat.errPreAcceptTimeout',
+				WS_CLOSED: 'chat.errWsClosed',
+				WS_SEND_FAILED: 'chat.errWsSendFailed',
+				RTC_SEND_FAILED: 'chat.errRtcSendFailed',
+			};
+			const key = codeMap[err?.code];
+			if (key) return this.$t(key);
+			return this.$t('chat.errUnknown');
 		},
 
 		async __handleNewTopicSend(text, files) {
@@ -522,7 +538,8 @@ export default {
 			}
 			catch (err) {
 				this.__creatingTopic = false;
-				this.notify.error(err?.message || this.$t('topic.createFailed'));
+				const errMsg = this.__sendErrorMessage(err);
+				this.notify.error(errMsg);
 				if (!this.chatStore?.__accepted) {
 					this.inputText = text;
 					this.$refs.chatInput?.restoreFiles(files);

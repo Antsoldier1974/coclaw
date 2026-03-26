@@ -87,6 +87,12 @@ const i18nMap = {
 	'chat.sessionNotFound': 'Session no longer exists',
 	'topic.newTopic': 'New topic',
 	'topic.createFailed': 'Failed to create topic',
+	'chat.errRpcTimeout': 'Message timed out',
+	'chat.errPreAcceptTimeout': 'Agent response timed out',
+	'chat.errWsClosed': 'Connection lost',
+	'chat.errWsSendFailed': 'Send failed (ws)',
+	'chat.errRtcSendFailed': 'Send failed (rtc)',
+	'chat.errUnknown': 'Something went wrong',
 };
 
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
@@ -317,7 +323,7 @@ describe('ChatPage send message', () => {
 		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 	});
 
-	test('发送异常时恢复输入框和文件并显示 notify', async () => {
+	test('发送异常时恢复输入框和文件并显示友好 notify（未知错误）', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
 		const chatStore = getChatStore();
@@ -332,7 +338,8 @@ describe('ChatPage send message', () => {
 		await flushPromises();
 
 		expect(wrapper.vm.inputText).toBe('hello');
-		expect(mockNotify.error).toHaveBeenCalledWith('fail');
+		// 未知错误码 → 通用友好文案
+		expect(mockNotify.error).toHaveBeenCalledWith('Something went wrong');
 		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 	});
 
@@ -367,6 +374,99 @@ describe('ChatPage send message', () => {
 		await flushPromises();
 
 		expect(sendSpy).not.toHaveBeenCalled();
+	});
+
+	test('RPC_TIMEOUT 错误显示友好文案并回填输入框', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__accepted = false;
+		const err = new Error('rpc timeout');
+		err.code = 'RPC_TIMEOUT';
+		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
+		await flushPromises();
+
+		wrapper.vm.inputText = 'my message';
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'my message', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith('Message timed out');
+		expect(wrapper.vm.inputText).toBe('my message');
+	});
+
+	test('PRE_ACCEPTANCE_TIMEOUT 错误显示友好文案并回填输入框', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__accepted = false;
+		const err = new Error('pre-acceptance timeout');
+		err.code = 'PRE_ACCEPTANCE_TIMEOUT';
+		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
+		await flushPromises();
+
+		wrapper.vm.inputText = 'my message';
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'my message', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith('Agent response timed out');
+		expect(wrapper.vm.inputText).toBe('my message');
+	});
+
+	test('WS_CLOSED 错误显示友好文案并回填输入框', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__accepted = false;
+		const err = new Error('not connected');
+		err.code = 'WS_CLOSED';
+		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
+		await flushPromises();
+
+		wrapper.vm.inputText = 'my message';
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'my message', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith('Connection lost');
+		expect(wrapper.vm.inputText).toBe('my message');
+	});
+
+	test('WS_SEND_FAILED 错误显示友好文案', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__accepted = false;
+		const err = new Error('ws send failed');
+		err.code = 'WS_SEND_FAILED';
+		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
+		await flushPromises();
+
+		wrapper.vm.inputText = 'my message';
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'my message', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith('Send failed (ws)');
+	});
+
+	test('RTC_SEND_FAILED 错误显示友好文案', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__accepted = false;
+		const err = new Error('rtc send failed');
+		err.code = 'RTC_SEND_FAILED';
+		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
+		await flushPromises();
+
+		wrapper.vm.inputText = 'my message';
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'my message', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith('Send failed (rtc)');
 	});
 
 	test('sending 中不重复发送', async () => {
