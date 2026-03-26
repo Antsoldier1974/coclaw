@@ -31,6 +31,7 @@ vi.mock('../services/webrtc-connection.js', () => ({
 }));
 
 import { listBots } from '../services/bots.api.js';
+import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useBotsStore, __resetAwaitingConnIds } from './bots.store.js';
 import { useSessionsStore } from './sessions.store.js';
@@ -225,6 +226,17 @@ describe('removeBotById', () => {
 
 		expect(sessionsStore.items).toHaveLength(1);
 		expect(sessionsStore.items[0].sessionId).toBe('sb');
+	});
+
+	test('calls removeByBot on agentRuns store', () => {
+		const store = useBotsStore();
+		const agentRunsStore = useAgentRunsStore();
+		const spy = vi.spyOn(agentRunsStore, 'removeByBot');
+		store.setBots([{ id: '3', name: 'Bot' }]);
+
+		store.removeBotById('3');
+
+		expect(spy).toHaveBeenCalledWith('3');
 	});
 
 	test('is a no-op when bot is not found', () => {

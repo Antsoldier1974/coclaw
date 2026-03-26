@@ -281,7 +281,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			if (!this.__listeners) this.__listeners = {};
 			const existing = this.__listeners[botId];
 			if (existing) {
-				if (toRaw(existing.conn) === conn) return; // 同实例，无需重复
+				if (toRaw(existing.conn) === toRaw(conn)) return; // 同实例，无需重复
 				// conn 实例已替换，先移除旧 listener
 				try { existing.conn.off('event:agent', existing.handler); } catch { /* 旧 conn 可能已销毁 */ }
 			}
