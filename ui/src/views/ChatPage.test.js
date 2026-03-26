@@ -493,18 +493,21 @@ describe('ChatPage watchers', () => {
 		expect(cancelSpy).toHaveBeenCalled();
 	});
 
-	test('bot 重新上线时加载消息', async () => {
+	test('bot 重新上线且连接就绪时 connReady 驱动加载消息', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
 		chatStore.botId = 'bot-1';
+		chatStore.__messagesLoaded = false;
 		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
 
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: false }]);
+		setupAgents();
 		await wrapper.vm.$nextTick();
 
-		// bot 上线
-		botsStore.updateBotOnline('bot-1', true);
+		// bot 上线 + 连接就绪 → connReady 变为 true
+		botsStore.byId['bot-1'].online = true;
+		botsStore.byId['bot-1'].connState = 'connected';
 		await wrapper.vm.$nextTick();
 
 		expect(loadSpy).toHaveBeenCalled();

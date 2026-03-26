@@ -55,7 +55,8 @@ export function initRtcAndSelectTransport(botId, botConn) {
 	function syncTransportMode(mode) {
 		botConn.setTransportMode(mode);
 		getBotsStore().then((store) => {
-			store.transportModes = { ...store.transportModes, [botId]: mode };
+			const bot = store.byId[botId];
+			if (bot) bot.transportMode = mode;
 		}).catch(() => {});
 	}
 
@@ -88,9 +89,11 @@ export function initRtcAndSelectTransport(botId, botConn) {
 		// 状态变更 → 同步到 botsStore + 不可恢复时降级
 		rtc.onStateChange = () => {
 			getBotsStore().then((store) => {
-				store.rtcStates = { ...store.rtcStates, [botId]: rtc.state };
+				const bot = store.byId[botId];
+				if (!bot) return;
+				bot.rtcState = rtc.state;
 				if (rtc.transportInfo) {
-					store.rtcTransportInfo = { ...store.rtcTransportInfo, [botId]: rtc.transportInfo };
+					bot.rtcTransportInfo = rtc.transportInfo;
 				}
 			}).catch(() => {});
 

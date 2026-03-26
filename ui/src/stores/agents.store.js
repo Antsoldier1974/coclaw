@@ -41,7 +41,7 @@ export const useAgentsStore = defineStore('agents', {
 				const id = agent?.identity;
 				const isDefault = agentId === (entry?.defaultId || 'main');
 				const botsStore = useBotsStore();
-				const bot = botsStore.items.find((b) => String(b.id) === String(botId));
+				const bot = botsStore.byId[String(botId)];
 				const botName = bot?.name || null;
 
 				// 排除无信息量的名称（gateway 默认 "Assistant" 或与 agentId 相同的占位值）

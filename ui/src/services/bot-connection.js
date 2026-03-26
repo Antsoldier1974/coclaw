@@ -90,6 +90,8 @@ export class BotConnection {
 		// 连接感知时间戳
 		/** @type {number} 最后一次确认连接活着的时间（收到任何 WS 消息时更新） */
 		this.__lastAliveAt = 0;
+		/** @type {((ts: number) => void) | null} 外部回调：每次确认连接存活时调用 */
+		this.__onAlive = null;
 		/** @type {number} 断连时间戳（state → disconnected 时记录） */
 		this.__disconnectedAt = 0;
 		/** @type {number | null} probe 定时器 */
@@ -497,6 +499,7 @@ export class BotConnection {
 	__resetHbTimeout() {
 		this.__hbMissCount = 0;
 		this.__lastAliveAt = Date.now();
+		if (this.__onAlive) this.__onAlive(this.__lastAliveAt);
 		if (this.__hbTimer) clearTimeout(this.__hbTimer);
 		this.__hbTimer = setTimeout(() => {
 			this.__onHbMiss();

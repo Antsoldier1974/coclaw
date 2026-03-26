@@ -11,10 +11,10 @@ import { useBotConnections } from '../services/bot-connection-manager.js';
 import { fileToBase64 } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
+import { waitForConnected } from '../utils/wait-connected.js';
+import { useBotsStore } from './bots.store.js';
 
 const MSG_PAGE_SIZE = 50;
-/** 重连刷新去抖时间 */
-const RECONNECT_REFRESH_DEBOUNCE_MS = 3000;
 
 /**
  * 创建 ChatStore 实例
@@ -83,9 +83,6 @@ export function createChatStore(storeKey, opts = {}) {
 			__slashCommandTimer: null,
 			__slashCommandResolve: null,
 			__slashCommandReject: null,
-			__connStateHandler: null,
-			__connRetryTimer: null,
-			__reconnectDebounceTimer: null,
 			__silentLoadPromise: null,
 		}),
 		getters: {
@@ -124,23 +121,16 @@ export function createChatStore(storeKey, opts = {}) {
 			async activate({ skipLoad = false } = {}) {
 				if (!this.__initialized) {
 					this.__initialized = true;
-					if (!this.botId) return;
-
-					if (skipLoad) {
-						this.__registerConnStateListener();
-						return;
-					}
+					if (!this.botId || skipLoad) return;
 
 					const conn = this.__getConnection();
 					if (!conn || conn.state !== 'connected') {
-						console.debug('[chat] activate: connection not ready, stay loading');
+						console.debug('[chat] activate: connection not ready, waiting for connReady');
 						this.loading = true;
-						this.__registerConnStateListener();
 						return;
 					}
 
 					await this.loadMessages();
-					this.__registerConnStateListener();
 					if (!this.topicMode) this.__loadChatHistory();
 					return;
 				}
@@ -536,26 +526,12 @@ export function createChatStore(storeKey, opts = {}) {
 							this.__streamingTimer = null;
 						}
 						this.sending = false;
-						const reconn = this.__getConnection();
-						if (reconn) {
-							const reconnected = await new Promise((resolve) => {
-								const timeout = setTimeout(() => { reconn.off('state', onState); resolve(false); }, 15_000);
-								const onState = (state) => {
-									if (state === 'connected') {
-										clearTimeout(timeout);
-										reconn.off('state', onState);
-										resolve(true);
-									}
-								};
-								if (reconn.state === 'connected') { clearTimeout(timeout); resolve(true); }
-								else reconn.on('state', onState);
-							});
-							if (reconnected) {
-								console.debug('[chat] reconnected after accepted, reconciling messages');
-								if (runsStore.isRunning(runKey)) runsStore.settle(runKey);
-								await this.__reconcileMessages();
-							}
-						}
+						try {
+							await waitForConnected(useBotsStore(), this.botId, 15_000);
+							console.debug('[chat] reconnected after accepted, reconciling messages');
+							if (runsStore.isRunning(runKey)) runsStore.settle(runKey);
+							await this.__reconcileMessages();
+						} catch {}
 						return { accepted: true };
 					}
 					// 断连且尚未 accepted：等待重连后自动重试一次
@@ -563,31 +539,16 @@ export function createChatStore(storeKey, opts = {}) {
 						console.debug('[chat] ws closed before accepted, waiting for reconnect to retry');
 						this.__cleanupStreaming();
 						this.sending = false;
-						const reconn = this.__getConnection();
-						if (reconn) {
-							const reconnected = await new Promise((resolve) => {
-								const timeout = setTimeout(() => { reconn.off('state', onState); resolve(false); }, 15_000);
-								const onState = (state) => {
-									if (state === 'connected') {
-										clearTimeout(timeout);
-										reconn.off('state', onState);
-										resolve(true);
-									}
-								};
-								if (reconn.state === 'connected') { clearTimeout(timeout); resolve(true); }
-								else reconn.on('state', onState);
-							});
-							if (reconnected) {
-								console.debug('[chat] reconnected, retrying sendMessage');
-								this.__retried = true;
-								try {
-									return await this.sendMessage(text, files);
-								}
-								finally {
-									this.__retried = false;
-								}
+						try {
+							await waitForConnected(useBotsStore(), this.botId, 15_000);
+							console.debug('[chat] reconnected, retrying sendMessage');
+							this.__retried = true;
+							try {
+								return await this.sendMessage(text, files);
+							} finally {
+								this.__retried = false;
 							}
-						}
+						} catch {}
 					}
 					if (this.__accepted) {
 						// 已被服务端接受，保留消息并从服务端拉取真实状态
@@ -803,10 +764,6 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__cancelReject(err);
 					this.__cancelReject = null;
 				}
-				if (this.__reconnectDebounceTimer) {
-					clearTimeout(this.__reconnectDebounceTimer);
-					this.__reconnectDebounceTimer = null;
-				}
 				if (this.__streamingTimer) {
 					clearTimeout(this.__streamingTimer);
 					this.__streamingTimer = null;
@@ -821,7 +778,6 @@ export function createChatStore(storeKey, opts = {}) {
 			dispose() {
 				console.debug('[chat] dispose topicMode=%s runKey=%s', this.topicMode, this.runKey);
 				this.cleanup();
-				this.__unregisterConnStateListener();
 			},
 
 			// --- 历史懒加载 ---
@@ -911,61 +867,6 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 				finally {
 					this.historyLoading = false;
-				}
-			},
-
-			// --- WS 重连监听 ---
-
-			__registerConnStateListener() {
-				this.__unregisterConnStateListener();
-				const conn = this.__getConnection();
-				if (!conn) {
-					// 连接尚未创建（页面刷新时 botsStore 未就绪），延迟重试
-					console.debug('[chat] conn not available, retry in 500ms');
-					this.__connRetryTimer = setTimeout(() => {
-						this.__connRetryTimer = null;
-						this.__registerConnStateListener();
-					}, 500);
-					return;
-				}
-				const handler = (newState) => {
-					if (newState === 'connected') {
-						if (this.sending) {
-							console.debug('[chat] ws reconnected but sending, skip reload');
-							return;
-						}
-						// debounce：短时间内多次重连只触发一次刷新
-						if (this.__reconnectDebounceTimer) clearTimeout(this.__reconnectDebounceTimer);
-						this.__reconnectDebounceTimer = setTimeout(() => {
-							this.__reconnectDebounceTimer = null;
-							console.debug('[chat] ws reconnected (debounced), reloading messages');
-							this.loadMessages({ silent: true, limit: this.__loadedMsgLimit });
-						}, RECONNECT_REFRESH_DEBOUNCE_MS);
-					}
-				};
-				this.__connStateHandler = handler;
-				conn.on('state', handler);
-				// 注册后立即 re-check
-				if (conn.state === 'connected' && this.loading) {
-					console.debug('[chat] re-check: conn already connected, triggering load');
-					this.loadMessages({ silent: true, limit: this.__loadedMsgLimit })
-						.then((ok) => { if (ok) this.__loadChatHistory(); })
-						.catch(() => {});
-				}
-			},
-
-			__unregisterConnStateListener() {
-				if (this.__connRetryTimer) {
-					clearTimeout(this.__connRetryTimer);
-					this.__connRetryTimer = null;
-				}
-				if (!this.__connStateHandler) return;
-				const conn = this.__getConnection();
-				if (conn) conn.off('state', this.__connStateHandler);
-				this.__connStateHandler = null;
-				if (this.__reconnectDebounceTimer) {
-					clearTimeout(this.__reconnectDebounceTimer);
-					this.__reconnectDebounceTimer = null;
 				}
 			},
 

@@ -120,7 +120,6 @@ import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 import { chatStoreManager } from '../stores/chat-store-manager.js';
-import { useBotConnections } from '../services/bot-connection-manager.js';
 import { groupSessionMessages } from '../utils/session-msg-group.js';
 import { isCapacitorApp } from '../utils/platform.js';
 import { usePullRefreshSuppress } from '../composables/use-pull-refresh.js';
@@ -211,8 +210,8 @@ export default {
 		newTopicReady() {
 			if (!this.isNewTopic) return false;
 			if (!this.newTopicBotId) return false;
-			const conn = this.__getBotConnection(this.newTopicBotId);
-			return conn?.state === 'connected';
+			const bot = this.botsStore.byId[this.newTopicBotId];
+			return bot?.connState === 'connected';
 		},
 		/** 当前上下文的 agentId */
 		currentAgentId() {
@@ -237,7 +236,7 @@ export default {
 		isBotOffline() {
 			const botId = this.currentBotId;
 			if (!botId) return false;
-			const bot = this.botsStore.items.find((b) => String(b.id) === String(botId));
+			const bot = this.botsStore.byId[botId];
 			return bot ? !bot.online : true;
 		},
 		chatTitle() {
@@ -285,6 +284,18 @@ export default {
 			if (!this.routeBotId || this.isBotOffline) return false;
 			const entry = this.agentsStore.byBot[this.routeBotId];
 			return !entry?.fetched;
+		},
+		/**
+		 * 连接就绪：bot 在线 + connState === 'connected' + (topic 或 agent 已验证)
+		 * 驱动首次/重连消息加载，消除时序依赖
+		 */
+		connReady() {
+			if (this.isNewTopic || !this.chatStore) return false;
+			const bot = this.botsStore.byId[this.currentBotId];
+			if (!bot || !bot.online) return false;
+			if (bot.connState !== 'connected') return false;
+			if (this.isTopicRoute) return true;
+			return this.agentVerified;
 		},
 		/**
 		 * 消息加载中（计算属性，替代 chatStore.loading 避免命令式标志卡住）
@@ -365,7 +376,15 @@ export default {
 			if (offline) {
 				this.chatStore?.cancelSend();
 			}
-			else if (!this.isNewTopic && this.chatStore) {
+			// 上线后由 connReady watcher 驱动消息加载
+		},
+		/** connReady 驱动消息加载：首次加载或重连刷新 */
+		connReady(ready) {
+			if (!ready || !this.chatStore) return;
+			if (!this.chatStore.__messagesLoaded) {
+				this.chatStore.loadMessages();
+				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
+			} else {
 				this.chatStore.loadMessages({ silent: true });
 			}
 		},
@@ -426,7 +445,7 @@ export default {
 				return;
 			}
 			// 插件版本过低时话题功能不可用
-			if (this.botsStore.pluginVersionOk[String(botId)] === false) {
+			if (this.botsStore.byId[String(botId)]?.pluginVersionOk === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 				return;
 			}
@@ -552,11 +571,6 @@ export default {
 			this.chatStore?.cleanup();
 			this.notify.warning(message);
 			this.$router.replace('/');
-		},
-
-		__getBotConnection(botId) {
-			if (!botId) return null;
-			return useBotConnections().get(String(botId)) ?? null;
 		},
 
 		/** 分隔线标签 */

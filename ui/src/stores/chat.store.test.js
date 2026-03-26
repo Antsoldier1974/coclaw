@@ -3,7 +3,7 @@ import { setActivePinia, createPinia } from 'pinia';
 
 import { createChatStore } from './chat.store.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
-import { useBotsStore } from './bots.store.js';
+import { useBotsStore, __resetAwaitingConnIds as __resetBotStoreInternals } from './bots.store.js';
 
 // 兼容旧测试：创建默认空 session store，可手动设置状态字段
 // 同一 Pinia 实例中多次调用返回同一 store（与原 useChatStore 行为一致）
@@ -72,6 +72,7 @@ describe('useChatStore', () => {
 		setActivePinia(createPinia());
 		mockConnections.clear();
 		vi.clearAllMocks();
+		__resetBotStoreInternals();
 	});
 
 	afterEach(() => {
@@ -704,6 +705,8 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 且未 accepted 时等待重连后自动重试一次', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
+			// waitForConnected 读取 byId.connState
+			botsStore.byId['1'].connState = 'connected';
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -780,6 +783,9 @@ describe('useChatStore', () => {
 				store.sendMessage('hello'),
 			]);
 
+			// 恢复被覆盖的 get 方法，避免污染后续测试
+			mockConnections.get = origGet;
+
 			expect(result.status).toBe('rejected');
 			expect(result.reason.code).toBe('WS_CLOSED');
 		});
@@ -787,6 +793,7 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 重试本身再次失败时不二次重试，直接抛出', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].connState = 'connected';
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -815,6 +822,7 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 且已 accepted 时不抛出，等重连后 reconcile', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].connState = 'connected';
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -2072,14 +2080,26 @@ describe('useChatStore', () => {
 	});
 
 	// =====================================================================
-	// WS 重连监听（__connStateHandler）
+	// activate 简化（连接监听已移至 botsStore 响应式桥接）
 	// =====================================================================
 
-	describe('WS 重连监听', () => {
-		beforeEach(() => { vi.useFakeTimers(); });
-		afterEach(() => { vi.useRealTimers(); });
+	describe('activate 简化', () => {
+		test('连接未就绪时 activate 标记 loading 并等待 connReady 驱动', async () => {
+			const conn = mockConn({ state: 'connecting' });
+			mockConnections.set('1', conn);
 
-		test('WS 重连后自动 reload messages（session 模式）', async () => {
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
+
+			expect(store.__initialized).toBe(true);
+			expect(store.loading).toBe(true);
+			expect(store.messages).toHaveLength(0);
+			// chatStore 不再注册 conn.on('state')
+			const stateCalls = conn.on.mock.calls.filter((c) => c[0] === 'state');
+			expect(stateCalls).toHaveLength(0);
+		});
+
+		test('连接就绪时 activate 直接加载消息', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn, {
 				flatMessages: [{ role: 'user', content: 'hello' }],
@@ -2089,275 +2109,41 @@ describe('useChatStore', () => {
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
 
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			expect(stateCall).toBeTruthy();
-			const stateHandler = stateCall[1];
-
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({
-						messages: [
-							{ role: 'user', content: 'hello' },
-							{ role: 'assistant', content: 'world' },
-						],
-					});
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'cur-sess' });
-				}
-				return Promise.resolve(null);
-			});
-
-			stateHandler('connected');
-			vi.advanceTimersByTime(3000);
-			await vi.waitFor(() => {
-				expect(store.messages).toHaveLength(2);
-			});
+			expect(store.__initialized).toBe(true);
+			expect(store.__messagesLoaded).toBe(true);
+			expect(store.messages).toHaveLength(1);
 		});
 
-		test('WS 重连后自动 reload messages（topic 模式）', async () => {
+		test('skipLoad 时 activate 不加载消息', async () => {
 			const conn = mockConn();
-			conn.request.mockImplementation((method) => {
-				if (method === 'coclaw.sessions.getById') {
-					return Promise.resolve({
-						messages: [{ type: 'message', id: 'm1', message: { role: 'user', content: 'topic msg' } }],
-					});
-				}
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
-			await store.activate();
-
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			expect(stateCall).toBeTruthy();
-			const stateHandler = stateCall[1];
-
-			conn.request.mockImplementation((method) => {
-				if (method === 'coclaw.sessions.getById') {
-					return Promise.resolve({
-						messages: [
-							{ type: 'message', id: 'm1', message: { role: 'user', content: 'topic msg' } },
-							{ type: 'message', id: 'm2', message: { role: 'assistant', content: 'reply' } },
-						],
-					});
-				}
-				return Promise.resolve(null);
-			});
-
-			stateHandler('connected');
-			vi.advanceTimersByTime(3000);
-			await vi.waitFor(() => {
-				expect(store.messages).toHaveLength(2);
-			});
-		});
-
-		test('disconnected 状态不触发 reload', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn, {
-				flatMessages: [{ role: 'user', content: 'hi' }],
-			});
 			mockConnections.set('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
-			await store.activate();
-			const callCountBefore = conn.request.mock.calls.length;
+			await store.activate({ skipLoad: true });
 
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			const stateHandler = stateCall[1];
-
-			stateHandler('disconnected');
-			await Promise.resolve();
-			expect(conn.request.mock.calls.length).toBe(callCountBefore);
+			expect(store.__initialized).toBe(true);
+			expect(store.messages).toHaveLength(0);
+			expect(conn.request).not.toHaveBeenCalled();
 		});
 
-		test('dispose() 后 state 监听被清理', async () => {
+		test('dispose 不再涉及 conn 监听清理', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn);
 			mockConnections.set('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
-
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			const handler = stateCall[1];
-
 			store.dispose();
 
+			// chatStore 不再管理 conn.on/off('state')
 			const offStateCalls = conn.off.mock.calls.filter((c) => c[0] === 'state');
-			expect(offStateCalls.some((c) => c[1] === handler)).toBe(true);
-			expect(store.__connStateHandler).toBeNull();
+			expect(offStateCalls).toHaveLength(0);
 		});
+	});
 
-		test('连接未就绪时也注册 state 监听（首次 connect 时自动加载）', async () => {
-			const conn = mockConn({ state: 'connecting' });
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({ messages: [{ role: 'user', content: 'delayed' }] });
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'sess-1' });
-				}
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
-			await store.activate();
-
-			expect(store.loading).toBe(true);
-			expect(store.messages).toHaveLength(0);
-
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			expect(stateCall).toBeTruthy();
-			const stateHandler = stateCall[1];
-
-			conn.state = 'connected';
-			stateHandler('connected');
-			vi.advanceTimersByTime(3000);
-			await vi.waitFor(() => {
-				expect(store.messages).toHaveLength(1);
-				expect(store.loading).toBe(false);
-			});
-		});
-
-		test('注册 listener 后 re-check：连接已就绪时立即触发 loadMessages 和 loadChatHistory', async () => {
-			const conn = mockConn({ state: 'connecting' });
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({ messages: [{ role: 'user', content: 're-check' }] });
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'sess-1' });
-				}
-				if (method === 'coclaw.chatHistory.list') {
-					return Promise.resolve({ history: [{ sessionId: 'h1', archivedAt: 100 }] });
-				}
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
-			const origOn = conn.on;
-			conn.on = vi.fn((...args) => {
-				origOn(...args);
-				conn.state = 'connected';
-			});
-
-			await store.activate();
-
-			await vi.waitFor(() => {
-				expect(store.messages).toHaveLength(1);
-				expect(store.loading).toBe(false);
-			});
-			await vi.waitFor(() => {
-				expect(store.historySessionIds).toHaveLength(1);
-			});
-		});
-
-		test('sending 状态下重连不触发 loadMessages', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn, {
-				flatMessages: [{ role: 'user', content: 'hello' }],
-			});
-			mockConnections.set('1', conn);
-
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
-			await store.activate();
-
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			const stateHandler = stateCall[1];
-
-			const callCountBefore = conn.request.mock.calls.length;
-
-			store.sending = true;
-			stateHandler('connected');
-			await Promise.resolve();
-
-			expect(conn.request.mock.calls.length).toBe(callCountBefore);
-		});
-
-		test('重连时使用已加载的 limit（保留翻页进度）', async () => {
-			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({
-				role: 'user', content: `msg-${i}`,
-			}));
-			const conn = mockConn();
-			setupConnForLoad(conn, { flatMessages: initialMsgs });
-			mockConnections.set('1', conn);
-
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
-			await store.activate();
-			expect(store.hasMoreMessages).toBe(true);
-
-			const expandedMsgs = Array.from({ length: 100 }, (_, i) => ({
-				role: 'user', content: `msg-${i}`,
-			}));
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({ messages: expandedMsgs });
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'cur-sess' });
-				}
-				return Promise.resolve(null);
-			});
-			await store.loadOlderMessages();
-			expect(store.__loadedMsgLimit).toBe(100);
-
-			conn.request.mockClear();
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({ messages: expandedMsgs });
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'cur-sess' });
-				}
-				return Promise.resolve(null);
-			});
-
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			const stateHandler = stateCall[1];
-			stateHandler('connected');
-			vi.advanceTimersByTime(3000);
-
-			await vi.waitFor(() => {
-				const sessGetCall = conn.request.mock.calls.find((c) => c[0] === 'sessions.get');
-				expect(sessGetCall).toBeTruthy();
-				expect(sessGetCall[1].limit).toBe(100);
-			});
-		});
-
-		test('debounce：短时间内多次重连只触发一次 loadMessages', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn, {
-				flatMessages: [{ role: 'user', content: 'hello' }],
-			});
-			mockConnections.set('1', conn);
-
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
-			await store.activate();
-
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			const stateHandler = stateCall[1];
-			const callCountBefore = conn.request.mock.calls.length;
-
-			// 模拟 3 次快速重连
-			stateHandler('connected');
-			vi.advanceTimersByTime(500);
-			stateHandler('connected');
-			vi.advanceTimersByTime(500);
-			stateHandler('connected');
-			vi.advanceTimersByTime(3000);
-
-			await vi.waitFor(() => {
-				// 应只触发 1 次 sessions.get（最后一次 debounce 后的）
-				const sessGetCalls = conn.request.mock.calls.filter(
-					(c) => c[0] === 'sessions.get',
-				);
-				expect(sessGetCalls.length - (callCountBefore > 0 ? 1 : 0)).toBe(1);
-			});
-		});
+	describe('飞行中守卫与 reconcile', () => {
+		beforeEach(() => { vi.useFakeTimers(); });
+		afterEach(() => { vi.useRealTimers(); });
 
 		test('飞行中守卫：silent 模式下并发 loadMessages 不会发起多次请求', async () => {
 			const conn = mockConn();
@@ -2382,52 +2168,13 @@ describe('useChatStore', () => {
 			store.loadMessages({ silent: true });
 			store.loadMessages({ silent: true });
 
-			// 应只发起 1 次 sessions.get 请求
 			expect(reqCount).toBe(1);
 
-			// resolve 后应允许新请求
 			resolveReq({ messages: [] });
 			await vi.advanceTimersByTimeAsync(0);
 
 			store.loadMessages({ silent: true });
 			expect(reqCount).toBe(2);
-		});
-
-		test('conn 不存在时 __registerConnStateListener 延迟重试', async () => {
-			// 初始无连接
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
-			await store.activate();
-
-			// activate 设置了 loading 但未注册 listener
-			expect(store.loading).toBe(true);
-			expect(store.__connStateHandler).toBeNull();
-			expect(store.__connRetryTimer).not.toBeNull();
-
-			// 500ms 后连接出现并已就绪
-			const conn = mockConn();
-			setupConnForLoad(conn, {
-				flatMessages: [{ role: 'user', content: 'delayed' }],
-			});
-			mockConnections.set('1', conn);
-
-			vi.advanceTimersByTime(500);
-			// 重试后应注册 listener
-			expect(store.__connStateHandler).not.toBeNull();
-			// re-check 触发 loadMessages（conn 已 connected 且 loading=true）
-			await vi.waitFor(() => {
-				expect(store.messages).toHaveLength(1);
-				expect(store.loading).toBe(false);
-				expect(store.__messagesLoaded).toBe(true);
-			});
-		});
-
-		test('dispose 清理 connRetryTimer', async () => {
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
-			await store.activate();
-
-			expect(store.__connRetryTimer).not.toBeNull();
-			store.dispose();
-			expect(store.__connRetryTimer).toBeNull();
 		});
 
 		test('loadMessages 成功后调用 reconcileRunAfterLoad', async () => {
@@ -2443,7 +2190,6 @@ describe('useChatStore', () => {
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
 
-			// 注册一个僵尸 run（lastEventAt = 0，事件流从未更新）
 			const runsStore = useAgentRunsStore();
 			runsStore.register('run-zombie', {
 				botId: '1',
@@ -2454,10 +2200,8 @@ describe('useChatStore', () => {
 			});
 			expect(runsStore.isRunning(store.runKey)).toBe(true);
 
-			// 重新加载消息（模拟重连后静默刷新）
 			await store.loadMessages({ silent: true });
 
-			// 僵尸 run 应被 reconcile settle（lastEventAt=0 视为静默，服务端有 stopReason=stop）
 			expect(runsStore.isRunning(store.runKey)).toBe(false);
 		});
 	});

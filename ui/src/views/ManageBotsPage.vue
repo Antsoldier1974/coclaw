@@ -116,12 +116,13 @@ export default {
 		},
 		connLabel(botId) {
 			const id = String(botId);
-			const mode = this.botsStore?.transportModes[id];
+			const bot = this.botsStore?.byId[id];
+			if (!bot) return this.$t('bots.conn.ws');
+			const mode = bot.transportMode;
 			if (mode === 'rtc') {
-				const rtcState = this.botsStore?.rtcStates[id];
-				if (rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
-				if (rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
-				const info = this.botsStore?.rtcTransportInfo[id];
+				if (bot.rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
+				if (bot.rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
+				const info = bot.rtcTransportInfo;
 				if (!info) return this.$t('bots.conn.rtcConnecting');
 				if (info.localType === 'relay') {
 					const rp = (info.relayProtocol ?? 'udp').toLowerCase();
@@ -140,17 +141,17 @@ export default {
 			return this.$t('bots.conn.ws');
 		},
 		hasConnDetail(botId) {
-			return !!this.botsStore?.rtcTransportInfo[String(botId)];
+			return !!this.botsStore?.byId[String(botId)]?.rtcTransportInfo;
 		},
 		getConnDetail(botId) {
-			return this.botsStore?.rtcTransportInfo[String(botId)] ?? null;
+			return this.botsStore?.byId[String(botId)]?.rtcTransportInfo ?? null;
 		},
 		toggleDetail(botId) {
 			const id = String(botId);
 			this.expandedDetails = { ...this.expandedDetails, [id]: !this.expandedDetails[id] };
 		},
 		goToAgent(botId, agentId) {
-			if (this.botsStore?.pluginVersionOk[String(botId)] === false) {
+			if (this.botsStore?.byId[String(botId)]?.pluginVersionOk === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 			}
 			this.$router.push({
