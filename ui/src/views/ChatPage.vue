@@ -233,6 +233,10 @@ export default {
 			if (this.isTopicRoute) return this.chatStore?.botId || '';
 			return this.routeBotId;
 		},
+		/** bot ID 列表快照（仅用于检测 bot 增删，避免 deep watch） */
+		botIds() {
+			return Object.keys(this.botsStore.byId).join(',');
+		},
 		isBotOffline() {
 			const botId = this.currentBotId;
 			if (!botId) return false;
@@ -363,11 +367,8 @@ export default {
 				}
 			},
 		},
-		/** bot/agent 存在性验证 */
-		'botsStore.items': {
-			deep: true,
-			handler() { this.__validateRoute(); },
-		},
+		/** bot 列表变化（增删）时验证路由 — 避免 deep watch 被高频 lastAliveAt 更新触发 */
+		botIds() { this.__validateRoute(); },
 		'agentsStore.byBot': {
 			deep: true,
 			handler() { if (!this.isTopicRoute) this.__validateRoute(); },
