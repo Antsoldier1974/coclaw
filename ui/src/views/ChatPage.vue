@@ -156,6 +156,8 @@ export default {
 			__isFirstRound: false,
 			// 新建 topic 流程进行中，抑制 watcher 的重复激活
 			__creatingTopic: false,
+			// 历史加载进行中，阻止 scrollToBottom 干扰位置恢复
+			__loadingHistory: false,
 		};
 	},
 	computed: {
@@ -379,21 +381,34 @@ export default {
 			// 上线后由 connReady watcher 驱动消息加载
 		},
 		/** connReady 驱动消息加载：首次加载或重连刷新 */
-		connReady(ready) {
+		async connReady(ready) {
 			if (!ready || !this.chatStore) return;
 			// 与 __handleForegroundResume 去重
 			this.__lastResumeAt = Date.now();
 			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
 			this.chatStore.__reconcileSlashCommand();
-			if (!this.chatStore.__messagesLoaded) {
-				this.chatStore.loadMessages();
+			const isFirstLoad = !this.chatStore.__messagesLoaded;
+			if (isFirstLoad) {
+				await this.chatStore.loadMessages();
+				if (this.__unmounted || !this.chatStore) return;
 				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
 			} else {
 				this.chatStore.loadMessages({ silent: true });
 			}
+			// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
+			if (isFirstLoad) {
+				this.$nextTick(() => {
+					this.scrollToBottom(true);
+					this.__autoFillHistory();
+				});
+			}
 		},
-		chatMessages() {
+		chatMessages(msgs, oldMsgs) {
 			this.scrollToBottom();
+			// 从空到非空：首次消息渲染完成，检测是否需要自动填充历史
+			if (msgs.length > 0 && (!oldMsgs || oldMsgs.length === 0)) {
+				this.$nextTick(() => this.__autoFillHistory());
+			}
 		},
 	},
 	mounted() {
@@ -410,6 +425,7 @@ export default {
 		document.addEventListener('visibilitychange', this.__onVisibility);
 	},
 	beforeUnmount() {
+		this.__unmounted = true;
 		this.unsuppressPullRefresh();
 		this.chatStore?.cleanup();
 		if (this.__onForeground) {
@@ -639,13 +655,21 @@ export default {
 			}
 		},
 
-		scrollToBottom() {
+		scrollToBottom(force = false) {
 			const el = this.$refs.scrollContainer;
-			if (el?.scrollTo && !this.userScrolledUp) {
-				this.$nextTick(() => {
-					el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+			if (!el?.scrollTo) return;
+			if (!force && this.userScrolledUp) return;
+			if (this.__loadingHistory) return;
+
+			this.$nextTick(() => {
+				el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+				// 兜底：DOM 高度可能在 $nextTick 后仍未稳定，下一帧再校验一次
+				requestAnimationFrame(() => {
+					if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
+						el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+					}
 				});
-			}
+			});
 		},
 		onScroll() {
 			const el = this.$refs.scrollContainer;
@@ -665,39 +689,56 @@ export default {
 			}
 		},
 
+		/** 消息加载后若内容不足以填满容器，主动加载历史 */
+		__autoFillHistory() {
+			if (this.isTopicRoute) return;
+			const el = this.$refs.scrollContainer;
+			if (el && el.scrollHeight <= el.clientHeight) {
+				this.__loadMoreHistory();
+			}
+		},
+
 		async __loadMoreHistory() {
-			if (!this.chatStore) return;
-			// 优先加载当前 session 内的更早消息
-			if (this.chatStore.hasMoreMessages && !this.chatStore.messagesLoading) {
+			if (!this.chatStore || this.__loadingHistory) return;
+			this.__loadingHistory = true;
+			try {
+				// 优先加载当前 session 内的更早消息
+				if (this.chatStore.hasMoreMessages && !this.chatStore.messagesLoading) {
+					const el = this.$refs.scrollContainer;
+					const prevHeight = el?.scrollHeight ?? 0;
+					const loaded = await this.chatStore.loadOlderMessages();
+					if (loaded && el) {
+						this.$nextTick(() => {
+							const newHeight = el.scrollHeight;
+							el.scrollTop += (newHeight - prevHeight);
+						});
+					}
+					return;
+				}
+
+				if (this.chatStore.historyExhausted || this.chatStore.historyLoading) {
+					if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
+						this.showNoMoreHint = true;
+					}
+					return;
+				}
 				const el = this.$refs.scrollContainer;
 				const prevHeight = el?.scrollHeight ?? 0;
-				const loaded = await this.chatStore.loadOlderMessages();
+				const loaded = await this.chatStore.loadNextHistorySession();
 				if (loaded && el) {
 					this.$nextTick(() => {
 						const newHeight = el.scrollHeight;
 						el.scrollTop += (newHeight - prevHeight);
 					});
 				}
-				return;
-			}
-
-			if (this.chatStore.historyExhausted || this.chatStore.historyLoading) {
 				if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
 					this.showNoMoreHint = true;
 				}
-				return;
-			}
-			const el = this.$refs.scrollContainer;
-			const prevHeight = el?.scrollHeight ?? 0;
-			const loaded = await this.chatStore.loadNextHistorySession();
-			if (loaded && el) {
-				this.$nextTick(() => {
-					const newHeight = el.scrollHeight;
-					el.scrollTop += (newHeight - prevHeight);
-				});
-			}
-			if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
-				this.showNoMoreHint = true;
+			} finally {
+				this.__loadingHistory = false;
+				// 历史加载期间若有实时消息到达，其 scrollToBottom 被阻止了，
+				// 此处补偿：若用户本就在底部附近则滚到底部
+				this.$nextTick(() => this.scrollToBottom());
 			}
 		},
 	},
