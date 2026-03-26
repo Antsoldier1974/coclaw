@@ -450,12 +450,7 @@ export default {
 
 			const savedText = this.inputText;
 			const draftKey = this.draftKey;
-			// 清空输入框显示，但在 draftStore 中保留文本（作为 pending draft）
-			// 若发送期间进程被 kill，恢复后 draft 仍可读取
 			this.inputText = '';
-			if (draftKey && savedText) {
-				this.draftStore.setDraft(draftKey, savedText);
-			}
 			this.userScrolledUp = false;
 			this.scrollToBottom();
 
