@@ -427,6 +427,38 @@ describe('useAgentRunsStore', () => {
 	});
 
 	// =====================================================================
+	// ensureListenerForBot
+	// =====================================================================
+
+	describe('ensureListenerForBot', () => {
+		test('botId 或 conn 为 null 时不崩溃', () => {
+			const store = useAgentRunsStore();
+			store.ensureListenerForBot(null, mockConn());
+			store.ensureListenerForBot('1', null);
+			store.ensureListenerForBot(null, null);
+			store.ensureListenerForBot('', mockConn());
+		});
+
+		test('正常调用后 __listeners 中有对应 botId', () => {
+			const store = useAgentRunsStore();
+			const conn = mockConn();
+			store.ensureListenerForBot('bot-1', conn);
+
+			expect(conn.on).toHaveBeenCalledWith('event:agent', expect.any(Function));
+			expect(store.__listeners['bot-1']).toBeTruthy();
+		});
+
+		test('重复调用同一 conn 不重复注册', () => {
+			const store = useAgentRunsStore();
+			const conn = mockConn();
+			store.ensureListenerForBot('bot-1', conn);
+			store.ensureListenerForBot('bot-1', conn);
+
+			expect(conn.on).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	// =====================================================================
 	// conn 实例替换
 	// =====================================================================
 

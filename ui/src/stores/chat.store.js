@@ -132,6 +132,9 @@ export function createChatStore(storeKey, opts = {}) {
 					}
 
 					await this.loadMessages();
+					// 确保本设备有 event:agent 监听（re-entry 进入已有活跃 run 的会话时）
+					const runsStore = useAgentRunsStore();
+					if (conn?.state === 'connected') runsStore.ensureListenerForBot(this.botId, conn);
 					if (!this.topicMode) this.__loadChatHistory();
 					return;
 				}

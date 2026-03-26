@@ -99,6 +99,17 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 
 		/**
+		 * 确保指定 bot 的 connection 上有 event:agent 监听器
+		 * 用于 re-entry 场景（进入已有活跃 run 的会话）
+		 * @param {string} botId
+		 * @param {object} conn
+		 */
+		ensureListenerForBot(botId, conn) {
+			if (!botId || !conn) return;
+			this.__ensureListener(botId, conn);
+		},
+
+		/**
 		 * 结束 run（用户取消或 lifecycle 终态）
 		 * @param {string} runKey
 		 */
