@@ -1186,6 +1186,101 @@ describe('useChatStore', () => {
 
 			expect(store.isMainSession).toBe(false);
 		});
+
+		// --- allMessages 去重 ---
+
+		test('allMessages 合并 streamingMsgs 时跳过已在 messages 中的乐观 user 消息', () => {
+			const store = useChatStore();
+			store.chatSessionKey = 'agent:main:main';
+
+			// 模拟 loadOlderMessages 拉回的服务端消息（含用户发送的消息）
+			store.messages = [
+				{ type: 'message', id: 'oc-0', message: { role: 'assistant', content: 'hi' } },
+				{ type: 'message', id: 'oc-1', message: { role: 'user', content: '你好' } },
+			];
+
+			// 模拟 agentRunsStore 中仍有乐观 user 消息 + 流式 bot 消息
+			const runsStore = useAgentRunsStore();
+			const runId = 'run-1';
+			const runKey = store.runKey;
+			runsStore.runs[runId] = {
+				runId,
+				runKey,
+				settled: false,
+				settling: false,
+				streamingMsgs: [
+					{ type: 'message', id: '__local_user_123', _local: true, message: { role: 'user', content: '你好' } },
+					{ type: 'message', id: '__local_bot_123', _local: true, _streaming: true, message: { role: 'assistant', content: '回复中…' } },
+				],
+			};
+			runsStore.runKeyIndex[runKey] = runId;
+
+			const all = store.allMessages;
+			// 乐观 user 消息应被去重，只保留服务端版本 + 流式 bot 消息
+			const userMsgs = all.filter((m) => m.message.role === 'user');
+			expect(userMsgs).toHaveLength(1);
+			expect(userMsgs[0].id).toBe('oc-1');
+			// 流式 bot 消息保留
+			expect(all.some((m) => m.id === '__local_bot_123')).toBe(true);
+		});
+
+		test('allMessages 无重复时保留全部 streamingMsgs', () => {
+			const store = useChatStore();
+			store.chatSessionKey = 'agent:main:main';
+
+			store.messages = [
+				{ type: 'message', id: 'oc-0', message: { role: 'assistant', content: 'hi' } },
+			];
+
+			const runsStore = useAgentRunsStore();
+			const runId = 'run-2';
+			const runKey = store.runKey;
+			runsStore.runs[runId] = {
+				runId,
+				runKey,
+				settled: false,
+				settling: false,
+				streamingMsgs: [
+					{ type: 'message', id: '__local_user_456', _local: true, message: { role: 'user', content: '新消息' } },
+					{ type: 'message', id: '__local_bot_456', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+				],
+			};
+			runsStore.runKeyIndex[runKey] = runId;
+
+			const all = store.allMessages;
+			expect(all).toHaveLength(3);
+		});
+
+		test('allMessages 对 block 数组内容也能正确去重', () => {
+			const store = useChatStore();
+			store.chatSessionKey = 'agent:main:main';
+
+			const blockContent = [{ type: 'text', text: '带图消息' }, { type: 'image', data: 'abc' }];
+			store.messages = [
+				{ type: 'message', id: 'oc-0', message: { role: 'user', content: blockContent } },
+			];
+
+			const runsStore = useAgentRunsStore();
+			const runId = 'run-3';
+			const runKey = store.runKey;
+			// streamingMsgs 中有相同内容的乐观版本（不同引用但相同结构）
+			runsStore.runs[runId] = {
+				runId,
+				runKey,
+				settled: false,
+				settling: false,
+				streamingMsgs: [
+					{ type: 'message', id: '__local_user_789', _local: true, message: { role: 'user', content: [{ type: 'text', text: '带图消息' }, { type: 'image', data: 'abc' }] } },
+					{ type: 'message', id: '__local_bot_789', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+				],
+			};
+			runsStore.runKeyIndex[runKey] = runId;
+
+			const all = store.allMessages;
+			const userMsgs = all.filter((m) => m.message.role === 'user');
+			expect(userMsgs).toHaveLength(1);
+			expect(userMsgs[0].id).toBe('oc-0');
+		});
 	});
 
 	// =====================================================================
