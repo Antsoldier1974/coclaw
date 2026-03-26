@@ -1910,7 +1910,7 @@ describe('useChatStore', () => {
 	// =====================================================================
 
 	describe('progressive message loading', () => {
-		test('loadMessages 默认 limit 为 50', async () => {
+		test('loadMessages 默认 limit 为 20', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn, { flatMessages: [] });
 			mockConnections.set('1', conn);
@@ -1920,7 +1920,7 @@ describe('useChatStore', () => {
 
 			const sessCall = conn.request.mock.calls.find((c) => c[0] === 'sessions.get');
 			expect(sessCall).toBeTruthy();
-			expect(sessCall[1]).toMatchObject({ limit: 50 });
+			expect(sessCall[1]).toMatchObject({ limit: 20 });
 		});
 
 		test('loadMessages: 返回数 < limit 时 hasMoreMessages=false', async () => {
@@ -1938,29 +1938,29 @@ describe('useChatStore', () => {
 
 		test('loadMessages: 返回数 >= limit 时 hasMoreMessages=true', async () => {
 			const conn = mockConn();
-			const msgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			const msgs = Array.from({ length: 20 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: msgs });
 			mockConnections.set('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
 
-			expect(store.messages).toHaveLength(50);
+			expect(store.messages).toHaveLength(20);
 			expect(store.hasMoreMessages).toBe(true);
 		});
 
 		test('loadOlderMessages 增大 limit 向前加载并 prepend 到列表', async () => {
 			const conn = mockConn();
-			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i + 50}` }));
+			const initialMsgs = Array.from({ length: 20 }, (_, i) => ({ role: 'user', content: `msg-${i + 20}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
 			expect(store.hasMoreMessages).toBe(true);
-			expect(store.messages).toHaveLength(50);
+			expect(store.messages).toHaveLength(20);
 
-			const olderMsgs = Array.from({ length: 100 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			const olderMsgs = Array.from({ length: 40 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			conn.request.mockImplementation((method) => {
 				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
 				return Promise.resolve(null);
@@ -1968,14 +1968,14 @@ describe('useChatStore', () => {
 
 			const loaded = await store.loadOlderMessages();
 			expect(loaded).toBe(true);
-			expect(store.messages).toHaveLength(100);
+			expect(store.messages).toHaveLength(40);
 			const lastSessCall = conn.request.mock.calls.filter((c) => c[0] === 'sessions.get').pop();
-			expect(lastSessCall[1]).toMatchObject({ limit: 100 });
+			expect(lastSessCall[1]).toMatchObject({ limit: 40 });
 		});
 
 		test('loadOlderMessages: 返回不足 limit 时 hasMoreMessages 设为 false', async () => {
 			const conn = mockConn();
-			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			const initialMsgs = Array.from({ length: 20 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
@@ -1983,7 +1983,7 @@ describe('useChatStore', () => {
 			await store.activate();
 			expect(store.hasMoreMessages).toBe(true);
 
-			const allMsgs = Array.from({ length: 70 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			const allMsgs = Array.from({ length: 30 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			conn.request.mockImplementation((method) => {
 				if (method === 'sessions.get') return Promise.resolve({ messages: allMsgs });
 				return Promise.resolve(null);
@@ -1991,7 +1991,7 @@ describe('useChatStore', () => {
 
 			await store.loadOlderMessages();
 			expect(store.hasMoreMessages).toBe(false);
-			expect(store.messages).toHaveLength(70);
+			expect(store.messages).toHaveLength(30);
 		});
 
 		test('loadOlderMessages: hasMoreMessages=false 时不触发', async () => {
@@ -2010,7 +2010,7 @@ describe('useChatStore', () => {
 
 		test('loadOlderMessages: 保留本地 streaming 消息', async () => {
 			const conn = mockConn();
-			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			const initialMsgs = Array.from({ length: 20 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
@@ -2022,14 +2022,14 @@ describe('useChatStore', () => {
 				{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: 'thinking...' } },
 			];
 
-			const olderMsgs = Array.from({ length: 80 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			const olderMsgs = Array.from({ length: 30 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			conn.request.mockImplementation((method) => {
 				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
 				return Promise.resolve(null);
 			});
 
 			await store.loadOlderMessages();
-			expect(store.messages).toHaveLength(81);
+			expect(store.messages).toHaveLength(31);
 			const localMsg = store.messages.find((m) => m._local);
 			expect(localMsg).toBeTruthy();
 			expect(localMsg.id).toBe('__local_bot_1');
@@ -2052,7 +2052,7 @@ describe('useChatStore', () => {
 
 		test('loadOlderMessages: 并发防护', async () => {
 			const conn = mockConn();
-			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			const initialMsgs = Array.from({ length: 20 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
@@ -2073,7 +2073,7 @@ describe('useChatStore', () => {
 			expect(store.messagesLoading).toBe(true);
 			expect(await p2).toBe(false);
 
-			const allMsgs = Array.from({ length: 100 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			const allMsgs = Array.from({ length: 40 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			resolveRequest({ messages: allMsgs });
 			expect(await p1).toBe(true);
 			expect(store.messagesLoading).toBe(false);
@@ -2081,7 +2081,7 @@ describe('useChatStore', () => {
 
 		test('不同 store 实例有独立的分页状态', async () => {
 			const conn = mockConn();
-			const msgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			const msgs = Array.from({ length: 20 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: msgs });
 			mockConnections.set('1', conn);
 

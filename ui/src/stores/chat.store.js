@@ -14,7 +14,7 @@ import { useAgentRunsStore } from './agent-runs.store.js';
 import { waitForConnected } from '../utils/wait-connected.js';
 import { useBotsStore } from './bots.store.js';
 
-const MSG_PAGE_SIZE = 50;
+const MSG_PAGE_SIZE = 20;
 
 /**
  * 创建 ChatStore 实例
