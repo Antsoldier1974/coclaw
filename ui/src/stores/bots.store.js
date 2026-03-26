@@ -1,5 +1,4 @@
 import { defineStore } from 'pinia';
-import { watch } from 'vue';
 
 import { listBots } from '../services/bots.api.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
@@ -12,12 +11,10 @@ import { initRtcAndSelectTransport, closeRtcForBot } from '../services/webrtc-co
 
 // 跟踪已桥接的 conn 实例（botId → BotConnection），避免重复注册
 const _bridgedConns = new Map();
-let _watcherStarted = false;
 
 /** @internal 仅供测试重置 */
 export function __resetBotStoreInternals() {
 	_bridgedConns.clear();
-	_watcherStarted = false;
 }
 // 保留旧名兼容测试导入
 export { __resetBotStoreInternals as __resetAwaitingConnIds };
@@ -91,7 +88,6 @@ export const useBotsStore = defineStore('bots', {
 			}
 			const manager = useBotConnections();
 			manager.connect(id);
-			this.__ensureWatcher();
 			this.__bridgeConn(id);
 		},
 		updateBotOnline(botId, online) {
@@ -141,7 +137,6 @@ export const useBotsStore = defineStore('bots', {
 				const manager = useBotConnections();
 				manager.syncConnections(botIds);
 
-				this.__ensureWatcher();
 				for (const id of botIds) {
 					this.__bridgeConn(id);
 				}
@@ -163,9 +158,14 @@ export const useBotsStore = defineStore('bots', {
 			conn.on('state', (s) => {
 				const bot = this.byId[botId];
 				if (!bot) return;
+				const prev = bot.connState;
 				bot.connState = s;
 				if (s === 'disconnected') {
 					bot.disconnectedAt = conn.disconnectedAt;
+				}
+				// connected 转换 → 触发初始化/重连
+				if (s === 'connected' && prev !== 'connected') {
+					this.__onBotConnected(botId);
 				}
 			});
 
@@ -178,39 +178,15 @@ export const useBotsStore = defineStore('bots', {
 			// 同步当前状态（conn 可能已经 connected）
 			const bot = this.byId[botId];
 			if (bot && conn.state !== bot.connState) {
+				const prev = bot.connState;
 				bot.connState = conn.state;
 				if (conn.state === 'connected') {
 					bot.lastAliveAt = conn.lastAliveAt || Date.now();
+					if (prev !== 'connected') {
+						this.__onBotConnected(botId);
+					}
 				}
 			}
-		},
-
-		/**
-		 * 启动响应式 watcher：监听 byId 中各 bot 的 connState 变化
-		 * connState → 'connected' 时触发初始化/重连逻辑
-		 */
-		__ensureWatcher() {
-			if (_watcherStarted) return;
-			_watcherStarted = true;
-			const self = this;
-
-			watch(
-				() => {
-					const states = {};
-					for (const [id, bot] of Object.entries(self.byId)) {
-						states[id] = bot.connState;
-					}
-					return states;
-				},
-				(curr, prev) => {
-					for (const [id, connState] of Object.entries(curr)) {
-						if (connState === 'connected' && prev?.[id] !== 'connected') {
-							self.__onBotConnected(id);
-						}
-					}
-				},
-				{ deep: true },
-			);
 		},
 
 		/**

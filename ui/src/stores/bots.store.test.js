@@ -1,6 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
-import { nextTick } from 'vue';
 
 const mockManager = {
 	connect: vi.fn(),
@@ -158,7 +157,6 @@ describe('addOrUpdateBot', () => {
 
 		// 模拟连接就绪 → bridge 写入 connState → watcher 触发 __onBotConnected
 		stateCallback('connected');
-		await nextTick();
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('10');
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
@@ -181,7 +179,6 @@ describe('addOrUpdateBot', () => {
 		store.addOrUpdateBot({ id: '11', name: 'AlreadyReady' });
 
 		// bridge syncs connState='connected' → watcher fires → __onBotConnected
-		await nextTick();
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('11');
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
@@ -388,7 +385,7 @@ describe('loadBots', () => {
 
 		// 模拟 WS 连接就绪
 		stateCallback('connected');
-		await nextTick();
+
 
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
@@ -413,7 +410,6 @@ describe('loadBots', () => {
 		await store.loadBots();
 
 		// bridge syncs connState='connected', watcher triggers __onBotConnected
-		await nextTick();
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
 		});
@@ -437,7 +433,7 @@ describe('loadBots', () => {
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
 
 		await store.loadBots();
-		await nextTick();
+
 
 		await vi.waitFor(() => {
 			expect(store.byId['1'].pluginVersionOk).toBe(true);
@@ -460,7 +456,7 @@ describe('loadBots', () => {
 		listBots.mockResolvedValue([{ id: '2', name: 'B' }]);
 
 		await store.loadBots();
-		await nextTick();
+
 
 		await vi.waitFor(() => {
 			expect(store.byId['2'].pluginVersionOk).toBe(false);
@@ -501,7 +497,7 @@ describe('WebRTC 集成', () => {
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
 
 		await store.loadBots();
-		await nextTick();
+
 
 		await vi.waitFor(() => {
 			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('1', fakeConn);
@@ -533,7 +529,7 @@ describe('WebRTC 集成', () => {
 		expect(mockInitRtcAndSelectTransport).not.toHaveBeenCalled();
 
 		stateCallback('connected');
-		await nextTick();
+
 
 		await vi.waitFor(() => {
 			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('2', fakeConn);
@@ -586,7 +582,6 @@ describe('重连后批量状态刷新', () => {
 		store.addOrUpdateBot({ id: '20', name: 'Bot' });
 		// 首次 connected：全量初始化
 		stateCallback('connected');
-		await nextTick();
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 		});
@@ -597,12 +592,12 @@ describe('重连后批量状态刷新', () => {
 
 		// 模拟断连
 		stateCallback('disconnected');
-		await nextTick();
+
 
 		// 模拟断连 10s 后重连
 		fakeConn.disconnectedAt = Date.now() - 10_000;
 		stateCallback('connected');
-		await nextTick();
+
 
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
@@ -634,7 +629,6 @@ describe('重连后批量状态刷新', () => {
 
 		store.addOrUpdateBot({ id: '21', name: 'Bot' });
 		stateCallback('connected');
-		await nextTick();
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('21');
 		});
@@ -645,12 +639,12 @@ describe('重连后批量状态刷新', () => {
 
 		// 模拟断连
 		stateCallback('disconnected');
-		await nextTick();
+
 
 		// 模拟短暂抖动（2s）
 		fakeConn.disconnectedAt = Date.now() - 2000;
 		stateCallback('connected');
-		await nextTick();
+
 		await Promise.resolve();
 
 		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
