@@ -510,6 +510,7 @@ export default {
 				this.inputText = '';
 				this.userScrolledUp = false;
 				this.scrollToBottom();
+				if (!this.chatStore) return;
 				const result = await this.chatStore.sendMessage(text, files);
 				if (!result.accepted) {
 					this.inputText = text;
@@ -558,6 +559,7 @@ export default {
 			if (!this.chatStore) return;
 			try {
 				await this.chatStore.sendSlashCommand(cmd);
+				if (!this.chatStore) return;
 
 				if (/^\/(new|reset)\b/i.test(cmd)) {
 					this.showNoMoreHint = false;
@@ -702,6 +704,8 @@ export default {
 					const el = this.$refs.scrollContainer;
 					const prevHeight = el?.scrollHeight ?? 0;
 					const loaded = await this.chatStore.loadOlderMessages();
+					// await 后 chatStore 可能因路由变化变为 null
+					if (!this.chatStore) return;
 					if (loaded && el) {
 						this.$nextTick(() => {
 							const newHeight = el.scrollHeight;
@@ -720,6 +724,8 @@ export default {
 				const el = this.$refs.scrollContainer;
 				const prevHeight = el?.scrollHeight ?? 0;
 				const loaded = await this.chatStore.loadNextHistorySession();
+				// await 后 chatStore 可能因路由变化变为 null
+				if (!this.chatStore) return;
 				if (loaded && el) {
 					this.$nextTick(() => {
 						const newHeight = el.scrollHeight;
