@@ -676,9 +676,12 @@ export default {
 			if (this.__loadingHistory) return;
 
 			this.$nextTick(() => {
+				// 二次检查：$nextTick 排队期间用户可能已上划
+				if (!force && this.userScrolledUp) return;
 				el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 				// 兜底：DOM 高度可能在 $nextTick 后仍未稳定，下一帧再校验一次
 				requestAnimationFrame(() => {
+					if (!force && this.userScrolledUp) return;
 					if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
 						el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 					}

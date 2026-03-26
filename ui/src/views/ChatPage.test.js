@@ -776,4 +776,62 @@ describe('ChatPage scroll', () => {
 			expect(wrapper.vm.userScrolledUp).toBe(true);
 		}
 	});
+
+	test('scrollToBottom $nextTick 内二次检查 userScrolledUp（竞态防护）', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const scrollContainer = wrapper.vm.$refs.scrollContainer;
+		if (!scrollContainer) return;
+
+		const scrollToSpy = vi.fn();
+		scrollContainer.scrollTo = scrollToSpy;
+		Object.defineProperties(scrollContainer, {
+			scrollHeight: { value: 1000, configurable: true },
+			scrollTop: { value: 940, configurable: true, writable: true },
+			clientHeight: { value: 500, configurable: true },
+		});
+
+		// 初始状态：用户在底部
+		wrapper.vm.userScrolledUp = false;
+
+		// 调用 scrollToBottom，同步检查通过，$nextTick 入队
+		wrapper.vm.scrollToBottom();
+
+		// 模拟竞态：$nextTick 排队期间用户上划
+		wrapper.vm.userScrolledUp = true;
+
+		// 等待 $nextTick 和 rAF 执行
+		await wrapper.vm.$nextTick();
+		await new Promise(r => requestAnimationFrame(r));
+
+		// 二次检查应阻止 scrollTo 调用
+		expect(scrollToSpy).not.toHaveBeenCalled();
+	});
+
+	test('scrollToBottom force=true 即使 userScrolledUp 也执行滚动', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const scrollContainer = wrapper.vm.$refs.scrollContainer;
+		if (!scrollContainer) return;
+
+		const scrollToSpy = vi.fn();
+		scrollContainer.scrollTo = scrollToSpy;
+		Object.defineProperties(scrollContainer, {
+			scrollHeight: { value: 1000, configurable: true },
+			scrollTop: { value: 940, configurable: true, writable: true },
+			clientHeight: { value: 500, configurable: true },
+		});
+
+		wrapper.vm.userScrolledUp = true;
+
+		wrapper.vm.scrollToBottom(true);
+
+		await wrapper.vm.$nextTick();
+		await new Promise(r => requestAnimationFrame(r));
+
+		// force=true 时应忽略 userScrolledUp，执行 scrollTo
+		expect(scrollToSpy).toHaveBeenCalled();
+	});
 });
