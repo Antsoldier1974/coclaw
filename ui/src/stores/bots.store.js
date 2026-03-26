@@ -125,7 +125,10 @@ export const useBotsStore = defineStore('bots', {
 					const existing = this.byId[id];
 					if (existing) {
 						// 保留运行时状态（connState、initialized 等），更新基础信息
+						// 若 WS 实际已连接，不让 HTTP 快照的 online 覆盖本地值
+						const preserveOnline = existing.connState === 'connected';
 						Object.assign(existing, b, { id });
+						if (preserveOnline) existing.online = true;
 						newById[id] = existing;
 					} else {
 						newById[id] = createBotState({ ...b, id });
