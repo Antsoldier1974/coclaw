@@ -412,7 +412,7 @@ describe('ChatPage new topic', () => {
 		const { useTopicsStore } = await import('../stores/topics.store.js');
 		const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'sess-1' });
 		const topicsStore = useTopicsStore();
-		topicsStore.items = [{ topicId: 'sess-1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-2' }];
+		topicsStore.byId = { 'sess-1': { topicId: 'sess-1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-2' } };
 		await flushPromises();
 
 		wrapper.vm.onNewTopic();

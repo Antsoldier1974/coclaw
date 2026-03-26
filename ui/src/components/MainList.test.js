@@ -7,6 +7,12 @@ import MainList from './MainList.vue';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 
+function toById(items) {
+	const byId = {};
+	for (const t of items) byId[t.topicId] = t;
+	return byId;
+}
+
 let __mockIsCapacitorApp = false;
 vi.mock('../utils/platform.js', () => ({
 	get isCapacitorApp() { return __mockIsCapacitorApp; },
@@ -148,10 +154,10 @@ test('should render topic items from topics store', async () => {
 	await vi.dynamicImportSettled();
 
 	const topicsStore = useTopicsStore();
-	topicsStore.items = [
+	topicsStore.byId = toById([
 		{ topicId: 't1', agentId: 'main', title: '话题一', createdAt: 2000, botId: 'b1' },
 		{ topicId: 't2', agentId: 'main', title: null, createdAt: 1000, botId: 'b1' },
-	];
+	]);
 	await wrapper.vm.$nextTick();
 
 	expect(wrapper.text()).toContain('话题一');
@@ -164,10 +170,10 @@ test('should sort topics by createdAt desc', async () => {
 	await vi.dynamicImportSettled();
 
 	const topicsStore = useTopicsStore();
-	topicsStore.items = [
+	topicsStore.byId = toById([
 		{ topicId: 't-old', agentId: 'main', title: 'Old', createdAt: 100, botId: 'b1' },
 		{ topicId: 't-new', agentId: 'main', title: 'New', createdAt: 200, botId: 'b1' },
-	];
+	]);
 	await wrapper.vm.$nextTick();
 
 	const items = wrapper.vm.topicItems;
@@ -180,9 +186,9 @@ test('topic items should navigate to topics-chat route', async () => {
 	await vi.dynamicImportSettled();
 
 	const topicsStore = useTopicsStore();
-	topicsStore.items = [
+	topicsStore.byId = toById([
 		{ topicId: 't1', agentId: 'main', title: 'Topic', createdAt: 100, botId: 'b1' },
-	];
+	]);
 	await wrapper.vm.$nextTick();
 
 	const items = wrapper.vm.topicItems;
@@ -218,9 +224,9 @@ test('topic with title should display the title', async () => {
 	await vi.dynamicImportSettled();
 
 	const topicsStore = useTopicsStore();
-	topicsStore.items = [
+	topicsStore.byId = toById([
 		{ topicId: 't1', agentId: 'main', title: '自定义标题', createdAt: 100, botId: 'b1' },
-	];
+	]);
 	await wrapper.vm.$nextTick();
 
 	expect(wrapper.text()).toContain('自定义标题');
@@ -231,9 +237,9 @@ test('topic without title should show untitled', async () => {
 	await vi.dynamicImportSettled();
 
 	const topicsStore = useTopicsStore();
-	topicsStore.items = [
+	topicsStore.byId = toById([
 		{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, botId: 'b1' },
-	];
+	]);
 	await wrapper.vm.$nextTick();
 
 	expect(wrapper.text()).toContain('新话题');
@@ -296,9 +302,9 @@ test('topic icon should show agent initial when no avatar', async () => {
 	await vi.dynamicImportSettled();
 
 	const topicsStore = useTopicsStore();
-	topicsStore.items = [
+	topicsStore.byId = toById([
 		{ topicId: 't1', agentId: 'main', title: 'Test', createdAt: 100, botId: 'b1' },
-	];
+	]);
 	await wrapper.vm.$nextTick();
 
 	const topicNav = wrapper.findAll('nav').at(2); // Group 3

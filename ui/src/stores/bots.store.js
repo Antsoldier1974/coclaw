@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 
 import { listBots } from '../services/bots.api.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useTopicsStore } from './topics.store.js';
@@ -110,6 +111,7 @@ export const useBotsStore = defineStore('bots', {
 			closeRtcForBot(id);
 			useBotConnections().disconnect(id);
 			useSessionsStore().removeSessionsByBotId(id);
+			useAgentRunsStore().removeByBot(id);
 			_bridgedConns.delete(id);
 			delete this.byId[id];
 		},

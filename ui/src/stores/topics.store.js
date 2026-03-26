@@ -11,17 +11,19 @@ let _loadingPromise = null;
 
 export const useTopicsStore = defineStore('topics', {
 	state: () => ({
-		/** @type {{ topicId: string, agentId: string, title: string | null, createdAt: number, botId: string }[]} */
-		items: [],
+		/** @type {Record<string, { topicId: string, agentId: string, title: string | null, createdAt: number, botId: string }>} */
+		byId: {},
 		loading: false,
 	}),
 	getters: {
+		/** 列表视图（供列表渲染和遍历用） */
+		items: (state) => Object.values(state.byId),
 		/**
 		 * 按 topicId 查找 topic
 		 * @returns {(topicId: string) => { topicId: string, agentId: string, title: string | null, createdAt: number, botId: string } | null}
 		 */
 		findTopic: (state) => (topicId) => {
-			return state.items.find((t) => t.topicId === topicId) ?? null;
+			return state.byId[topicId] ?? null;
 		},
 	},
 	actions: {
@@ -33,7 +35,7 @@ export const useTopicsStore = defineStore('topics', {
 			const botsStore = useBotsStore();
 			const bots = botsStore.items ?? [];
 			if (!bots.length) {
-				this.items = [];
+				this.byId = {};
 				return;
 			}
 			const manager = useBotConnections();
@@ -43,7 +45,7 @@ export const useTopicsStore = defineStore('topics', {
 			});
 			if (!connectedBots.length) {
 				console.debug('[topics] loadAll: no connected bots, clearing items');
-				this.items = [];
+				this.byId = {};
 				return;
 			}
 			this.loading = true;
@@ -73,24 +75,24 @@ export const useTopicsStore = defineStore('topics', {
 				);
 			}
 			const results = await Promise.allSettled(tasks);
-			const merged = [];
+			const newById = {};
 			for (const r of results) {
 				if (r.status !== 'fulfilled') {
 					console.warn('[topics] load failed for one agent:', r.reason);
 					continue;
 				}
 				for (const topic of r.value.topics) {
-					merged.push({
+					newById[topic.topicId] = {
 						topicId: topic.topicId,
 						agentId: topic.agentId,
 						title: topic.title ?? null,
 						createdAt: topic.createdAt ?? 0,
 						botId: r.value.botId,
-					});
+					};
 				}
 			}
-			this.items = merged;
-			console.debug('[topics] loadAll: merged %d topic(s)', merged.length);
+			this.byId = newById;
+			console.debug('[topics] loadAll: merged %d topic(s)', Object.keys(newById).length);
 		},
 
 		/**
@@ -105,11 +107,7 @@ export const useTopicsStore = defineStore('topics', {
 			const result = await conn.request('coclaw.topics.create', { agentId });
 			const topicId = result?.topicId;
 			if (!topicId) throw new Error('Failed to create topic');
-			// 插入本地缓存（头部插入，保持倒序）
-			this.items = [
-				{ topicId, agentId, title: null, createdAt: Date.now(), botId: String(botId) },
-				...this.items,
-			];
+			this.byId[topicId] = { topicId, agentId, title: null, createdAt: Date.now(), botId: String(botId) };
 			return topicId;
 		},
 
@@ -123,7 +121,7 @@ export const useTopicsStore = defineStore('topics', {
 			if (!conn || conn.state !== 'connected') throw new Error('Bot not connected');
 			const result = await conn.request('coclaw.topics.delete', { topicId });
 			if (result?.ok === false) throw new Error('Topic not found');
-			this.items = this.items.filter((t) => t.topicId !== topicId);
+			delete this.byId[topicId];
 		},
 
 		/**
@@ -138,10 +136,8 @@ export const useTopicsStore = defineStore('topics', {
 			const result = await conn.request('coclaw.topics.update', { topicId, changes });
 			const updated = result?.topic;
 			if (!updated) throw new Error('Update failed');
-			const idx = this.items.findIndex((t) => t.topicId === topicId);
-			if (idx >= 0) {
-				this.items[idx] = { ...this.items[idx], ...updated };
-				this.items = [...this.items];
+			if (this.byId[topicId]) {
+				this.byId[topicId] = { ...this.byId[topicId], ...updated };
 			}
 		},
 
@@ -157,10 +153,8 @@ export const useTopicsStore = defineStore('topics', {
 				.then((res) => {
 					const title = res?.title;
 					if (!title) return;
-					const idx = this.items.findIndex((t) => t.topicId === topicId);
-					if (idx >= 0) {
-						this.items[idx] = { ...this.items[idx], title };
-						this.items = [...this.items];
+					if (this.byId[topicId]) {
+						this.byId[topicId] = { ...this.byId[topicId], title };
 					}
 				})
 				.catch((err) => {
