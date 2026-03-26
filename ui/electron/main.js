@@ -8,6 +8,7 @@ import { setupPermissions } from './permissions.js';
 import { setupSingleInstance, registerProtocol } from './deep-link.js';
 import { initUpdater } from './updater.js';
 import { getAppTitle, t } from './locale.js';
+import { isSafeExternalUrl } from './url-safety.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
@@ -82,14 +83,11 @@ if (!gotLock) {
 			}
 		});
 
-		// 外部链接用系统浏览器打开（仅放行 http/https）
+		// 外部链接用系统浏览器打开（仅允许 http/https 协议）
 		win.webContents.setWindowOpenHandler(({ url: openUrl }) => {
-			try {
-				const { protocol } = new URL(openUrl);
-				if (protocol === 'http:' || protocol === 'https:') {
-					shell.openExternal(openUrl);
-				}
-			} catch { /* 忽略无效 URL */ }
+			if (isSafeExternalUrl(openUrl)) {
+				shell.openExternal(openUrl);
+			}
 			return { action: 'deny' };
 		});
 
