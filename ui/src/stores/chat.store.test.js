@@ -548,7 +548,7 @@ describe('useChatStore', () => {
 			expect(agentCall[1].sessionKey).toBeUndefined();
 		});
 
-		test('带图片文件时内容变为 blocks 数组', async () => {
+		test('带图片文件时内容变为 blocks 数组，且 fileToBase64 只调用一次（缓存复用）', async () => {
 			const { fileToBase64 } = await import('../utils/file-helper.js');
 			fileToBase64.mockResolvedValue('imgbase64');
 
@@ -579,6 +579,8 @@ describe('useChatStore', () => {
 			const agentCall = conn.request.mock.calls.find((c) => c[0] === 'agent');
 			expect(agentCall[1].attachments).toHaveLength(1);
 			expect(agentCall[1].attachments[0].type).toBe('image');
+			// 同一图片文件只编码一次（乐观消息缓存复用到 attachments）
+			expect(fileToBase64).toHaveBeenCalledTimes(1);
 		});
 
 		test('发送失败（request 抛出）时清理 streaming 状态并重新抛出', async () => {
@@ -602,13 +604,12 @@ describe('useChatStore', () => {
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
-		test('pre-acceptance 30s 超时：sending 置 false，__agentSettled 为 true，抛出 PRE_ACCEPTANCE_TIMEOUT', async () => {
+		test('pre-acceptance 180s 超时：sending 置 false，__agentSettled 为 true，抛出 PRE_ACCEPTANCE_TIMEOUT', async () => {
 			vi.useFakeTimers();
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 
 			const conn = mockConn();
-			// 永不 resolve，也不调用 onAccepted
 			conn.request.mockImplementation((method) => {
 				if (method === 'agent') return new Promise(() => {});
 				return Promise.resolve(null);
@@ -620,9 +621,15 @@ describe('useChatStore', () => {
 			store.botId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
+			// 179s 时不应超时
+			const sendPromise = store.sendMessage('hello');
+			await vi.advanceTimersByTimeAsync(179_000);
+			expect(store.sending).toBe(true);
+
+			// 180s 时应超时
 			const [, result] = await Promise.allSettled([
-				vi.advanceTimersByTimeAsync(30_000),
-				store.sendMessage('hello'),
+				vi.advanceTimersByTimeAsync(1_000),
+				sendPromise,
 			]);
 
 			expect(result.status).toBe('rejected');

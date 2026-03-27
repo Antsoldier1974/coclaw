@@ -400,12 +400,15 @@ export function createChatStore(storeKey, opts = {}) {
 
 				// 构建乐观消息条目（后续移入 agentRunsStore）
 				const imgFiles = files?.filter((f) => f.isImg && f.file) ?? [];
+				/** @type {Map<File, string>} 缓存 base64，避免同一文件重复编码 */
+				const base64Cache = new Map();
 				let content = text;
 				if (imgFiles.length) {
 					const blocks = [];
 					if (text) blocks.push({ type: 'text', text });
 					for (const f of imgFiles) {
 						const base64 = await fileToBase64(f.file);
+						base64Cache.set(f.file, base64);
 						blocks.push({ type: 'image', data: base64, mimeType: f.file.type || 'image/png' });
 					}
 					content = blocks;
@@ -428,11 +431,11 @@ export function createChatStore(storeKey, opts = {}) {
 				this.messages = [...this.messages, optimisticUser, optimisticBot];
 
 				try {
-					// 构建附件
+					// 构建附件（复用已缓存的 base64）
 					const attachments = [];
 					for (const f of files) {
 						if (!f.file) continue;
-						const base64 = await fileToBase64(f.file);
+						const base64 = base64Cache.get(f.file) ?? await fileToBase64(f.file);
 						attachments.push({
 							type: f.isImg ? 'image' : f.isVoice ? 'audio' : 'file',
 							mimeType: f.file.type || 'application/octet-stream',
@@ -462,7 +465,7 @@ export function createChatStore(storeKey, opts = {}) {
 					const timeoutPromise = new Promise((_, reject) => { timeoutReject = reject; });
 					const cancelPromise = new Promise((_, reject) => { this.__cancelReject = reject; });
 
-					// pre-acceptance 30s 超时
+					// pre-acceptance 超时（用户可主动取消）
 					this.__streamingTimer = setTimeout(() => {
 						if (!this.__accepted) {
 							this.__agentSettled = true;
@@ -472,7 +475,7 @@ export function createChatStore(storeKey, opts = {}) {
 							err.code = 'PRE_ACCEPTANCE_TIMEOUT';
 							timeoutReject(err);
 						}
-					}, 30_000);
+					}, 180_000);
 
 					const runsStore = useAgentRunsStore();
 					const runKey = this.runKey;
