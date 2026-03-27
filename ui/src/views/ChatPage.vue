@@ -384,28 +384,34 @@ export default {
 			}
 			// 上线后由 connReady watcher 驱动消息加载
 		},
-		/** connReady 驱动消息加载：首次加载或重连刷新 */
-		async connReady(ready) {
-			if (!ready || !this.chatStore) return;
-			// 与 __handleForegroundResume 去重
-			this.__lastResumeAt = Date.now();
-			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
-			this.chatStore.__reconcileSlashCommand();
-			const isFirstLoad = !this.chatStore.__messagesLoaded;
-			if (isFirstLoad) {
-				await this.chatStore.loadMessages();
-				if (this.__unmounted || !this.chatStore) return;
-				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
-			} else {
-				this.chatStore.loadMessages({ silent: true });
-			}
-			// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
-			if (isFirstLoad) {
-				this.$nextTick(() => {
-					this.scrollToBottom(true);
-					this.__autoFillHistory();
-				});
-			}
+		/** connReady 驱动消息加载：首次加载或重连刷新
+		 * immediate: 确保组件挂载时 connReady 已为 true 的场景也能触发加载
+		 * （如返回列表后重新进入会话，bot 已连接但 watcher 不会为初始值触发）
+		 */
+		connReady: {
+			immediate: true,
+			async handler(ready) {
+				if (!ready || !this.chatStore) return;
+				// 与 __handleForegroundResume 去重
+				this.__lastResumeAt = Date.now();
+				// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
+				this.chatStore.__reconcileSlashCommand();
+				const isFirstLoad = !this.chatStore.__messagesLoaded;
+				if (isFirstLoad) {
+					await this.chatStore.loadMessages();
+					if (this.__unmounted || !this.chatStore) return;
+					if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
+				} else {
+					this.chatStore.loadMessages({ silent: true });
+				}
+				// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
+				if (isFirstLoad) {
+					this.$nextTick(() => {
+						this.scrollToBottom(true);
+						this.__autoFillHistory();
+					});
+				}
+			},
 		},
 		chatMessages(msgs, oldMsgs) {
 			this.scrollToBottom();
