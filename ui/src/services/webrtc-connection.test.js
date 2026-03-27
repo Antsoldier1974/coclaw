@@ -592,23 +592,21 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 		rtc.close();
 	});
 
-	test('ICE restart 达到上限后执行 full rebuild', async () => {
+	test('ICE restart 达到上限（5次）后执行 full rebuild', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const firstPc = MockRTCPeerConnection.lastInstance;
 
-		// 消耗 2 次 ICE restart
-		firstPc.connectionState = 'failed';
-		firstPc.onconnectionstatechange(); // ICE restart #1
-		await vi.waitFor(() => expect(rtc.__iceRestartCount).toBe(1));
+		// 消耗 5 次 ICE restart
+		for (let i = 1; i <= 5; i++) {
+			firstPc.connectionState = 'failed';
+			firstPc.onconnectionstatechange();
+			await vi.waitFor(() => expect(rtc.__iceRestartCount).toBe(i));
+		}
 
-		firstPc.connectionState = 'failed';
-		firstPc.onconnectionstatechange(); // ICE restart #2
-		await vi.waitFor(() => expect(rtc.__iceRestartCount).toBe(2));
-
-		// 第 3 次 failed → 超过 ICE restart 上限，应 full rebuild
+		// 第 6 次 failed → 超过 ICE restart 上限，应 full rebuild
 		firstPc.connectionState = 'failed';
 		firstPc.onconnectionstatechange();
 
@@ -630,7 +628,7 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 		const firstPc = MockRTCPeerConnection.lastInstance;
 
 		// 强制进入 rebuild
-		rtc.__iceRestartCount = 2;
+		rtc.__iceRestartCount = 5;
 		firstPc.connectionState = 'failed';
 		firstPc.onconnectionstatechange();
 
@@ -653,7 +651,7 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
-		// 耗尽 ICE restart (2次) + full rebuild (3次)
+		// 耗尽 ICE restart (5次) + full rebuild (3次)
 		// 每次 rebuild 创建新 PC，新 PC 也可能 fail
 		for (let i = 0; i < 20; i++) {
 			const pc = MockRTCPeerConnection.lastInstance;
@@ -678,7 +676,7 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 		const oldPc = MockRTCPeerConnection.lastInstance;
 
 		// 强制 rebuild
-		rtc.__iceRestartCount = 2;
+		rtc.__iceRestartCount = 5;
 		oldPc.connectionState = 'failed';
 		oldPc.onconnectionstatechange();
 
@@ -700,7 +698,7 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		// 强制 rebuild
-		rtc.__iceRestartCount = 2;
+		rtc.__iceRestartCount = 5;
 		const pc = MockRTCPeerConnection.lastInstance;
 		pc.connectionState = 'failed';
 		pc.onconnectionstatechange();
@@ -784,7 +782,7 @@ describe('WebRtcConnection — tryIceRestart（前台恢复主动 ICE restart）
 		expect(result).toBe(false);
 	});
 
-	test('ICE restart 成功后计数归零', async () => {
+	test('tryIceRestart 不递增 __iceRestartCount（不消耗自动恢复预算）', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
@@ -792,11 +790,25 @@ describe('WebRtcConnection — tryIceRestart（前台恢复主动 ICE restart）
 		const pc = MockRTCPeerConnection.lastInstance;
 		pc.connectionState = 'disconnected';
 		rtc.tryIceRestart();
-		expect(rtc.__iceRestartCount).toBe(1);
+		expect(rtc.__iceRestartCount).toBe(0);
 
-		// 模拟 ICE restart 成功
-		pc.connectionState = 'connected';
-		pc.onconnectionstatechange();
+		rtc.close();
+	});
+
+	test('多次前台恢复 tryIceRestart 不影响 __onIceFailed 的恢复预算', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.connectionState = 'disconnected';
+
+		// 模拟多次前台恢复
+		rtc.tryIceRestart();
+		rtc.tryIceRestart();
+		rtc.tryIceRestart();
+
+		// 计数器应始终为 0
 		expect(rtc.__iceRestartCount).toBe(0);
 
 		rtc.close();

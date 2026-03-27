@@ -60,6 +60,14 @@ export const useSessionsStore = defineStore('sessions', {
 			const results = await Promise.allSettled(
 				connectedBots.map((bot) => this.__fetchSessionsForBot(bot.id)),
 			);
+			// fetch 失败的 bot：从 queriedBotIds 移除，保留其旧 sessions
+			for (let i = 0; i < results.length; i++) {
+				if (results[i].status !== 'fulfilled') {
+					const failedId = String(connectedBots[i].id);
+					queriedBotIds.delete(failedId);
+					console.warn('[sessions] bot sessions fetch failed botId=%s:', failedId, results[i].reason);
+				}
+			}
 			// 增量合并：保留未查询 bot 的已有 sessions，替换已查询 bot 的
 			const seen = new Set();
 			const merged = [];
@@ -74,10 +82,7 @@ export const useSessionsStore = defineStore('sessions', {
 				}
 			}
 			for (const r of results) {
-				if (r.status !== 'fulfilled') {
-					console.warn('[sessions] bot sessions fetch failed:', r.reason);
-					continue;
-				}
+				if (r.status !== 'fulfilled') continue;
 				for (const item of r.value) {
 					const key = `${item.botId}:${item.sessionKey}`;
 					if (!seen.has(key)) {
