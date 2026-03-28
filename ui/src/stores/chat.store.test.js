@@ -633,7 +633,7 @@ describe('useChatStore', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 
-			const conn = mockConn();
+			const conn = mockConn({ transportMode: 'rtc' });
 			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
@@ -681,7 +681,7 @@ describe('useChatStore', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 
-			const conn = mockConn();
+			const conn = mockConn({ transportMode: 'rtc' });
 			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
 			conn.request.mockImplementation((method) => {
 				if (method === 'agent') return new Promise(() => {});
@@ -750,7 +750,7 @@ describe('useChatStore', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 
-			const conn = mockConn();
+			const conn = mockConn({ transportMode: 'rtc' });
 			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
 			conn.request.mockImplementation(() => Promise.resolve(null));
 			mockConnections.set('1', conn);
