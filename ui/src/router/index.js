@@ -13,6 +13,7 @@ import UserPage from '../views/UserPage.vue';
 import AboutPage from '../views/AboutPage.vue';
 import ClaimPage from '../views/ClaimPage.vue';
 import FileManagerPage from '../views/FileManagerPage.vue';
+import AdminDashboardPage from '../views/AdminDashboardPage.vue';
 import { useAuthStore } from '../stores/auth.store.js';
 import { isNative } from '../utils/capacitor-app.js';
 
@@ -99,7 +100,7 @@ const routes = [
 			{
 				path: 'admin/dashboard',
 				name: 'admin-dashboard',
-				component: () => import('../views/AdminDashboardPage.vue'),
+				component: AdminDashboardPage,
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
