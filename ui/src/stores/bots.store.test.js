@@ -640,7 +640,10 @@ describe('WebRTC 集成', () => {
 
 
 		await vi.waitFor(() => {
-			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('1', fakeConn);
+			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('1', fakeConn, expect.objectContaining({
+				onTransportMode: expect.any(Function),
+				onRtcStateChange: expect.any(Function),
+			}));
 		});
 	});
 
@@ -672,7 +675,10 @@ describe('WebRTC 集成', () => {
 
 
 		await vi.waitFor(() => {
-			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('2', fakeConn);
+			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('2', fakeConn, expect.objectContaining({
+				onTransportMode: expect.any(Function),
+				onRtcStateChange: expect.any(Function),
+			}));
 		});
 	});
 

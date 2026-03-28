@@ -211,6 +211,22 @@ export const useBotsStore = defineStore('bots', {
 			}
 		},
 
+		/** 构建 RTC 回调（store 侧状态同步） */
+		__rtcCallbacks(botId) {
+			return {
+				onTransportMode: (mode) => {
+					const bot = this.byId[botId];
+					if (bot) bot.transportMode = mode;
+				},
+				onRtcStateChange: (state, transportInfo) => {
+					const bot = this.byId[botId];
+					if (!bot) return;
+					bot.rtcState = state;
+					if (transportInfo) bot.rtcTransportInfo = transportInfo;
+				},
+			};
+		},
+
 		/**
 		 * bot 连接就绪：首次 → 完整初始化；重连 → 传输选择 + 按断连时长刷新
 		 */
@@ -231,7 +247,7 @@ export const useBotsStore = defineStore('bots', {
 				});
 			} else {
 				console.debug('[bots] ws reconnected botId=%s → re-select transport', id);
-				initRtcAndSelectTransport(id, conn).catch(() => {});
+				initRtcAndSelectTransport(id, conn, this.__rtcCallbacks(id)).catch(() => {});
 				if (conn.disconnectedAt > 0) {
 					const gap = Date.now() - conn.disconnectedAt;
 					if (gap >= BRIEF_DISCONNECT_MS) {
@@ -250,7 +266,7 @@ export const useBotsStore = defineStore('bots', {
 		 * 首次连接初始化：版本检查 + 传输选择 + 数据加载
 		 */
 		async __fullInit(id, conn) {
-			initRtcAndSelectTransport(id, conn).catch(() => {});
+			initRtcAndSelectTransport(id, conn, this.__rtcCallbacks(id)).catch(() => {});
 			const info = await checkPluginVersion(conn);
 			const bot = this.byId[id];
 			if (bot) {

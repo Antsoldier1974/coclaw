@@ -21,16 +21,6 @@ const DC_LOW_WATER_MARK = 256 * 1024;
 /** @type {Map<string, WebRtcConnection>} botId → WebRtcConnection */
 const rtcInstances = new Map();
 
-/** 预加载 botsStore 引用，避免每次状态变更时 dynamic import */
-let _botsStoreRef = null;
-async function getBotsStore() {
-	if (!_botsStoreRef) {
-		const mod = await import('../stores/bots.store.js');
-		_botsStoreRef = mod.useBotsStore;
-	}
-	return _botsStoreRef();
-}
-
 const RTC_TRANSPORT_TIMEOUT_MS = 15_000;
 
 /**
@@ -39,9 +29,12 @@ const RTC_TRANSPORT_TIMEOUT_MS = 15_000;
  * 返回的 Promise 在传输模式确定后（'rtc' 或 'ws'）resolve
  * @param {string} botId
  * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {object} [callbacks]
+ * @param {(mode: 'rtc'|'ws') => void} [callbacks.onTransportMode] - 传输模式变更
+ * @param {(state: string, transportInfo: object|null) => void} [callbacks.onRtcStateChange] - RTC 状态变更
  * @returns {Promise<void>}
  */
-export function initRtcAndSelectTransport(botId, botConn) {
+export function initRtcAndSelectTransport(botId, botConn, callbacks = {}) {
 	const existing = rtcInstances.get(botId);
 	if (existing && existing.state !== 'closed' && existing.state !== 'failed') {
 		return Promise.resolve();
@@ -51,13 +44,9 @@ export function initRtcAndSelectTransport(botId, botConn) {
 	const rtc = new WebRtcConnection(botId, botConn);
 	rtcInstances.set(botId, rtc);
 
-	/** 同步传输模式到 store */
-	function syncTransportMode(mode) {
+	function setTransportMode(mode) {
 		botConn.setTransportMode(mode);
-		getBotsStore().then((store) => {
-			const bot = store.byId[botId];
-			if (bot) bot.transportMode = mode;
-		}).catch(() => {});
+		callbacks.onTransportMode?.(mode);
 	}
 
 	return new Promise((resolveTransport) => {
@@ -76,31 +65,24 @@ export function initRtcAndSelectTransport(botId, botConn) {
 			rtc.close();
 			rtcInstances.delete(botId);
 			botConn.clearRtc();
-			syncTransportMode('ws');
+			setTransportMode('ws');
 		}, RTC_TRANSPORT_TIMEOUT_MS);
 
 		rtc.onReady = () => {
 			if (!settle()) return;
 			clearTimeout(fallbackTimer);
 			botConn.setRtc(rtc);
-			syncTransportMode('rtc');
+			setTransportMode('rtc');
 		};
 
-		// 状态变更 → 同步到 botsStore + 不可恢复时降级
+		// 状态变更 → 通知调用方 + 不可恢复时降级
 		rtc.onStateChange = () => {
-			getBotsStore().then((store) => {
-				const bot = store.byId[botId];
-				if (!bot) return;
-				bot.rtcState = rtc.state;
-				if (rtc.transportInfo) {
-					bot.rtcTransportInfo = rtc.transportInfo;
-				}
-			}).catch(() => {});
+			callbacks.onRtcStateChange?.(rtc.state, rtc.transportInfo);
 
 			// state === 'failed' 仅在所有恢复尝试耗尽后才被设置
 			if (rtc.state === 'failed') {
 				botConn.clearRtc();
-				syncTransportMode('ws');
+				setTransportMode('ws');
 			}
 		};
 
@@ -113,7 +95,7 @@ export function initRtcAndSelectTransport(botId, botConn) {
 				rtc.close();
 				rtcInstances.delete(botId);
 				botConn.clearRtc();
-				syncTransportMode('ws');
+				setTransportMode('ws');
 			});
 	});
 }
@@ -136,7 +118,6 @@ export function closeRtcForBot(botId) {
 export function __resetRtcInstances() {
 	for (const rtc of rtcInstances.values()) rtc.close();
 	rtcInstances.clear();
-	_botsStoreRef = null;
 }
 
 /** 仅供测试：获取实例 */
