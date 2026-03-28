@@ -54,15 +54,13 @@
 			</div>
 
 			<!-- 动作区 -->
-			<div class="flex gap-2">
-				<UButton class="flex-1" color="primary" :disabled="!online" @click="$emit('chat', agent.id)">
+			<div class="grid grid-cols-2 gap-2">
+				<UButton class="justify-center" color="primary" :disabled="!online" @click="$emit('chat', agent.id)">
 					{{ $t('agents.chat') }}
 				</UButton>
-				<UButton
-					color="neutral" variant="soft" :disabled="!online"
-					icon="i-lucide-folder"
-					@click="$emit('files', agent.id)"
-				/>
+				<UButton class="justify-center" color="primary" :disabled="!online" @click="$emit('files', agent.id)">
+					{{ $t('agents.files') }}
+				</UButton>
 			</div>
 		</div>
 	</div>

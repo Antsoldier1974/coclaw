@@ -5,7 +5,8 @@
 			<template #actions>
 				<UButton
 					class="cc-icon-btn-lg" variant="ghost" color="primary"
-					icon="i-lucide-upload" @click="triggerUpload"
+					icon="i-lucide-upload" :disabled="!connReady"
+					@click="triggerUpload"
 				/>
 			</template>
 		</MobilePageHeader>
@@ -16,7 +17,8 @@
 			<div class="ml-auto flex items-center gap-1 pr-2">
 				<UButton
 					class="cc-icon-btn" variant="ghost" color="primary"
-					icon="i-lucide-upload" @click="triggerUpload"
+					icon="i-lucide-upload" :disabled="!connReady"
+					@click="triggerUpload"
 				/>
 			</div>
 		</header>
@@ -29,13 +31,13 @@
 					data-testid="btn-mkdir"
 					variant="ghost" color="neutral" size="xs"
 					icon="i-lucide-folder-plus" class="cc-icon-btn"
-					@click="onMkdir"
+					:disabled="!connReady" @click="onMkdir"
 				/>
 				<UButton
 					data-testid="btn-refresh"
 					variant="ghost" color="neutral" size="xs"
 					icon="i-lucide-refresh-cw" class="cc-icon-btn"
-					:loading="loading"
+					:disabled="!connReady" :loading="loading"
 					@click="loadDir"
 				/>
 			</div>
@@ -43,9 +45,14 @@
 
 		<!-- 文件列表 -->
 		<main class="flex-1 min-h-0 overflow-y-auto">
+			<!-- 连接中 -->
+			<div v-if="!connReady" class="px-4 py-8 text-center text-sm text-muted">
+				{{ $t('files.connecting') }}
+			</div>
+
 			<!-- 加载中 -->
-			<div v-if="loading && !entries.length" class="px-4 py-8 text-center text-sm text-muted">
-				{{ $t('chat.loading') }}
+			<div v-else-if="loading && !entries.length" class="px-4 py-8 text-center text-sm text-muted">
+				{{ $t('files.loading') }}
 			</div>
 
 			<!-- 空目录（根目录且无内容时） -->
@@ -58,7 +65,7 @@
 				<!-- 返回上层（非根目录时显示） -->
 				<div
 					v-if="currentDir"
-					class="flex min-h-12 items-center gap-3 border-b border-default px-3 py-2 cursor-pointer active:bg-accented"
+					class="flex min-h-12 items-center gap-3 border-b border-default px-4 py-2 cursor-pointer transition-colors hover:bg-accented/80 active:bg-accented"
 					@click="goParent"
 				>
 					<UIcon name="i-lucide-corner-left-up" class="size-5 shrink-0 text-muted" />
@@ -197,6 +204,7 @@ import FileListItem from '../components/files/FileListItem.vue';
 import FileUploadItem from '../components/files/FileUploadItem.vue';
 import { useFilesStore } from '../stores/files.store.js';
 import { useAgentsStore } from '../stores/agents.store.js';
+import { useBotsStore } from '../stores/bots.store.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { listFiles, deleteFile, mkdirFiles } from '../services/file-transfer.js';
 import { useNotify } from '../composables/use-notify.js';
@@ -209,6 +217,7 @@ export default {
 		return {
 			filesStore: useFilesStore(),
 			agentsStore: useAgentsStore(),
+			botsStore: useBotsStore(),
 			notify: useNotify(),
 			promptUi: promptModalUi,
 		};
@@ -240,6 +249,10 @@ export default {
 	computed: {
 		botId() { return this.$route.params.botId; },
 		agentId() { return this.$route.params.agentId; },
+		connReady() {
+			const bot = this.botsStore.byId[this.botId];
+			return bot?.connState === 'connected';
+		},
 		pageTitle() {
 			const display = this.agentsStore.getAgentDisplay(this.botId, this.agentId);
 			return `${display.name} ${this.$t('files.titleSuffix')}`;
@@ -264,12 +277,17 @@ export default {
 	watch: {
 		'$route.params.botId'() { this.resetAndLoad(); },
 		'$route.params.agentId'() { this.resetAndLoad(); },
+		connReady: {
+			immediate: true,
+			handler(ready) {
+				if (ready) this.loadDir();
+			},
+		},
 	},
 	created() {
 		this.__loadGen = 0;
 	},
 	mounted() {
-		this.loadDir();
 		this.$el.addEventListener('dragover', this.__onDragOver);
 		this.$el.addEventListener('dragleave', this.__onDragLeave);
 		this.$el.addEventListener('drop', this.__onDrop);
@@ -293,10 +311,7 @@ export default {
 
 		async loadDir() {
 			const botConn = useBotConnections().get(this.botId);
-			if (!botConn) {
-				this.notify.error(this.$t('files.notConnected'));
-				return;
-			}
+			if (!botConn) return; // connReady watcher 会在连接就绪后重新触发
 			const gen = ++this.__loadGen;
 			this.loading = true;
 			try {

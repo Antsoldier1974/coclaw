@@ -1,5 +1,5 @@
 <template>
-	<nav class="flex min-h-9 items-center gap-1 overflow-x-auto px-3 text-sm">
+	<nav class="flex min-h-9 items-center gap-1 overflow-x-auto pl-4 text-sm">
 		<button
 			class="shrink-0 text-primary hover:underline"
 			@click="$emit('navigate', '')"

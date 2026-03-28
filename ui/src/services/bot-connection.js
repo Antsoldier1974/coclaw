@@ -225,10 +225,10 @@ export class BotConnection {
 			});
 		}
 
-		// RTC 不可用时主动降级到 WS，确保 __onMessage 不再过滤 WS event
+		// RTC 模式但 rpc DC 暂不可用：本次请求走 WS，不永久降级
+		// （__onMessage 已通过 viaRtc 标记正确放行 WS 响应）
 		if (this.__transportMode === 'rtc' && !rtcReady) {
-			console.debug('[BotConn] RTC not ready, degrade to WS botId=%s', this.botId);
-			this.setTransportMode('ws');
+			console.debug('[BotConn] RTC rpc DC not ready, WS fallback for this request botId=%s method=%s', this.botId, method);
 		}
 
 		// transportMode === 'ws' / null 均走 WS

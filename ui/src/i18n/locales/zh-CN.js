@@ -145,6 +145,7 @@ export const zhCNMessages = {
 	agents: {
 		addAgent: '添加 Agent',
 		chat: '对话',
+		files: '文件',
 		sessionNotReady: '会话尚未就绪，请稍后重试',
 	},
 	adminDashboard: {
@@ -338,6 +339,8 @@ export const zhCNMessages = {
 	},
 	files: {
 		titleSuffix: '文件',
+		connecting: '正在连接 Claw…',
+		loading: '正在加载…',
 		upload: '上传',
 		newFolder: '新建目录',
 		dropHint: '松开以上传文件',
@@ -364,7 +367,6 @@ export const zhCNMessages = {
 		overwrite: '覆盖',
 		skip: '跳过',
 		applyToAll: '将此选择应用于所有冲突文件',
-		notConnected: '连接不可用',
 	},
 	demo: {
 		title: 'Nuxt UI 4 示例',

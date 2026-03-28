@@ -145,6 +145,7 @@ export const enMessages = {
 	agents: {
 		addAgent: 'Add Agent',
 		chat: 'Chat',
+		files: 'Files',
 		sessionNotReady: 'Session not ready, please try again later',
 	},
 	adminDashboard: {
@@ -338,6 +339,8 @@ export const enMessages = {
 	},
 	files: {
 		titleSuffix: 'Files',
+		connecting: 'Connecting to Claw…',
+		loading: 'Loading…',
 		upload: 'Upload',
 		newFolder: 'New Folder',
 		dropHint: 'Drop files to upload',
@@ -364,7 +367,6 @@ export const enMessages = {
 		overwrite: 'Overwrite',
 		skip: 'Skip',
 		applyToAll: 'Apply this choice to all conflicting files',
-		notConnected: 'Connection unavailable',
 	},
 	demo: {
 		title: 'Nuxt UI 4 Demo',

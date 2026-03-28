@@ -1037,46 +1037,46 @@ describe('BotConnection – request() via RTC', () => {
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 且 RTC 不可用时降级到 WS 并发送请求', async () => {
+	test('transportMode=rtc 且 rpc DC 不可用时走 WS 但不永久降级', async () => {
 		const { conn, ws } = makeConnected();
 		conn.setTransportMode('rtc');
-		// 未设置 rtc 引用 → RTC 不可用，应降级并回退 WS
+		// 未设置 rtc 引用 → rpc DC 不可用，本次请求走 WS
 		const p = conn.request('foo');
-		// 验证 transportMode 已降级
-		expect(conn.transportMode).toBe('ws');
+		// transportMode 保持 rtc，不永久降级
+		expect(conn.transportMode).toBe('rtc');
 		expect(ws.sent.length).toBe(1);
 		const msg = JSON.parse(ws.sent[0]);
 		expect(msg.method).toBe('foo');
 
-		// 模拟 WS 响应
+		// WS 响应通过 viaRtc 标记正确放行
 		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { bar: 1 } });
 		await expect(p).resolves.toMatchObject({ bar: 1 });
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 降级到 WS 后 event 消息能正确分发', () => {
+	test('transportMode=rtc 且 rpc DC 不可用时 WS event 仍被过滤', () => {
 		const { conn, ws } = makeConnected();
 		conn.setTransportMode('rtc');
-		// 触发降级
+		// rpc DC 不可用，请求走 WS，但 transportMode 保持 rtc
 		conn.request('foo').catch(() => {});
-		expect(conn.transportMode).toBe('ws');
+		expect(conn.transportMode).toBe('rtc');
 
-		// 降级后 WS event 应能正常分发
+		// RTC 模式下 WS event 应被过滤（event 应通过 RTC DC 接收）
 		const handler = vi.fn();
 		conn.on('event:agent', handler);
 		ws.simulateMessage({ type: 'event', event: 'agent', payload: { text: 'hello' } });
-		expect(handler).toHaveBeenCalledWith({ text: 'hello' });
+		expect(handler).not.toHaveBeenCalled();
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 且 RTC 不可用且 WS 也不可用时 reject WS_CLOSED', async () => {
+	test('transportMode=rtc 且 rpc DC 不可用且 WS 也不可用时 reject WS_CLOSED', async () => {
 		const { conn, ws } = makeConnected();
 		conn.setTransportMode('rtc');
 		// 模拟 WS 已断开
 		ws.readyState = 3;
 		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
-		// WS 不可用时也应降级 transportMode（避免后续请求重复尝试 RTC）
-		expect(conn.transportMode).toBe('ws');
+		// transportMode 保持 rtc，不永久降级
+		expect(conn.transportMode).toBe('rtc');
 		conn.disconnect();
 	});
 
@@ -1100,22 +1100,22 @@ describe('BotConnection – request() via RTC', () => {
 		conn.disconnect();
 	});
 
-	test('RTC 降级后恢复：setTransportMode(rtc) 后请求走 RTC', async () => {
+	test('rpc DC 恢复后请求自动回到 RTC', async () => {
 		const { conn, ws } = makeConnected();
 		conn.setTransportMode('rtc');
-		// RTC 不可用 → 降级到 WS
-		conn.request('degraded.method').catch(() => {});
-		expect(conn.transportMode).toBe('ws');
+		// rpc DC 不可用 → 本次走 WS，transportMode 保持 rtc
+		conn.request('fallback.method').catch(() => {});
+		expect(conn.transportMode).toBe('rtc');
+		expect(ws.sent.length).toBe(1);
 
-		// 模拟 RTC 恢复
+		// 模拟 rpc DC 恢复
 		const mockRtc = {
 			isReady: true,
 			send: vi.fn().mockResolvedValue(undefined),
 		};
 		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
 
-		// 后续请求应走 RTC
+		// 后续请求应走 RTC（无需重新 setTransportMode）
 		conn.request('restored.method').catch(() => {});
 		expect(mockRtc.send).toHaveBeenCalled();
 		const sent = mockRtc.send.mock.calls[0][0];
