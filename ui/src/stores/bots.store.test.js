@@ -493,24 +493,29 @@ describe('loadBots', () => {
 		});
 	});
 
-	test('plugin version check RPC 失败（version: null）时 __fullInit 抛出，initialized 重置', async () => {
+	test('plugin version check RPC 失败（version: null）时 __fullInit 继续加载 agents', async () => {
 		const { checkPluginVersion } = await import('../utils/plugin-version.js');
 		checkPluginVersion.mockResolvedValue({ ok: false, version: null, clawVersion: null });
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
 		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '2', name: 'B' }]);
 
 		await store.loadBots();
 
-		// __fullInit 因 version: null 抛出 → initialized 重置为 false
+		// 版本检查失败不阻断后续步骤
 		await vi.waitFor(() => {
-			expect(store.byId['2'].initialized).toBe(false);
+			expect(store.byId['2'].pluginVersionOk).toBe(false);
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('2');
+			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
 		});
-		// loadAgents 不应被调用（throw 在 loadAgents 之前）
-		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
 	});
 
 	test('plugin version 真正过旧（version 有值）时继续 loadAgents', async () => {
