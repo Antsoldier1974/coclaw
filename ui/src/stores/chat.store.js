@@ -489,6 +489,10 @@ export function createChatStore(storeKey, opts = {}) {
 					if (finalMessage.attachments?.length) {
 						agentParams.attachments = finalMessage.attachments;
 					}
+					if (finalMessage.voicePaths?.length) {
+						agentParams.extraSystemPrompt = '用户通过语音输入发送了以下音频文件，请先转录再回复：\n'
+							+ finalMessage.voicePaths.map((p) => `- ${p}`).join('\n');
+					}
 
 					// chat 模式用 sessionKey，topic 模式用 sessionId
 					if (this.topicMode) {
@@ -990,7 +994,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @param {object} conn - BotConnection
 			 * @param {string} text - 用户原始文本
 			 * @param {object[]} files - ChatInput 的文件对象数组
-			 * @returns {Promise<{ text: string }>}
+			 * @returns {Promise<{ text: string, voicePaths: string[] }>}
 			 */
 			async __uploadAndBuildMessage(conn, text, files) {
 				const agentId = this.__resolveAgentId();
@@ -1008,6 +1012,7 @@ export function createChatStore(storeKey, opts = {}) {
 					currentIdx: 0,
 				};
 				const uploaded = []; // { path, name, size }
+				const voicePaths = [];
 
 				try {
 					for (let i = 0; i < validFiles.length; i++) {
@@ -1029,6 +1034,7 @@ export function createChatStore(storeKey, opts = {}) {
 						this.uploadProgress.files[i].status = 'done';
 						this.uploadProgress.files[i].progress = 1;
 						uploaded.push({ path: result.path, name: f.name, size: f.bytes });
+						if (f.isVoice) voicePaths.push(result.path);
 						console.debug('[chat] uploaded %s → %s', f.name, result.path);
 					}
 				} catch (err) {
@@ -1050,7 +1056,7 @@ export function createChatStore(storeKey, opts = {}) {
 				const finalText = block
 					? (text ? `${text}\n\n${block}` : block)
 					: text;
-				return { text: finalText };
+				return { text: finalText, voicePaths };
 			},
 
 			__resolveAgentId() {

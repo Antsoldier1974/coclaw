@@ -667,6 +667,48 @@ describe('useChatStore', () => {
 			expect(agentCall[1].message).toContain('coclaw-attachments');
 			expect(agentCall[1].message).toContain('看这张图');
 			expect(agentCall[1].attachments).toBeUndefined();
+			expect(agentCall[1].extraSystemPrompt).toBeUndefined();
+		});
+
+		test('语音文件上传时 agentParams 包含 extraSystemPrompt', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+			const { buildAttachmentBlock } = await import('../utils/file-helper.js');
+
+			postFile.mockReturnValue({
+				promise: Promise.resolve({ path: '.coclaw/chat-files/main/2026-03/voice_123.webm' }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+			buildAttachmentBlock.mockReturnValue('## coclaw-attachments');
+
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn({ transportMode: 'rtc' });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-1' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const voiceBlob = new Blob(['audio'], { type: 'audio/webm' });
+			const files = [{ isVoice: true, isImg: false, file: voiceBlob, name: 'voice_123.webm', bytes: 5000 }];
+			await store.sendMessage('', files);
+
+			const agentCall = conn.request.mock.calls.find((c) => c[0] === 'agent');
+			expect(agentCall[1].extraSystemPrompt).toContain('voice_123.webm');
+			expect(agentCall[1].extraSystemPrompt).toContain('语音输入');
 		});
 
 		test('POST 上传失败时抛出错误，uploadingFiles 恢复', async () => {
