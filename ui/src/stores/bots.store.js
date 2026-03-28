@@ -103,9 +103,6 @@ export const useBotsStore = defineStore('bots', {
 			bot.online = next;
 			if (!next) {
 				useAgentsStore().removeByBot(id);
-			} else if (!bot.initialized && bot.connState === 'connected') {
-				// bot 上线但初始化未成功（隧道建立前 __fullInit 失败）→ 重试
-				this.__onBotConnected(id);
 			}
 		},
 		removeBotById(botId) {
@@ -128,10 +125,7 @@ export const useBotsStore = defineStore('bots', {
 					const existing = this.byId[id];
 					if (existing) {
 						// 保留运行时状态（connState、initialized 等），更新基础信息
-						// 若 WS 实际已连接，不让 HTTP 快照的 online 覆盖本地值
-						const preserveOnline = existing.connState === 'connected';
 						Object.assign(existing, b, { id });
-						if (preserveOnline) existing.online = true;
 						newById[id] = existing;
 					} else {
 						newById[id] = createBotState({ ...b, id });
@@ -166,11 +160,6 @@ export const useBotsStore = defineStore('bots', {
 			conn.on('session-expired', () => {
 				console.warn('[bots] session-expired from botId=%s', botId);
 				window.dispatchEvent(new CustomEvent('auth:session-expired'));
-			});
-
-			// event:agent 集中桥接（阶段三）
-			conn.on('event:agent', (payload) => {
-				useAgentRunsStore().__dispatch(payload);
 			});
 
 			conn.on('state', (s) => {
@@ -232,7 +221,6 @@ export const useBotsStore = defineStore('bots', {
 					const gap = Date.now() - conn.disconnectedAt;
 					if (gap >= BRIEF_DISCONNECT_MS) {
 						console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
-						this.loadBots().catch(() => {}); // WS 就绪后刷新在线状态
 						useAgentsStore().loadAgents(id).catch(() => {});
 						useSessionsStore().loadAllSessions().catch(() => {});
 						useTopicsStore().loadAllTopics().catch(() => {});
@@ -253,10 +241,6 @@ export const useBotsStore = defineStore('bots', {
 				bot.pluginInfo = { version: info.version, clawVersion: info.clawVersion };
 			}
 			if (!info.ok) {
-				if (!info.version) {
-					// RPC 失败（bot 隧道未就绪），抛出以触发 initialized 重置和后续重试
-					throw new Error('Plugin check failed: bot may be offline');
-				}
 				console.warn('[bots] plugin version outdated for botId=%s', id);
 			}
 			await useAgentsStore().loadAgents(id);
