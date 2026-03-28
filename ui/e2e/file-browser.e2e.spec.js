@@ -111,14 +111,14 @@ test.describe('文件浏览器 @file', () => {
 		await page.waitForTimeout(2000);
 
 		// 目录应出现在列表中
-		const dirEntry = page.locator('main p').filter({ hasText: dirName });
-		await expect(dirEntry).toBeVisible({ timeout: 10_000 });
+		await expect(page.locator('main').getByText(dirName, { exact: true })).toBeVisible({ timeout: 10_000 });
 
-		// 点击进入目录
-		await dirEntry.click();
+		// 点击目录名文字进入子目录
+		await page.locator('main').getByText(dirName, { exact: true }).click();
+		await page.waitForTimeout(2000);
 
-		// 面包屑应显示目录名
-		await expect(page.locator('nav').getByText(dirName)).toBeVisible({ timeout: 5000 });
+		// 面包屑应显示目录名（面包屑在文件管理区内的 nav 元素中）
+		await expect(page.getByText(dirName).first()).toBeVisible({ timeout: 5000 });
 
 		// 显示空目录提示
 		await expect(page.getByText(/空目录|Empty directory/)).toBeVisible({ timeout: 5000 });
@@ -128,14 +128,14 @@ test.describe('文件浏览器 @file', () => {
 		await page.waitForTimeout(1000);
 
 		// 目录仍在
-		await expect(page.locator('main p').filter({ hasText: dirName })).toBeVisible({ timeout: 5000 });
+		await expect(page.locator('main').getByText(dirName)).toBeVisible({ timeout: 5000 });
 
 		// 清理
 		await cleanupPath(page, bot.botId, bot.agentId, dirName);
 
 		// 刷新验证
 		await refreshBtn.click();
-		await expect(page.locator('main p').filter({ hasText: dirName })).not.toBeVisible({ timeout: 10_000 });
+		await expect(page.locator('main').getByText(dirName)).not.toBeVisible({ timeout: 10_000 });
 	});
 
 	test('文件上传 → 下载 → 清理', async ({ page }) => {
@@ -166,7 +166,7 @@ test.describe('文件浏览器 @file', () => {
 		const refreshBtn = page.locator('.border-default').filter({ has: page.getByRole('button', { name: /Root|根目录/ }) }).locator('button').last();
 		await refreshBtn.click();
 		await page.waitForTimeout(2000);
-		await page.locator('main p').filter({ hasText: dirName }).click();
+		await page.locator('main > div').filter({ hasText: dirName }).first().click();
 		await expect(page.locator('nav').getByText(dirName)).toBeVisible({ timeout: 5000 });
 
 		// 上传文件
@@ -178,11 +178,11 @@ test.describe('文件浏览器 @file', () => {
 		});
 
 		// 等待上传完成
-		await expect(page.locator('main p').filter({ hasText: fileName })).toBeVisible({ timeout: 20_000 });
+		await expect(page.locator('main').getByText(fileName)).toBeVisible({ timeout: 20_000 });
 
 		// 下载
 		const downloadPromise = page.waitForEvent('download', { timeout: 15_000 });
-		await page.locator('main p').filter({ hasText: fileName }).click();
+		await page.locator('main > div').filter({ hasText: fileName }).first().click();
 		const download = await downloadPromise;
 		expect(download.suggestedFilename()).toBe(fileName);
 

@@ -230,8 +230,8 @@ export default {
 		sortedEntries() {
 			// 目录在前，文件在后
 			return [...this.entries].sort((a, b) => {
-				if (a.type === 'directory' && b.type !== 'directory') return -1;
-				if (a.type !== 'directory' && b.type === 'directory') return 1;
+				if (a.type === 'dir' && b.type !== 'dir') return -1;
+				if (a.type !== 'dir' && b.type === 'dir') return 1;
 				return a.name.localeCompare(b.name);
 			});
 		},
@@ -399,7 +399,7 @@ export default {
 		},
 
 		getDownloadTask(entry) {
-			if (entry.type === 'directory') return null;
+			if (entry.type === 'dir') return null;
 			return this.downloadTasks.find((t) => t.fileName === entry.name) || null;
 		},
 
@@ -414,7 +414,7 @@ export default {
 		// --- 删除 ---
 
 		onDelete(entry) {
-			if (entry.type === 'directory') {
+			if (entry.type === 'dir') {
 				this.deleteDirName = entry.name;
 				this.__deleteDirPath = this.currentDir ? `${this.currentDir}/${entry.name}` : entry.name;
 				this.deleteDirChecked = false;

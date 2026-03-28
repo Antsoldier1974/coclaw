@@ -1,22 +1,22 @@
 <template>
 	<div
 		class="flex min-h-12 items-center gap-3 border-b border-default px-3 py-2 active:bg-accented"
-		:class="entry.type === 'directory' ? 'cursor-pointer' : ''"
+		:class="entry.type === 'dir' ? 'cursor-pointer' : ''"
 		@click="onClick"
 	>
 		<!-- 图标 -->
 		<UIcon
-			:name="entry.type === 'directory' ? 'i-lucide-folder' : 'i-lucide-file'"
+			:name="entry.type === 'dir' ? 'i-lucide-folder' : 'i-lucide-file'"
 			class="size-5 shrink-0"
-			:class="entry.type === 'directory' ? 'text-primary' : 'text-muted'"
+			:class="entry.type === 'dir' ? 'text-primary' : 'text-muted'"
 		/>
 
 		<!-- 名称 + 元信息 -->
 		<div class="min-w-0 flex-1">
 			<p class="truncate text-sm">{{ entry.name }}</p>
 			<p class="text-xs text-muted">
-				<span v-if="entry.type !== 'directory' && entry.size != null">{{ formatBytes(entry.size) }}</span>
-				<span v-if="entry.mtime" :class="entry.type !== 'directory' && entry.size != null ? 'ml-2' : ''">
+				<span v-if="entry.type !== 'dir' && entry.size != null">{{ formatBytes(entry.size) }}</span>
+				<span v-if="entry.mtime" :class="entry.type !== 'dir' && entry.size != null ? 'ml-2' : ''">
 					{{ formatDate(entry.mtime) }}
 				</span>
 			</p>
@@ -65,7 +65,7 @@ export default {
 	emits: ['open-dir', 'download', 'delete', 'cancel-download', 'retry-download'],
 	methods: {
 		onClick() {
-			if (this.entry.type === 'directory') {
+			if (this.entry.type === 'dir') {
 				this.$emit('open-dir', this.entry.name);
 			} else {
 				this.$emit('download', this.entry);
