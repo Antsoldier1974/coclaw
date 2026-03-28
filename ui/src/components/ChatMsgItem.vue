@@ -3,8 +3,12 @@
 		<!-- user 消息 -->
 		<template v-if="isUser">
 			<div class="flex flex-col items-end">
-				<div class="max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-base leading-relaxed text-white whitespace-pre-wrap">
-					{{ item.textContent }}
+				<!-- 文本气泡 + inline 图片 -->
+				<div
+					v-if="item.textContent || item.images?.length"
+					class="max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-base leading-relaxed text-white whitespace-pre-wrap"
+				>
+					<template v-if="item.textContent">{{ item.textContent }}</template>
 					<ChatImg
 						v-for="(img, i) in item.images"
 						:key="i"
@@ -12,6 +16,23 @@
 						:filename="imgFilename(img, i)"
 						custom-class="mt-1 max-w-full"
 					/>
+				</div>
+				<!-- 附件卡片（非图片 + 未 inline 的图片） -->
+				<div
+					v-if="userAttachments.length"
+					class="mt-1.5 flex max-w-[85%] flex-wrap justify-end gap-1.5"
+				>
+					<div
+						v-for="(att, idx) in userAttachments"
+						:key="'att-' + idx"
+						class="flex items-center gap-2 rounded-lg border border-default bg-elevated px-3 py-2 text-xs"
+					>
+						<UIcon :name="att.isImg ? 'i-lucide-image' : 'i-lucide-file'" class="text-base text-muted shrink-0" />
+						<div class="min-w-0">
+							<div class="truncate font-medium text-default max-w-32">{{ attDisplayName(att) }}</div>
+							<div class="text-muted">{{ att.size }}</div>
+						</div>
+					</div>
 				</div>
 				<div class="mt-1.5 flex items-center gap-1 text-xs text-dimmed">
 					<span v-if="formattedTime">{{ formattedTime }}</span>
@@ -149,6 +170,7 @@
 import MarkdownBody from './MarkdownBody.vue';
 import ChatImg from './ChatImg.vue';
 import botAvatarSvg from '../assets/bot-avatars/openclaw.svg';
+import { formatFileSize } from '../utils/file-helper.js';
 import { useNotify } from '../composables/use-notify.js';
 
 export default {
@@ -178,6 +200,18 @@ export default {
 	computed: {
 		isUser() {
 			return this.item.type === 'user';
+		},
+		/** 用户消息中需要以卡片形式展示的附件 */
+		userAttachments() {
+			const atts = this.item.attachments;
+			if (!atts?.length) return [];
+			// 附件信息来源于 parseAttachmentBlock（有 path/size/name/isImg）
+			// 或乐观消息的 _attachments（有 name/size/type）
+			return atts.map((a) => ({
+				...a,
+				// 乐观消息的 size 是数字，需格式化；历史消息已是字符串
+				size: typeof a.size === 'number' ? formatFileSize(a.size) : (a.size || ''),
+			}));
 		},
 		botAvatarUrl() {
 			return this.agentDisplay?.avatarUrl || botAvatarSvg;
@@ -233,6 +267,12 @@ export default {
 				clearInterval(this.__elapsedTimer);
 				this.__elapsedTimer = null;
 			}
+		},
+		/** 附件卡片显示名称：优先原始文件名，fallback 从 path 取 */
+		attDisplayName(att) {
+			if (att.name) return att.name;
+			if (att.path) return att.path.split('/').pop();
+			return 'file';
 		},
 		imgSrc(img) {
 			return `data:${img.mimeType};base64,${img.data}`;

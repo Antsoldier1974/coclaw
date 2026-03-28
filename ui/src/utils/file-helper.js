@@ -12,7 +12,7 @@ export function fileToBase64(file) {
 	});
 }
 
-const IMG_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp'];
+export const IMG_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp'];
 const VOICE_TYPES = ['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/ogg', 'audio/wav'];
 
 /**
@@ -51,4 +51,128 @@ export function formatFileBlob(blob) {
 		file: blob,
 		url,
 	};
+}
+
+// 图片扩展名集（用于从路径判断是否为图片）
+const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp']);
+
+/**
+ * 根据文件扩展名判断是否为图片
+ * @param {string} path
+ * @returns {boolean}
+ */
+export function isImageByExt(path) {
+	const ext = path.includes('.') ? path.split('.').pop().toLowerCase() : '';
+	return IMG_EXTS.has(ext);
+}
+
+/**
+ * 构造 chat 附件目录路径
+ * @param {string} chatSessionKey - 如 'agent:main:main' 或 'agent:main:telegram:direct:123'
+ * @returns {string} 如 '.coclaw/chat-files/main/2026-03'
+ */
+export function chatFilesDir(chatSessionKey) {
+	const rest = chatSessionKey.split(':').slice(2).join(':');
+	const escaped = rest.replaceAll(':', '--');
+	const now = new Date();
+	const yyyy = now.getFullYear();
+	const mm = String(now.getMonth() + 1).padStart(2, '0');
+	return `.coclaw/chat-files/${escaped}/${yyyy}-${mm}`;
+}
+
+/**
+ * 构造 topic 附件目录路径
+ * @param {string} topicId - topic 的 sessionId (UUID)
+ * @returns {string} 如 '.coclaw/topic-files/a1b2c3d4-...'
+ */
+export function topicFilesDir(topicId) {
+	return `.coclaw/topic-files/${topicId}`;
+}
+
+/** 附件信息块标题行 */
+const ATTACHMENT_HEADING = '## coclaw-attachments 🗂';
+
+/**
+ * 构造附件信息块（markdown table）
+ * @param {{ path: string, name: string, size: number }[]} files
+ * @returns {string}
+ */
+export function buildAttachmentBlock(files) {
+	if (!files?.length) return '';
+
+	// 检测 name 碰撞：统计每个 name 出现次数
+	const nameCounts = {};
+	for (const f of files) {
+		nameCounts[f.name] = (nameCounts[f.name] || 0) + 1;
+	}
+	const hasCollision = Object.values(nameCounts).some((c) => c > 1);
+
+	const lines = [ATTACHMENT_HEADING, ''];
+	if (hasCollision) {
+		lines.push('| Path | Size | Name |');
+		lines.push('|------|------|------|');
+		for (const f of files) {
+			const sizeStr = formatFileSize(f.size);
+			// 碰撞的文件填入原始文件名，未碰撞的留空
+			const nameCell = nameCounts[f.name] > 1 ? f.name : '';
+			lines.push(`| ${f.path} | ${sizeStr} | ${nameCell} |`);
+		}
+	} else {
+		lines.push('| Path | Size |');
+		lines.push('|------|------|');
+		for (const f of files) {
+			const sizeStr = formatFileSize(f.size);
+			lines.push(`| ${f.path} | ${sizeStr} |`);
+		}
+	}
+	return lines.join('\n');
+}
+
+/**
+ * 从消息文本中解析附件信息块
+ * @param {string} text
+ * @returns {{ cleanText: string, attachments: { path: string, size: string, name: string }[] }}
+ */
+export function parseAttachmentBlock(text) {
+	if (!text) return { cleanText: '', attachments: [] };
+
+	const headingIdx = text.indexOf(ATTACHMENT_HEADING);
+	if (headingIdx === -1) return { cleanText: text, attachments: [] };
+
+	const cleanText = text.slice(0, headingIdx).trimEnd();
+	const blockText = text.slice(headingIdx + ATTACHMENT_HEADING.length);
+
+	// 解析 markdown table 行
+	const attachments = [];
+	const lines = blockText.split('\n');
+	// 找表头行确定列
+	let hasNameCol = false;
+	let tableStarted = false;
+
+	for (const line of lines) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith('|---')) {
+			if (trimmed.startsWith('|---')) tableStarted = true;
+			continue;
+		}
+		if (!trimmed.startsWith('|')) continue;
+
+		// 表头行检测
+		if (!tableStarted) {
+			hasNameCol = /\bName\b/.test(trimmed);
+			continue;
+		}
+
+		// 数据行：| path | size | [name] |
+		const cells = trimmed.split('|').map((c) => c.trim()).filter(Boolean);
+		if (cells.length >= 2) {
+			attachments.push({
+				path: cells[0],
+				size: cells[1],
+				name: hasNameCol && cells.length >= 3 ? cells[2] : '',
+			});
+		}
+	}
+
+	return { cleanText, attachments };
 }

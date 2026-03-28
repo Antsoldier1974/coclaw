@@ -1,9 +1,36 @@
 <template>
 	<footer class="sticky bottom-0 z-10 border-t border-default bg-default py-2 pb-2">
 		<slot name="prepend" />
-		<!-- 文件预览区 -->
+		<!-- 上传进度区（上传中替代文件预览） -->
 		<div
-			v-if="inputFiles.length"
+			v-if="uploadProgress"
+			class="mx-auto mb-2 flex w-full max-w-3xl flex-wrap gap-2 px-3"
+		>
+			<div
+				v-for="(uf, idx) in uploadProgress.files"
+				:key="'up-' + idx"
+				class="relative flex h-16 items-center gap-2 rounded-md border border-default px-3"
+				:class="uf.status === 'done' ? 'bg-elevated' : 'bg-elevated/60'"
+			>
+				<UIcon
+					:name="uf.status === 'done' ? 'i-lucide-check-circle' : uf.status === 'failed' ? 'i-lucide-x-circle' : 'i-lucide-file'"
+					class="text-lg shrink-0"
+					:class="uf.status === 'done' ? 'text-success' : uf.status === 'failed' ? 'text-error' : 'text-muted'"
+				/>
+				<div class="max-w-24 text-xs">
+					<div class="truncate font-medium">{{ uf.name }}</div>
+					<div class="text-muted">
+						<template v-if="uf.status === 'uploading'">{{ Math.round((uf.progress ?? 0) * 100) }}%</template>
+						<template v-else-if="uf.status === 'done'">{{ $t('common.done') }}</template>
+						<template v-else-if="uf.status === 'failed'">{{ $t('common.failed') }}</template>
+						<template v-else>{{ $t('common.pending') }}</template>
+					</div>
+				</div>
+			</div>
+		</div>
+		<!-- 文件预览区（未上传时） -->
+		<div
+			v-else-if="inputFiles.length"
 			class="mx-auto mb-2 flex w-full max-w-3xl flex-wrap gap-2 px-3"
 		>
 			<div
@@ -198,6 +225,10 @@ export default {
 		sending: {
 			type: Boolean,
 			default: false,
+		},
+		uploadProgress: {
+			type: Object,
+			default: null,
 		},
 		disabled: {
 			type: Boolean,

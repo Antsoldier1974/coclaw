@@ -6,6 +6,9 @@ export const enMessages = {
 		refresh: 'Refresh',
 		notLoggedIn: 'Not logged in',
 		copyFailed: 'Copy failed',
+		done: 'Done',
+		failed: 'Failed',
+		pending: 'Pending',
 	},
 	layout: {
 		productName: 'CoClaw',

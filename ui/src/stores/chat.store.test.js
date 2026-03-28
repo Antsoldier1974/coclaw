@@ -28,6 +28,13 @@ vi.mock('../services/bot-connection-manager.js', () => ({
 
 vi.mock('../utils/file-helper.js', () => ({
 	fileToBase64: vi.fn().mockResolvedValue('base64data'),
+	chatFilesDir: vi.fn().mockReturnValue('.coclaw/chat-files/main/2026-03'),
+	topicFilesDir: vi.fn().mockReturnValue('.coclaw/topic-files/topic-1'),
+	buildAttachmentBlock: vi.fn().mockReturnValue('## coclaw-attachments 🗂\n\n| Path | Size |\n|------|------|\n| .coclaw/chat-files/main/2026-03/photo-a3f1.jpg | 200.0 KB |'),
+}));
+
+vi.mock('../services/file-transfer.js', () => ({
+	postFile: vi.fn(),
 }));
 
 vi.mock('../services/bots.api.js', () => ({
@@ -577,7 +584,7 @@ describe('useChatStore', () => {
 			expect(agentCall[1].sessionKey).toBeUndefined();
 		});
 
-		test('带图片文件时内容变为 blocks 数组，且 fileToBase64 只调用一次（缓存复用）', async () => {
+		test('RTC 不可用时图片走 WS fallback（base64），fileToBase64 只调用一次', async () => {
 			const { fileToBase64 } = await import('../utils/file-helper.js');
 			fileToBase64.mockResolvedValue('imgbase64');
 
@@ -585,6 +592,7 @@ describe('useChatStore', () => {
 			botsStore.setBots([{ id: '1', online: true }]);
 
 			const conn = mockConn();
+			// conn.rtc 未设置 → RTC 不可用，走 fallback
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-1' });
@@ -610,6 +618,163 @@ describe('useChatStore', () => {
 			expect(agentCall[1].attachments[0].type).toBe('image');
 			// 同一图片文件只编码一次（乐观消息缓存复用到 attachments）
 			expect(fileToBase64).toHaveBeenCalledTimes(1);
+		});
+
+		test('RTC 可用时通过 POST 上传附件，message 包含附件信息块', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+			const { buildAttachmentBlock } = await import('../utils/file-helper.js');
+
+			postFile.mockReturnValue({
+				promise: Promise.resolve({ path: '.coclaw/chat-files/main/2026-03/photo-a3f1.jpg', bytes: 204800 }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-1' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const fakeFile = { type: 'image/png', size: 204800 };
+			const files = [{ isImg: true, file: fakeFile, name: 'photo.jpg', bytes: 204800 }];
+			await store.sendMessage('看这张图', files);
+
+			// postFile 被调用
+			expect(postFile).toHaveBeenCalledWith(
+				conn.rtc, 'main', '.coclaw/chat-files/main/2026-03', 'photo.jpg', fakeFile,
+			);
+			// buildAttachmentBlock 被调用
+			expect(buildAttachmentBlock).toHaveBeenCalled();
+
+			// agent RPC 的 message 包含附件信息块，不含 attachments
+			const agentCall = conn.request.mock.calls.find((c) => c[0] === 'agent');
+			expect(agentCall[1].message).toContain('coclaw-attachments');
+			expect(agentCall[1].message).toContain('看这张图');
+			expect(agentCall[1].attachments).toBeUndefined();
+		});
+
+		test('POST 上传失败时抛出错误，uploadingFiles 恢复', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+
+			postFile.mockReturnValue({
+				promise: Promise.reject(new Error('upload failed')),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') return new Promise(() => {});
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [{ isImg: false, file: new Blob(['data']), name: 'doc.pdf', bytes: 100 }];
+			await expect(store.sendMessage('here', files)).rejects.toThrow('upload failed');
+			expect(store.uploadingFiles).toBe(false);
+			expect(store.sending).toBe(false);
+		});
+
+		test('RTC 不可用时非图片文件被跳过', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			// conn.rtc 未设置 → fallback
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-1' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [{ isImg: false, file: new Blob(['data']), name: 'doc.pdf', bytes: 100 }];
+			await store.sendMessage('附件', files);
+
+			const agentCall = conn.request.mock.calls.find((c) => c[0] === 'agent');
+			// 非图片在 fallback 模式下被跳过，无 attachments
+			expect(agentCall[1].attachments).toBeUndefined();
+		});
+
+		test('上传阶段 cancelSend 不抛错，返回 accepted: false', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+
+			// postFile 返回一个可取消的 handle，promise 被 cancel 后 reject CANCELLED
+			let rejectFn;
+			const cancelFn = vi.fn();
+			postFile.mockReturnValue({
+				promise: new Promise((_resolve, reject) => { rejectFn = reject; }),
+				cancel() {
+					cancelFn();
+					const err = new Error('Upload cancelled');
+					err.code = 'CANCELLED';
+					rejectFn(err);
+				},
+				set onProgress(_cb) {},
+			});
+
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation(() => Promise.resolve(null));
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [{ isImg: false, file: new Blob(['data']), name: 'doc.pdf', bytes: 100, id: 'f1' }];
+			const sendPromise = store.sendMessage('here', files);
+
+			// 等待 upload 开始
+			await vi.waitFor(() => expect(store.uploadingFiles).toBe(true));
+
+			// 用户取消
+			store.cancelSend();
+
+			// 不应抛错，返回 { accepted: false }
+			const result = await sendPromise;
+			expect(result).toEqual({ accepted: false });
+			expect(store.sending).toBe(false);
+			expect(store.uploadProgress).toBeNull();
+			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
 		test('发送失败（request 抛出）时清理 streaming 状态并重新抛出', async () => {

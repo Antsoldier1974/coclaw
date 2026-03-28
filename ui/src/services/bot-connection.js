@@ -124,6 +124,9 @@ export class BotConnection {
 		return this.__transportMode;
 	}
 
+	/** @returns {import('./webrtc-connection.js').WebRtcConnection | null} */
+	get rtc() { return this.__rtc; }
+
 	/** 设置 RTC 连接引用 */
 	setRtc(rtcConn) { this.__rtc = rtcConn; }
 

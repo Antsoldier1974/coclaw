@@ -93,6 +93,7 @@
 			ref="chatInput"
 			v-model="inputText"
 			:sending="chatStore?.isSending ?? false"
+			:upload-progress="chatStore?.uploadProgress ?? null"
 			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || isLoadingChat) : (!routeBotId || isBotOffline || isLoadingChat)))"
 			@send="onSendMessage"
 			@cancel="onCancelSend"

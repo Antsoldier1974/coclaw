@@ -46,9 +46,13 @@ vi.mock('../services/bots.api.js', () => ({
 	listBots: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../utils/file-helper.js', () => ({
-	fileToBase64: vi.fn(() => Promise.resolve('bW9ja2VkX2Jhc2U2NA==')),
-}));
+vi.mock('../utils/file-helper.js', async (importOriginal) => {
+	const actual = await importOriginal();
+	return {
+		...actual,
+		fileToBase64: vi.fn(() => Promise.resolve('bW9ja2VkX2Jhc2U2NA==')),
+	};
+});
 
 const mockNotify = {
 	success: vi.fn(),

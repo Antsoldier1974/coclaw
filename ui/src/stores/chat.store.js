@@ -8,7 +8,8 @@
 import { defineStore } from 'pinia';
 
 import { useBotConnections } from '../services/bot-connection-manager.js';
-import { fileToBase64 } from '../utils/file-helper.js';
+import { postFile } from '../services/file-transfer.js';
+import { fileToBase64, chatFilesDir, topicFilesDir, buildAttachmentBlock } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { waitForConnected } from '../utils/wait-connected.js';
@@ -80,6 +81,12 @@ export function createChatStore(storeKey, opts = {}) {
 			historyLoading: false,
 			historyExhausted: topicMode,
 			__historyLoadedCount: 0,
+
+			// 附件上传状态
+			uploadingFiles: false,
+			/** @type {{ files: { id: string, name: string, status: string, progress: number }[], currentIdx: number } | null} */
+			uploadProgress: null,
+			__uploadHandle: null,
 
 			// 内部状态
 			__initialized: false,
@@ -398,9 +405,11 @@ export function createChatStore(storeKey, opts = {}) {
 				this.__agentSettled = false;
 				this.__accepted = false;
 
-				// 构建乐观消息条目（后续移入 agentRunsStore）
+				const hasFiles = files?.length > 0;
+				const rtcAvailable = hasFiles && conn.rtc?.isReady;
+
+				// 构建乐观消息：图片仍生成 base64 用于即时预览
 				const imgFiles = files?.filter((f) => f.isImg && f.file) ?? [];
-				/** @type {Map<File, string>} 缓存 base64，避免同一文件重复编码 */
 				const base64Cache = new Map();
 				let content = text;
 				if (imgFiles.length) {
@@ -419,6 +428,11 @@ export function createChatStore(storeKey, opts = {}) {
 					_local: true,
 					message: { role: 'user', content, timestamp: Date.now() },
 				};
+				if (hasFiles) {
+					optimisticUser._attachments = files.map((f) => ({
+						name: f.name, size: f.bytes, type: f.file?.type,
+					}));
+				}
 				const optimisticBot = {
 					type: 'message',
 					id: `__local_bot_${Date.now()}`,
@@ -433,25 +447,42 @@ export function createChatStore(storeKey, opts = {}) {
 				const idempotencyKey = __idempotencyKey || crypto.randomUUID();
 
 				try {
-					// 构建附件（复用已缓存的 base64）
-					const attachments = [];
-					for (const f of files) {
-						if (!f.file) continue;
-						const base64 = base64Cache.get(f.file) ?? await fileToBase64(f.file);
-						attachments.push({
-							type: f.isImg ? 'image' : f.isVoice ? 'audio' : 'file',
-							mimeType: f.file.type || 'application/octet-stream',
-							fileName: f.name,
-							content: base64,
-						});
+					let finalMessage;
+
+					if (hasFiles && rtcAvailable) {
+						// --- POST 上传模式 ---
+						finalMessage = await this.__uploadAndBuildMessage(conn, text, files);
+					} else if (hasFiles) {
+						// --- Fallback：WS inline base64（仅图片） ---
+						const attachments = [];
+						for (const f of files) {
+							if (!f.file) continue;
+							if (!f.isImg) {
+								console.warn('[chat] non-image attachment skipped (RTC unavailable): %s', f.name);
+								continue;
+							}
+							const base64 = base64Cache.get(f.file) ?? await fileToBase64(f.file);
+							attachments.push({
+								type: 'image',
+								mimeType: f.file.type || 'image/png',
+								fileName: f.name,
+								content: base64,
+							});
+						}
+						const safeText = (!text && attachments.length) ? '\u{1F449}' : text;
+						finalMessage = { text: safeText, attachments };
+					} else {
+						finalMessage = { text };
 					}
-					const safeText = (!text && attachments.length) ? '\u{1F449}' : text;
+
 					const agentParams = {
-						message: safeText,
+						message: finalMessage.text,
 						deliver: false,
 						idempotencyKey,
 					};
-					if (attachments.length) agentParams.attachments = attachments;
+					if (finalMessage.attachments?.length) {
+						agentParams.attachments = finalMessage.attachments;
+					}
 
 					// chat 模式用 sessionKey，topic 模式用 sessionId
 					if (this.topicMode) {
@@ -540,6 +571,13 @@ export function createChatStore(storeKey, opts = {}) {
 					if (this.__agentSettled && err?.code === 'WS_CLOSED') {
 						return { accepted: this.__accepted };
 					}
+					// 文件上传被取消（cancelSend 在上传阶段触发）：视同用户取消
+					if (err?.code === 'CANCELLED' && !this.__accepted) {
+						this.sending = false;
+						this.uploadProgress = null;
+						this.__removeLocalEntries();
+						return { accepted: false };
+					}
 					// 用户主动取消：不抛错；根据是否已 accepted 决定是否让调用方恢复输入
 					if (err?.code === 'USER_CANCELLED') {
 						// 注：cleanup() 触发的取消不 settle run（让后台继续执行）；
@@ -600,6 +638,7 @@ export function createChatStore(storeKey, opts = {}) {
 						this.__cleanupStreaming();
 						this.sending = false;
 					}
+					this.uploadProgress = null;
 					throw err;
 				}
 			},
@@ -632,6 +671,13 @@ export function createChatStore(storeKey, opts = {}) {
 
 			/** 取消发送（用户主动取消，同时 settle run） */
 			cancelSend() {
+				// 取消进行中的文件上传
+				if (this.__uploadHandle) {
+					this.__uploadHandle.cancel();
+					this.__uploadHandle = null;
+				}
+				this.uploadingFiles = false;
+				this.uploadProgress = null;
 				// 通过 reject cancel promise 让 sendMessage 立即 settle
 				if (this.__cancelReject) {
 					const err = new Error('user cancelled');
@@ -806,6 +852,13 @@ export function createChatStore(storeKey, opts = {}) {
 			 * 页面离开时清理发送状态（不销毁数据，store 持续存活）
 			 */
 			cleanup() {
+				// 取消进行中的文件上传
+				if (this.__uploadHandle) {
+					this.__uploadHandle.cancel();
+					this.__uploadHandle = null;
+				}
+				this.uploadingFiles = false;
+				this.uploadProgress = null;
 				// 让挂起的 sendMessage promise 立即 settle（run 本身继续后台执行）
 				if (this.__cancelReject) {
 					const err = new Error('user cancelled');
@@ -925,6 +978,74 @@ export function createChatStore(storeKey, opts = {}) {
 			},
 
 			// --- 内部辅助 ---
+
+			/**
+			 * 通过 POST 上传附件并构建最终消息文本
+			 * @param {object} conn - BotConnection
+			 * @param {string} text - 用户原始文本
+			 * @param {object[]} files - ChatInput 的文件对象数组
+			 * @returns {Promise<{ text: string }>}
+			 */
+			async __uploadAndBuildMessage(conn, text, files) {
+				const agentId = this.__resolveAgentId();
+				const dir = this.topicMode
+					? topicFilesDir(this.sessionId)
+					: chatFilesDir(this.chatSessionKey);
+
+				// 初始化上传进度
+				const validFiles = files.filter((f) => f.file);
+				this.uploadingFiles = true;
+				this.uploadProgress = {
+					files: validFiles.map((f) => ({
+						id: f.id, name: f.name, status: 'pending', progress: 0,
+					})),
+					currentIdx: 0,
+				};
+				const uploaded = []; // { path, name, size }
+
+				try {
+					for (let i = 0; i < validFiles.length; i++) {
+						const f = validFiles[i];
+						this.uploadProgress.currentIdx = i;
+						this.uploadProgress.files[i].status = 'uploading';
+
+						const handle = postFile(conn.rtc, agentId, dir, f.name, f.file);
+						this.__uploadHandle = handle;
+
+						// 注册进度回调
+						handle.onProgress = (sent, total) => {
+							if (this.uploadProgress?.files[i]) {
+								this.uploadProgress.files[i].progress = total > 0 ? sent / total : 0;
+							}
+						};
+
+						const result = await handle.promise;
+						this.uploadProgress.files[i].status = 'done';
+						this.uploadProgress.files[i].progress = 1;
+						uploaded.push({ path: result.path, name: f.name, size: f.bytes });
+						console.debug('[chat] uploaded %s → %s', f.name, result.path);
+					}
+				} catch (err) {
+					// 标记当前文件失败（保留 uploadProgress 供 UI 短暂展示）
+					const idx = this.uploadProgress?.currentIdx ?? 0;
+					if (this.uploadProgress?.files[idx]) {
+						this.uploadProgress.files[idx].status = 'failed';
+					}
+					// 不在此处清除 uploadProgress，让 sendMessage catch 块处理
+					throw err;
+				} finally {
+					this.__uploadHandle = null;
+					this.uploadingFiles = false;
+				}
+
+				// 成功：清除上传进度，构建最终消息
+				this.uploadProgress = null;
+				const block = buildAttachmentBlock(uploaded);
+				const finalText = block
+					? (text ? `${text}\n\n${block}` : block)
+					: text;
+				return { text: finalText };
+			},
 
 			__resolveAgentId() {
 				if (this.topicMode) return this.topicAgentId || 'main';

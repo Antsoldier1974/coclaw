@@ -1,3 +1,5 @@
+import { parseAttachmentBlock, isImageByExt } from './file-helper.js';
+
 /**
  * 将原始 JSONL 条目分组为渲染用 chat items。
  *
@@ -31,16 +33,25 @@ function groupSessionMessages(entries) {
 			}
 
 			lastUserTs = msg.timestamp ?? null;
-			const textContent = stripOcPrefixes(extractTextContent(msg.content), 'user');
+			let textContent = stripOcPrefixes(extractTextContent(msg.content), 'user');
 			const images = extractImages(msg.content);
 			if (images.length) {
 				console.log('[msg-group] user message has %d image(s), id=%s', images.length, entry.id);
 			}
+
+			// 解析附件信息块
+			const { cleanText, attachments } = parseAttachments(textContent);
+			textContent = cleanText;
+
+			// 乐观消息可能携带 _attachments（发送时注入的附件元信息）
+			const localAttachments = entry._attachments;
+
 			items.push({
 				type: 'user',
 				id: entry.id,
 				textContent,
 				images,
+				attachments: attachments.length ? attachments : (localAttachments || []),
 				timestamp: msg.timestamp ?? null,
 			});
 		} else if (role === 'assistant') {
@@ -315,6 +326,23 @@ function cleanDerivedTitle(text) {
 		.replace(UNTRUSTED_CTX_SUFFIX_RE, '')
 		.replace(MSG_ID_SUFFIX_RE, '')
 		.trim();
+}
+
+/**
+ * 从用户消息文本中解析附件信息块。
+ * 委托给 file-helper.parseAttachmentBlock，并为每个附件标记 isImg。
+ * @param {string} text
+ * @returns {{ cleanText: string, attachments: object[] }}
+ */
+function parseAttachments(text) {
+	const { cleanText, attachments } = parseAttachmentBlock(text);
+	return {
+		cleanText,
+		attachments: attachments.map((a) => ({
+			...a,
+			isImg: isImageByExt(a.path),
+		})),
+	};
 }
 
 export { groupSessionMessages, stripOcPrefixes, cleanDerivedTitle };

@@ -6,6 +6,9 @@ export const zhCNMessages = {
 		refresh: '刷新',
 		notLoggedIn: '未登录',
 		copyFailed: '复制失败',
+		done: '完成',
+		failed: '失败',
+		pending: '等待中',
 	},
 	layout: {
 		productName: 'CoClaw',

@@ -1,5 +1,9 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from 'vitest';
-import { fileToBase64, formatFileSize, formatFileBlob } from './file-helper.js';
+import {
+	fileToBase64, formatFileSize, formatFileBlob,
+	isImageByExt, chatFilesDir, topicFilesDir,
+	buildAttachmentBlock, parseAttachmentBlock,
+} from './file-helper.js';
 
 const origCreateObjectURL = URL.createObjectURL;
 const origRevokeObjectURL = URL.revokeObjectURL;
@@ -98,5 +102,156 @@ describe('formatFileBlob', () => {
 		const result = formatFileBlob(file);
 		expect(result.ext).toBe('');
 		expect(result.name).toBe('Makefile');
+	});
+});
+
+describe('isImageByExt', () => {
+	test('recognizes common image extensions', () => {
+		expect(isImageByExt('photo.png')).toBe(true);
+		expect(isImageByExt('photo.jpg')).toBe(true);
+		expect(isImageByExt('photo.jpeg')).toBe(true);
+		expect(isImageByExt('photo.gif')).toBe(true);
+		expect(isImageByExt('photo.webp')).toBe(true);
+		expect(isImageByExt('photo.svg')).toBe(true);
+		expect(isImageByExt('photo.bmp')).toBe(true);
+	});
+
+	test('case insensitive', () => {
+		expect(isImageByExt('photo.PNG')).toBe(true);
+		expect(isImageByExt('photo.Jpg')).toBe(true);
+	});
+
+	test('returns false for non-image extensions', () => {
+		expect(isImageByExt('doc.pdf')).toBe(false);
+		expect(isImageByExt('voice.webm')).toBe(false);
+		expect(isImageByExt('app.js')).toBe(false);
+	});
+
+	test('returns false for no extension', () => {
+		expect(isImageByExt('Makefile')).toBe(false);
+	});
+
+	test('handles paths with directories', () => {
+		expect(isImageByExt('.coclaw/chat-files/main/2026-03/photo-a3f1.jpg')).toBe(true);
+		expect(isImageByExt('.coclaw/chat-files/main/2026-03/report-b7e2.pdf')).toBe(false);
+	});
+});
+
+describe('chatFilesDir', () => {
+	test('extracts rest and escapes colons', () => {
+		// 冻结时间以确定 YYYY-MM
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-03-15T10:00:00'));
+
+		expect(chatFilesDir('agent:main:main')).toBe('.coclaw/chat-files/main/2026-03');
+		expect(chatFilesDir('agent:main:telegram:direct:123'))
+			.toBe('.coclaw/chat-files/telegram--direct--123/2026-03');
+
+		vi.useRealTimers();
+	});
+
+	test('handles single segment rest', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-12-01T10:00:00'));
+		expect(chatFilesDir('agent:main:main')).toBe('.coclaw/chat-files/main/2026-12');
+		vi.useRealTimers();
+	});
+});
+
+describe('topicFilesDir', () => {
+	test('builds correct path', () => {
+		const id = 'a1b2c3d4-5678-9abc-def0-123456789abc';
+		expect(topicFilesDir(id)).toBe(`.coclaw/topic-files/${id}`);
+	});
+});
+
+describe('buildAttachmentBlock', () => {
+	test('builds basic table without Name column', () => {
+		const files = [
+			{ path: '.coclaw/chat-files/main/2026-03/photo-a3f1.jpg', name: 'photo.jpg', size: 204800 },
+			{ path: '.coclaw/chat-files/main/2026-03/report-b7e2.pdf', name: 'report.pdf', size: 2202009 },
+		];
+		const result = buildAttachmentBlock(files);
+		expect(result).toContain('## coclaw-attachments 🗂');
+		expect(result).toContain('| Path | Size |');
+		expect(result).toContain('| .coclaw/chat-files/main/2026-03/photo-a3f1.jpg | 200.0 KB |');
+		expect(result).toContain('| .coclaw/chat-files/main/2026-03/report-b7e2.pdf | 2.1 MB |');
+		expect(result).not.toContain('Name');
+	});
+
+	test('adds Name column on collision', () => {
+		const files = [
+			{ path: '.coclaw/chat-files/main/2026-03/photo-a3f1.jpg', name: 'photo.jpg', size: 204800 },
+			{ path: '.coclaw/chat-files/main/2026-03/photo-c9d4.jpg', name: 'photo.jpg', size: 153600 },
+		];
+		const result = buildAttachmentBlock(files);
+		expect(result).toContain('| Path | Size | Name |');
+		// 碰撞文件都填入 name
+		expect(result).toContain('| .coclaw/chat-files/main/2026-03/photo-a3f1.jpg | 200.0 KB | photo.jpg |');
+		expect(result).toContain('| .coclaw/chat-files/main/2026-03/photo-c9d4.jpg | 150.0 KB | photo.jpg |');
+	});
+
+	test('mixed collision: only collided names filled', () => {
+		const files = [
+			{ path: 'a/photo-a3f1.jpg', name: 'photo.jpg', size: 100 },
+			{ path: 'a/photo-c9d4.jpg', name: 'photo.jpg', size: 200 },
+			{ path: 'a/report-b7e2.pdf', name: 'report.pdf', size: 300 },
+		];
+		const result = buildAttachmentBlock(files);
+		expect(result).toContain('| Name |');
+		// report.pdf 不碰撞，Name 列留空
+		expect(result).toContain('| a/report-b7e2.pdf | 300 B |  |');
+	});
+
+	test('returns empty string for empty input', () => {
+		expect(buildAttachmentBlock([])).toBe('');
+		expect(buildAttachmentBlock(null)).toBe('');
+	});
+});
+
+describe('parseAttachmentBlock', () => {
+	test('parses basic table', () => {
+		const text = '帮我分析\n\n## coclaw-attachments 🗂\n\n| Path | Size |\n|------|------|\n| .coclaw/f/photo.jpg | 200KB |';
+		const { cleanText, attachments } = parseAttachmentBlock(text);
+		expect(cleanText).toBe('帮我分析');
+		expect(attachments).toHaveLength(1);
+		expect(attachments[0].path).toBe('.coclaw/f/photo.jpg');
+		expect(attachments[0].size).toBe('200KB');
+		expect(attachments[0].name).toBe('');
+	});
+
+	test('parses table with Name column', () => {
+		const text = '对比\n\n## coclaw-attachments 🗂\n\n| Path | Size | Name |\n|------|------|------|\n| a/p-a3.jpg | 200KB | |\n| a/p-c9.jpg | 150KB | photo.jpg |';
+		const { cleanText, attachments } = parseAttachmentBlock(text);
+		expect(cleanText).toBe('对比');
+		expect(attachments).toHaveLength(2);
+		expect(attachments[0].name).toBe('');
+		expect(attachments[1].name).toBe('photo.jpg');
+	});
+
+	test('handles text without attachment block', () => {
+		const text = '普通消息';
+		const { cleanText, attachments } = parseAttachmentBlock(text);
+		expect(cleanText).toBe('普通消息');
+		expect(attachments).toHaveLength(0);
+	});
+
+	test('handles attachment-only message (no text)', () => {
+		const text = '## coclaw-attachments 🗂\n\n| Path | Size |\n|------|------|\n| a/report.pdf | 2.1MB |';
+		const { cleanText, attachments } = parseAttachmentBlock(text);
+		expect(cleanText).toBe('');
+		expect(attachments).toHaveLength(1);
+		expect(attachments[0].path).toBe('a/report.pdf');
+	});
+
+	test('handles empty/null input', () => {
+		expect(parseAttachmentBlock('')).toEqual({ cleanText: '', attachments: [] });
+		expect(parseAttachmentBlock(null)).toEqual({ cleanText: '', attachments: [] });
+	});
+
+	test('multiple files', () => {
+		const text = '看看\n\n## coclaw-attachments 🗂\n\n| Path | Size |\n|------|------|\n| a/p.jpg | 200KB |\n| a/r.pdf | 2MB |\n| a/v.webm | 120KB |';
+		const { attachments } = parseAttachmentBlock(text);
+		expect(attachments).toHaveLength(3);
 	});
 });
