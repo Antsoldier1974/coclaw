@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.9.2
+
+### Patch Changes
+
+- fix: WebRTC init race condition + reconnect unhandled rejection
+
 ## 0.9.1
 
 ### Patch Changes

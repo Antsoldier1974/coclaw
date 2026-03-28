@@ -714,6 +714,7 @@ export class RealtimeBridge {
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
 			this.__connectIfNeeded().catch((err) => {
+				/* c8 ignore next -- 防御性兜底，__connectIfNeeded 内部已有完整错误处理 */
 				this.logger.warn?.(`[coclaw] reconnect failed: ${err?.message}`);
 			});
 		}, RECONNECT_MS);
