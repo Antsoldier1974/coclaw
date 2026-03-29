@@ -33,6 +33,7 @@ vi.mock('../stores/bots.store.js', () => ({
 			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, transportMode: null, rtcState: null, rtcTransportInfo: null, connState: 'disconnected' };
 			return map;
 		},
+		fetched: true, // SSE 快照已到达
 		loadBots: mockLoadBots,
 	}),
 }));
@@ -158,12 +159,12 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.find('[data-testid="bot-99"]').exists()).toBe(true);
 	});
 
-	test('mounted 时调用 loadBots 和 loadDashboard', async () => {
+	test('mounted 时加载 dashboard（不调用 loadBots，由 SSE 快照维护）', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		createWrapper();
 		await flushPromises();
 
-		expect(mockLoadBots).toHaveBeenCalledTimes(1);
+		expect(mockLoadBots).not.toHaveBeenCalled();
 		expect(mockLoadDashboard).toHaveBeenCalledWith('1');
 	});
 
@@ -176,44 +177,44 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.text()).toContain('Preparing...');
 	});
 
-	test('app:foreground 时重新加载数据', async () => {
+	test('app:foreground 时重新加载 dashboard', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		mockLoadBots.mockClear();
+		mockLoadDashboard.mockClear();
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 		await flushPromises();
 
-		expect(mockLoadBots).toHaveBeenCalled();
+		expect(mockLoadDashboard).toHaveBeenCalled();
 		wrapper.unmount();
 	});
 
-	test('visibilitychange → visible 时重新加载数据', async () => {
+	test('visibilitychange → visible 时重新加载 dashboard', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		mockLoadBots.mockClear();
+		mockLoadDashboard.mockClear();
 		Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
 		document.dispatchEvent(new Event('visibilitychange'));
 		await flushPromises();
 
-		expect(mockLoadBots).toHaveBeenCalled();
+		expect(mockLoadDashboard).toHaveBeenCalled();
 		wrapper.unmount();
 	});
 
 	test('2s 内重复前台恢复应节流', async () => {
-		mockBots = [];
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		mockLoadBots.mockClear();
+		mockLoadDashboard.mockClear();
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 		await flushPromises();
 
-		expect(mockLoadBots).toHaveBeenCalledTimes(1);
+		expect(mockLoadDashboard).toHaveBeenCalledTimes(1);
 		wrapper.unmount();
 	});
 

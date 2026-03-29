@@ -128,6 +128,50 @@ export const useBotsStore = defineStore('bots', {
 			_bridgedConns.delete(id);
 			delete this.byId[id];
 		},
+		/**
+		 * 应用 SSE 推送的全量 bot 快照（替代 loadBots 作为主要数据源）
+		 * @param {object[]} items - server 推送的 bot 列表
+		 */
+		applySnapshot(items) {
+			const arr = Array.isArray(items) ? items : [];
+			const newById = {};
+			for (const b of arr) {
+				const id = String(b.id ?? '');
+				if (!id) continue;
+				const existing = this.byId[id];
+				if (existing) {
+					const preserveOnline = existing.connState === 'connected';
+					Object.assign(existing, b, { id });
+					if (preserveOnline) existing.online = true;
+					newById[id] = existing;
+				} else {
+					newById[id] = createBotState({ ...b, id });
+				}
+			}
+			// 清理快照中不再存在的 bot（RTC、sessions、agentRuns）
+			for (const oldId of Object.keys(this.byId)) {
+				if (!newById[oldId]) {
+					closeRtcForBot(oldId);
+					useSessionsStore().removeSessionsByBotId(oldId);
+					useAgentRunsStore().removeByBot(oldId);
+					_bridgedConns.delete(oldId);
+				}
+			}
+			this.byId = newById;
+			this.fetched = true;
+			console.debug('[bots] snapshot applied %d bot(s)', arr.length);
+
+			const botIds = arr.map((b) => String(b.id));
+			const manager = useBotConnections();
+			manager.syncConnections(botIds);
+			for (const id of botIds) {
+				this.__bridgeConn(id);
+			}
+		},
+		/**
+		 * 通过 HTTP 全量获取 bot 列表。
+		 * 注：UI 主流程已通过 SSE bot.snapshot 获取 bot 列表，此方法作为后备保留。
+		 */
 		async loadBots() {
 			this.loading = true;
 			try {
@@ -260,7 +304,7 @@ export const useBotsStore = defineStore('bots', {
 					const gap = Date.now() - conn.disconnectedAt;
 					if (gap >= BRIEF_DISCONNECT_MS) {
 						console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
-						this.loadBots().catch(() => {});
+						// bot 列表由 SSE 快照维护，无需 loadBots()
 						useAgentsStore().loadAgents(id).catch(() => {});
 						useSessionsStore().loadAllSessions().catch(() => {});
 						useTopicsStore().loadAllTopics().catch(() => {});

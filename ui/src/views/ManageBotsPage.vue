@@ -195,8 +195,18 @@ export default {
 		async loadData() {
 			this.loading = true;
 			try {
-				await this.botsStore?.loadBots();
-				// 并行加载所有 bot 的 dashboard
+				// bot 列表由 SSE 快照维护；等待 fetched 后只加载 dashboard
+				if (!this.botsStore?.fetched) {
+					await new Promise((resolve) => {
+						const unwatch = this.$watch(
+							() => this.botsStore?.fetched,
+							(val) => {
+								if (val) { unwatch(); resolve(); }
+							},
+							{ immediate: true },
+						);
+					});
+				}
 				await Promise.allSettled(
 					this.bots.map(bot => this.dashboardStore.loadDashboard(String(bot.id)))
 				);

@@ -38,7 +38,6 @@
 import { ref } from 'vue';
 import DesktopSidebar from '../components/DesktopSidebar.vue';
 import MobileBottomTabs from '../components/MobileBottomTabs.vue';
-import { useBotStatusPoll } from '../composables/use-bot-status-poll.js';
 import { useBotStatusSse } from '../composables/use-bot-status-sse.js';
 import { usePullRefresh } from '../composables/use-pull-refresh.js';
 import { useAuthStore } from '../stores/auth.store.js';
@@ -53,8 +52,7 @@ export default {
 	},
 	setup() {
 		const botsStore = useBotsStore();
-		const { connected: sseConnected } = useBotStatusSse(botsStore);
-		useBotStatusPoll(botsStore, { sseConnected });
+		useBotStatusSse(botsStore);
 
 		const contentSection = ref(null);
 		const { pulling, pullDistance, pastThreshold } = usePullRefresh(contentSection);

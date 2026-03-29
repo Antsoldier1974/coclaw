@@ -103,20 +103,20 @@ test('listBotsHandler: should include online state and refreshed name from ws hu
 	assert.deepEqual(refreshedIds, ['2']);
 });
 
-test('botStatusStreamHandler: should reject unauthenticated request', () => {
+test('botStatusStreamHandler: should reject unauthenticated request', async () => {
 	const req = {
 		isAuthenticated: () => false,
 		user: null,
 	};
 	const res = createRes();
 
-	botStatusStreamHandler(req, res);
+	await botStatusStreamHandler(req, res);
 
 	assert.equal(res.statusCode, 401);
 	assert.equal(res.body.code, 'UNAUTHORIZED');
 });
 
-test('botStatusStreamHandler: should set SSE headers for authenticated request', () => {
+test('botStatusStreamHandler: should set SSE headers for authenticated request', async () => {
 	const headers = {};
 	const reqCloseHandlers = [];
 	const req = {
@@ -126,16 +126,19 @@ test('botStatusStreamHandler: should set SSE headers for authenticated request',
 			reqCloseHandlers.push({ event, handler });
 		},
 	};
+	const written = [];
 	const res = {
 		writeHead(status, hdrs) {
 			this.statusCode = status;
 			Object.assign(headers, hdrs);
 		},
-		write() {},
+		write(data) { written.push(data); },
 		on() {},
 	};
 
-	botStatusStreamHandler(req, res);
+	await botStatusStreamHandler(req, res, undefined, {
+		sendSnapshotImpl: async () => {},
+	});
 
 	assert.equal(res.statusCode, 200);
 	assert.equal(headers['Content-Type'], 'text/event-stream');

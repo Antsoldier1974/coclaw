@@ -1,5 +1,5 @@
-import { findBotById } from './repos/bot.repo.js';
-import { botStatusEmitter } from './bot-ws-hub.js';
+import { findBotById, listBotsByUserId } from './repos/bot.repo.js';
+import { botStatusEmitter, listOnlineBotIds } from './bot-ws-hub.js';
 
 // userId(string) -> Set<Response>
 const sseClients = new Map();
@@ -23,6 +23,34 @@ export function registerSseClient(userId, res) {
 		}
 		console.info('[coclaw/sse] disconnected userId=%s clients=%d', key, set.size);
 	});
+}
+
+/**
+ * 向单个 SSE 客户端推送全量 bot 快照
+ * @param {string|bigint} userId
+ * @param {import('express').Response} res
+ * @param {{ listBotsByUserIdImpl?: Function, listOnlineBotIdsImpl?: Function }} [deps]
+ */
+export async function sendSnapshot(userId, res, deps = {}) {
+	const {
+		listBotsByUserIdImpl = listBotsByUserId,
+		listOnlineBotIdsImpl = listOnlineBotIds,
+	} = deps;
+	const bots = await listBotsByUserIdImpl(userId);
+	const onlineIds = listOnlineBotIdsImpl();
+	const items = bots.map((b) => {
+		const botId = b.id.toString();
+		return {
+			id: botId,
+			name: b.name,
+			online: onlineIds.has(botId),
+			lastSeenAt: b.lastSeenAt,
+			createdAt: b.createdAt,
+			updatedAt: b.updatedAt,
+		};
+	});
+	const msg = `data: ${JSON.stringify({ event: 'bot.snapshot', items })}\n\n`;
+	try { res.write(msg); } catch {}
 }
 
 /**

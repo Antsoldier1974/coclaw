@@ -268,11 +268,17 @@ export default {
 	},
 	methods: {
 		async loadAllData() {
-			try {
-				await this.botsStore?.loadBots();
-			}
-			catch {
-				this.botsStore?.setBots([]);
+			// 等待 SSE 快照到达（bot 数据由 SSE 维护，无需主动 loadBots）
+			if (!this.botsStore?.fetched) {
+				await new Promise((resolve) => {
+					const unwatch = this.$watch(
+						() => this.botsStore?.fetched,
+						(val) => {
+							if (val) { unwatch(); resolve(); }
+						},
+						{ immediate: true },
+					);
+				});
 			}
 			await this.agentsStore?.loadAllAgents();
 			await this.topicsStore.loadAllTopics();

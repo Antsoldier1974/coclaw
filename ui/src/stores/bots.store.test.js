@@ -363,6 +363,106 @@ describe('updateBotOnline', () => {
 	});
 });
 
+describe('applySnapshot', () => {
+	test('sets byId from snapshot items and calls syncConnections + bridgeConn', () => {
+		const store = useBotsStore();
+		mockManager.get.mockReturnValue(null);
+
+		const items = [
+			{ id: '1', name: 'A', online: true },
+			{ id: '2', name: 'B', online: false },
+		];
+		store.applySnapshot(items);
+
+		expect(Object.keys(store.byId)).toEqual(['1', '2']);
+		expect(store.byId['1'].name).toBe('A');
+		expect(store.byId['1'].online).toBe(true);
+		expect(store.byId['2'].online).toBe(false);
+		expect(store.fetched).toBe(true);
+		expect(mockManager.syncConnections).toHaveBeenCalledWith(['1', '2']);
+	});
+
+	test('preserves runtime state for existing bots', () => {
+		const store = useBotsStore();
+		mockManager.get.mockReturnValue(null);
+
+		// 先添加一个 bot，模拟已有运行时状态
+		store.byId['1'] = {
+			id: '1', name: 'old', online: false,
+			connState: 'connected', initialized: true,
+			transportMode: 'rtc', pluginVersionOk: true,
+		};
+
+		store.applySnapshot([{ id: '1', name: 'new', online: false }]);
+
+		// 基础信息更新
+		expect(store.byId['1'].name).toBe('new');
+		// 运行时状态保留
+		expect(store.byId['1'].connState).toBe('connected');
+		expect(store.byId['1'].initialized).toBe(true);
+		expect(store.byId['1'].transportMode).toBe('rtc');
+	});
+
+	test('preserves online=true when connState is connected (same as loadBots)', () => {
+		const store = useBotsStore();
+		mockManager.get.mockReturnValue(null);
+
+		store.byId['1'] = {
+			id: '1', name: 'a', online: true,
+			connState: 'connected',
+		};
+
+		// 快照说 offline，但 WS 已连接 → 保留 online=true
+		store.applySnapshot([{ id: '1', name: 'a', online: false }]);
+		expect(store.byId['1'].online).toBe(true);
+	});
+
+	test('removes bots not in snapshot and cleans up RTC/sessions/agentRuns', () => {
+		const store = useBotsStore();
+		const sessionsStore = useSessionsStore();
+		const agentRunsStore = useAgentRunsStore();
+		const removeSessionsSpy = vi.spyOn(sessionsStore, 'removeSessionsByBotId');
+		const removeAgentRunsSpy = vi.spyOn(agentRunsStore, 'removeByBot');
+		mockManager.get.mockReturnValue(null);
+
+		store.byId['1'] = { id: '1', name: 'old' };
+		store.byId['2'] = { id: '2', name: 'will-be-removed' };
+
+		store.applySnapshot([{ id: '1', name: 'kept' }]);
+
+		expect(store.byId['1']).toBeDefined();
+		expect(store.byId['2']).toBeUndefined();
+		// 被移除的 bot 应清理关联资源
+		expect(mockCloseRtcForBot).toHaveBeenCalledWith('2');
+		expect(removeSessionsSpy).toHaveBeenCalledWith('2');
+		expect(removeAgentRunsSpy).toHaveBeenCalledWith('2');
+	});
+
+	test('skips items with null/undefined id', () => {
+		const store = useBotsStore();
+		mockManager.get.mockReturnValue(null);
+
+		store.applySnapshot([
+			{ id: null, name: 'bad' },
+			{ id: undefined, name: 'bad2' },
+			{ id: '1', name: 'good' },
+		]);
+
+		expect(Object.keys(store.byId)).toEqual(['1']);
+	});
+
+	test('handles empty items array', () => {
+		const store = useBotsStore();
+		mockManager.get.mockReturnValue(null);
+
+		store.applySnapshot([]);
+
+		expect(Object.keys(store.byId)).toEqual([]);
+		expect(store.fetched).toBe(true);
+		expect(mockManager.syncConnections).toHaveBeenCalledWith([]);
+	});
+});
+
 describe('loadBots', () => {
 	test('fetches bots, normalizes id to string, and calls syncConnections', async () => {
 		const store = useBotsStore();
@@ -886,7 +986,7 @@ describe('WebRTC 集成', () => {
 });
 
 describe('重连后批量状态刷新', () => {
-	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 bots/agents/sessions/topics/dashboard', async () => {
+	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 agents/sessions/topics/dashboard（不刷新 bots）', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -937,7 +1037,8 @@ describe('重连后批量状态刷新', () => {
 
 
 		await vi.waitFor(() => {
-			expect(store.loadBots).toHaveBeenCalled();
+			// bot 列表由 SSE 快照维护，WS 重连不再调用 loadBots
+			expect(store.loadBots).not.toHaveBeenCalled();
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
