@@ -324,6 +324,8 @@ export class WebRtcConnection {
 	attemptIceRestart(timeoutMs = 5000) {
 		const pc = this.__pc;
 		if (!pc || this.__state === 'closed') return Promise.resolve(false);
+		// PC 已 connected → 无需 restart，直接视为成功
+		if (pc.connectionState === 'connected') return Promise.resolve(true);
 
 		this.__externalRecovery = true;
 		this.__log('info', 'external ICE restart attempt');

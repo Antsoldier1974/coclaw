@@ -708,7 +708,7 @@ describe('WebRTC 集成', () => {
 		});
 		mockInitRtcAndSelectTransport.mockClear();
 
-		// 模拟断连 → 重连（已 initialized）
+		// 模拟断连 → 重连（已 initialized）→ 单次 initRtcAndSelectTransport（非 __ensureRtc）
 		fakeConn.state = 'disconnected';
 		stateCallback('disconnected');
 		fakeConn.state = 'connected';
@@ -716,7 +716,7 @@ describe('WebRTC 集成', () => {
 		await vi.waitFor(() => {
 			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('2', fakeConn, expect.objectContaining({
 				onTransportMode: expect.any(Function),
-			}), expect.any(Object));
+			}));
 		});
 	});
 
@@ -761,6 +761,29 @@ describe('WebRTC 集成', () => {
 				onTransportMode: expect.any(Function),
 			}), expect.any(Object));
 		});
+	});
+
+	test('bot offline→online + RTC 已 connected → __ensureRtc 直接返回，不做任何操作', async () => {
+		const store = useBotsStore();
+		const fakeRtc = { state: 'connected', attemptIceRestart: vi.fn() };
+		const fakeConn = {
+			state: 'connected', rtc: fakeRtc, transportMode: 'rtc',
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setBots([{ id: '55', name: 'Bot', online: false }]);
+		store.byId['55'].connState = 'connected';
+		store.byId['55'].initialized = true;
+		mockInitRtcAndSelectTransport.mockClear();
+		mockCloseRtcForBot.mockClear();
+
+		store.updateBotOnline('55', true);
+		await new Promise((r) => setTimeout(r, 50));
+		// RTC 已 connected → 无需 ICE restart、无需 rebuild
+		expect(fakeRtc.attemptIceRestart).not.toHaveBeenCalled();
+		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
+		expect(mockInitRtcAndSelectTransport).not.toHaveBeenCalled();
 	});
 
 	test('bot offline→online + 已有 RTC → ICE restart 优先', async () => {

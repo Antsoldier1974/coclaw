@@ -252,10 +252,10 @@ export const useBotsStore = defineStore('bots', {
 				});
 			} else {
 				console.debug('[bots] ws reconnected botId=%s → re-select transport', id);
-				// WS 重连后无条件重建 RTC：旧 RTC 在断连期间必然失效，
-				// 且 loadBots 的 preserveOnline 可能绕过 updateBotOnline 设 online=true，
-				// 导致后续 SSE online 推送成 no-op，__ensureRtc 不再被触发
-				this.__ensureRtc(id).catch(() => {});
+				// 单次 RTC 尝试即可：initRtcAndSelectTransport 内部有幂等守卫
+				// （RTC 仍 connected 则 no-op），失败后 15s 超时降级 WS。
+				// 不使用 __ensureRtc（3 轮重试过重，会在 tab 切换等场景造成长时间阻塞）
+				initRtcAndSelectTransport(id, conn, this.__rtcCallbacks(id)).catch(() => {});
 				if (conn.disconnectedAt > 0) {
 					const gap = Date.now() - conn.disconnectedAt;
 					if (gap >= BRIEF_DISCONNECT_MS) {
@@ -283,8 +283,10 @@ export const useBotsStore = defineStore('bots', {
 			if (!conn) { _rtcInitInProgress.delete(id); return; }
 
 			try {
-				// 已有 RTC 且未关闭 → 尝试 ICE restart 快速恢复
 				const rtc = conn.rtc;
+				// RTC 已连接且健康 → 无需操作
+				if (rtc && rtc.state === 'connected') return;
+				// 已有 RTC 但未关闭（disconnected 等）→ 尝试 ICE restart 快速恢复
 				if (rtc && rtc.state !== 'closed' && rtc.state !== 'failed') {
 					console.debug('[bots] ensureRtc: attempting ICE restart botId=%s', id);
 					const ok = await rtc.attemptIceRestart(5000);
