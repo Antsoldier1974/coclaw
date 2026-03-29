@@ -340,6 +340,9 @@ export const useBotsStore = defineStore('bots', {
 			}
 			if (!info.ok) {
 				console.warn('[bots] plugin version %s for botId=%s', info.version ? 'outdated' : 'check failed (bot may be offline)', id);
+				// bot 不可达时中止初始化，让 initialized 重置为 false；
+				// 后续 updateBotOnline(true) 触发 !initialized 分支 → __onBotConnected 重试
+				if (!info.version) throw new Error('Bot is offline');
 			}
 			await useAgentsStore().loadAgents(id);
 			useSessionsStore().loadAllSessions();
