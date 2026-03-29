@@ -90,3 +90,25 @@ body {
 	min-height: 40px;
 	justify-content: center;
 }
+
+/* icon 按钮 hover — currentColor 伪元素覆盖层（参考 Quasar q-focus-helper） */
+.cc-icon-btn,
+.cc-icon-btn-lg {
+	position: relative;
+	overflow: hidden;
+}
+.cc-icon-btn::before,
+.cc-icon-btn-lg::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: currentColor;
+	border-radius: inherit;
+	opacity: 0;
+	transition: opacity 0.2s;
+	pointer-events: none;
+}
+.cc-icon-btn:hover::before,
+.cc-icon-btn-lg:hover::before {
+	opacity: 0.15;
+}
