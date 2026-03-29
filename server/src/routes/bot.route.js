@@ -482,7 +482,8 @@ export async function botStatusStreamHandler(req, res, _next, {
 		try {
 			res.write('data: {"event":"heartbeat"}\n\n');
 		}
-		catch {
+		catch (err) {
+			console.debug('[SSE] heartbeat write failed, clearing timer: %s', err?.message);
 			clearInterval(hbTimer);
 		}
 	}, 30_000);

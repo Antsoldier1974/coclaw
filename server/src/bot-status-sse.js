@@ -50,7 +50,11 @@ export async function sendSnapshot(userId, res, deps = {}) {
 		};
 	});
 	const msg = `data: ${JSON.stringify({ event: 'bot.snapshot', items })}\n\n`;
-	try { res.write(msg); } catch {}
+	try {
+		res.write(msg);
+	} catch (err) {
+		console.warn('[coclaw/sse] snapshot write failed userId=%s: %s', userId, err?.message);
+	}
 }
 
 /**
@@ -70,7 +74,9 @@ export function sendToUser(userId, data) {
 		try {
 			res.write(msg);
 		}
-		catch {}
+		catch (err) {
+			console.debug('[coclaw/sse] write failed userId=%s: %s', key, err?.message);
+		}
 	}
 }
 
@@ -96,8 +102,8 @@ botStatusEmitter.on('status', async ({ botId, online }) => {
 			online,
 		});
 	}
-	catch {
-		// 静默忽略，避免 SSE 推送失败影响主流程
+	catch (err) {
+		console.warn('[coclaw/sse] status event push failed botId=%s: %s', botId, err?.message);
 	}
 });
 
@@ -116,7 +122,7 @@ botStatusEmitter.on('nameUpdated', async ({ botId, name }) => {
 			name,
 		});
 	}
-	catch {
-		// 静默忽略
+	catch (err) {
+		console.warn('[coclaw/sse] nameUpdated event push failed botId=%s: %s', botId, err?.message);
 	}
 });
