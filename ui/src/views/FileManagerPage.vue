@@ -134,10 +134,7 @@
 						</div>
 					</div>
 				</div>
-				<label v-if="duplicateItems.length > 1" class="mt-3 flex items-center gap-2 text-sm cursor-pointer">
-					<input type="checkbox" v-model="duplicateApplyAll" />
-					<span>{{ $t('files.applyToAll') }}</span>
-				</label>
+				<UCheckbox v-if="duplicateItems.length > 1" v-model="duplicateApplyAll" :label="$t('files.applyToAll')" class="mt-3" />
 			</template>
 			<template #footer>
 				<div class="flex w-full justify-end gap-2">
@@ -151,10 +148,7 @@
 		<UModal v-model:open="deleteDirOpen" :title="$t('files.deleteDirTitle')" :ui="promptUi">
 			<template #body>
 				<p class="text-sm text-muted">{{ $t('files.deleteDirDesc', { name: deleteDirName }) }}</p>
-				<label class="mt-3 flex items-center gap-2 text-sm cursor-pointer">
-					<input type="checkbox" v-model="deleteDirChecked" />
-					<span>{{ $t('files.deleteDirCheck') }}</span>
-				</label>
+				<UCheckbox v-model="deleteDirChecked" :label="$t('files.deleteDirCheck')" class="mt-3" />
 			</template>
 			<template #footer>
 				<div class="flex w-full justify-end gap-2">
