@@ -13,10 +13,15 @@ import { initRtcAndSelectTransport, closeRtcForBot } from '../services/webrtc-co
 
 // 跟踪已桥接的 conn 实例（botId → BotConnection），避免重复注册
 const _bridgedConns = new Map();
+/** __ensureRtc 并发防护（botId → true） */
+const _rtcInitInProgress = new Map();
+
+const RTC_BUILD_MAX_RETRIES = 3;
 
 /** @internal 仅供测试重置 */
 export function __resetBotStoreInternals() {
 	_bridgedConns.clear();
+	_rtcInitInProgress.clear();
 }
 // 保留旧名兼容测试导入
 export { __resetBotStoreInternals as __resetAwaitingConnIds };
@@ -108,8 +113,9 @@ export const useBotsStore = defineStore('bots', {
 				// bot 上线但初始化未成功（隧道建立前 __fullInit 失败）→ 重试
 				this.__onBotConnected(id);
 			} else if (prev === false && bot.connState === 'connected') {
-				// bot 从离线恢复在线 → 刷新 dashboard（agents/topics 由 botListKey watcher 处理）
+				// bot 从离线恢复在线 → 刷新 dashboard + 建立/恢复 RTC
 				useDashboardStore().loadDashboard(id).catch(() => {});
+				this.__ensureRtc(id).catch(() => {});
 			}
 		},
 		removeBotById(botId) {
@@ -241,18 +247,20 @@ export const useBotsStore = defineStore('bots', {
 				bot.initialized = true;
 				const attempt = bot.__initAttempt = (bot.__initAttempt || 0) + 1;
 				this.__fullInit(id, conn).catch((err) => {
-					// 仅当没有更新的尝试覆盖时才重置，防止迟到的失败覆盖后续成功的重连
 					if (bot.__initAttempt === attempt) bot.initialized = false;
 					console.warn('[bots] fullInit failed for botId=%s: %s', id, err?.message);
 				});
 			} else {
 				console.debug('[bots] ws reconnected botId=%s → re-select transport', id);
+				// 单次 RTC 尝试即可：initRtcAndSelectTransport 内部有幂等守卫
+				// （RTC 仍 connected 则 no-op），失败后 15s 超时降级 WS。
+				// 不使用 __ensureRtc（3 轮重试过重，会在 tab 切换等场景造成长时间阻塞）
 				initRtcAndSelectTransport(id, conn, this.__rtcCallbacks(id)).catch(() => {});
 				if (conn.disconnectedAt > 0) {
 					const gap = Date.now() - conn.disconnectedAt;
 					if (gap >= BRIEF_DISCONNECT_MS) {
 						console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
-						this.loadBots().catch(() => {}); // WS 就绪后刷新在线状态
+						this.loadBots().catch(() => {});
 						useAgentsStore().loadAgents(id).catch(() => {});
 						useSessionsStore().loadAllSessions().catch(() => {});
 						useTopicsStore().loadAllTopics().catch(() => {});
@@ -263,18 +271,80 @@ export const useBotsStore = defineStore('bots', {
 		},
 
 		/**
+		 * 统一 RTC 建立/恢复入口。
+		 * 触发点：bot offline→online、WS 重连且 bot 在线。
+		 * 流程：ICE restart(5s) → close → build(retries) → WS fallback。
+		 */
+		async __ensureRtc(id) {
+			if (_rtcInitInProgress.get(id)) return;
+			_rtcInitInProgress.set(id, true);
+
+			const conn = useBotConnections().get(id);
+			if (!conn) { _rtcInitInProgress.delete(id); return; }
+
+			try {
+				const rtc = conn.rtc;
+				// RTC 已连接且健康 → 无需操作
+				if (rtc && rtc.state === 'connected') return;
+				// 已有 RTC 但未关闭（disconnected 等）→ 尝试 ICE restart 快速恢复
+				if (rtc && rtc.state !== 'closed' && rtc.state !== 'failed') {
+					console.debug('[bots] ensureRtc: attempting ICE restart botId=%s', id);
+					const ok = await rtc.attemptIceRestart(5000);
+					if (ok) {
+						console.debug('[bots] ensureRtc: ICE restart succeeded botId=%s', id);
+						return;
+					}
+					console.debug('[bots] ensureRtc: ICE restart failed, will rebuild botId=%s', id);
+				}
+
+				// 释放旧 RTC
+				closeRtcForBot(id);
+				conn.clearRtc();
+
+				// build with retries（中间轮次不设 transportMode='ws'，由最终结果决定）
+				let result = 'ws';
+				for (let i = 0; i < RTC_BUILD_MAX_RETRIES; i++) {
+					// bail-out：bot 被删除或 WS 已断连时立即退出，避免阻塞后续恢复
+					if (!this.byId[id] || conn.state !== 'connected') {
+						console.debug('[bots] ensureRtc: bail-out (bot removed or WS disconnected) botId=%s', id);
+						break;
+					}
+					const isLastAttempt = i === RTC_BUILD_MAX_RETRIES - 1;
+					result = await initRtcAndSelectTransport(
+						id, conn, this.__rtcCallbacks(id),
+						{ skipWsFallback: !isLastAttempt },
+					);
+					if (result === 'rtc') break;
+					console.debug('[bots] ensureRtc: build attempt %d/%d failed botId=%s', i + 1, RTC_BUILD_MAX_RETRIES, id);
+				}
+
+				if (result !== 'rtc') {
+					console.debug('[bots] ensureRtc: all attempts exhausted, WS fallback botId=%s', id);
+				}
+			} finally {
+				_rtcInitInProgress.delete(id);
+			}
+		},
+
+		/**
 		 * 首次连接初始化：版本检查 + 传输选择 + 数据加载
 		 */
 		async __fullInit(id, conn) {
-			initRtcAndSelectTransport(id, conn, this.__rtcCallbacks(id)).catch(() => {});
-			const info = await checkPluginVersion(conn);
 			const bot = this.byId[id];
+			// RTC 仅在 bot 在线时尝试（bridge 就绪才能转发 rtc:offer）
+			if (bot?.online) {
+				this.__ensureRtc(id).catch(() => {});
+			}
+			const info = await checkPluginVersion(conn);
 			if (bot) {
 				bot.pluginVersionOk = info.ok;
 				bot.pluginInfo = { version: info.version, clawVersion: info.clawVersion };
 			}
 			if (!info.ok) {
 				console.warn('[bots] plugin version %s for botId=%s', info.version ? 'outdated' : 'check failed (bot may be offline)', id);
+				// bot 不可达时中止初始化，让 initialized 重置为 false；
+				// 后续 updateBotOnline(true) 触发 !initialized 分支 → __onBotConnected 重试
+				if (!info.version) throw new Error('Bot is offline');
 			}
 			await useAgentsStore().loadAgents(id);
 			useSessionsStore().loadAllSessions();

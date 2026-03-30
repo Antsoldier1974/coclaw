@@ -30,7 +30,7 @@ export default defineConfig({
 				},
 				modal: {
 					slots: {
-						header: 'flex items-center gap-1.5 px-4 py-1 sm:px-6 min-h-16',
+						header: 'flex items-center justify-between gap-1.5 px-4 py-1 sm:px-6 min-h-16',
 						wrapper: 'flex-1 min-w-0',
 						close: 'static -me-2 cc-icon-btn-lg',
 					},

@@ -90,3 +90,13 @@ body {
 	min-height: 40px;
 	justify-content: center;
 }
+
+/* icon 按钮 hover */
+.cc-icon-btn:hover,
+.cc-icon-btn-lg:hover {
+	background-color: rgba(0, 0, 0, 0.08);
+}
+.dark .cc-icon-btn:hover,
+.dark .cc-icon-btn-lg:hover {
+	background-color: rgba(255, 255, 255, 0.1);
+}
