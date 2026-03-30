@@ -84,6 +84,7 @@ export default {
 				}, 1500);
 			} catch (err) {
 				this.errorCode = err?.response?.data?.code || 'UNKNOWN';
+				console.warn('[ClaimPage] claimBot failed:', err);
 			} finally {
 				this.loading = false;
 			}

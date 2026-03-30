@@ -193,6 +193,7 @@ export default {
 				this.countdownTimer = setInterval(() => this.updateCountdown(), 1000);
 			}
 			catch (err) {
+				console.warn('[TouchSpeakOverlay] startRecording failed:', err);
 				const msg = (err.message || '').toLowerCase();
 				if (msg.includes('device') && msg.includes('not') && msg.includes('found')) {
 					this.notify.error(this.$t('chat.voiceNoMic'));
@@ -208,6 +209,9 @@ export default {
 					this.stopRecording(true);
 				}
 				else {
+					// 清理半初始化的实例，避免资源泄漏
+					if (this.record) { this.record.destroy(); this.record = null; }
+					if (this.wavesurfer) { this.wavesurfer.destroy(); this.wavesurfer = null; }
 					this.closeAborted();
 				}
 			}

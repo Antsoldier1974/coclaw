@@ -209,6 +209,7 @@ export default {
 				);
 			}
 			catch (err) {
+				console.warn('[ManageBotsPage] loadData failed:', err);
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('bots.loadFailed'));
 			}
 			finally {
@@ -225,6 +226,7 @@ export default {
 				this.notify.success(this.$t('bots.unbindSuccess'));
 			}
 			catch (err) {
+				console.warn('[ManageBotsPage] onUnbindByUser failed:', err);
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('bots.unbindFailed'));
 			}
 			finally {

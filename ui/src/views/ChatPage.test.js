@@ -572,6 +572,22 @@ describe('ChatPage cancel and cleanup', () => {
 
 		expect(cleanupSpy).toHaveBeenCalled();
 	});
+
+	test('onSlashCommand 异常时 log warning 并 notify error', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		const err = new Error('slash fail');
+		vi.spyOn(chatStore, 'sendSlashCommand').mockRejectedValue(err);
+		await flushPromises();
+
+		await wrapper.vm.onSlashCommand('/reset');
+
+		expect(warnSpy).toHaveBeenCalledWith('[ChatPage] onSlashCommand failed:', err);
+		expect(mockNotify.error).toHaveBeenCalledWith('slash fail');
+		warnSpy.mockRestore();
+	});
 });
 
 describe('ChatPage watchers', () => {

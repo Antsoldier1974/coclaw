@@ -395,7 +395,8 @@ describe('auth store', () => {
 		expect(store.user).toEqual({});
 	});
 
-	test('updateProfile should expose error message on failure', async () => {
+	test('updateProfile should expose error message on failure and log warning', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		patchCurrentUserProfile.mockRejectedValue({
 			response: {
 				data: {
@@ -410,6 +411,8 @@ describe('auth store', () => {
 		});
 
 		expect(store.errorMessage).toBe('failed-profile');
+		expect(warnSpy).toHaveBeenCalledWith('[auth] updateProfile failed:', 'failed-profile');
+		warnSpy.mockRestore();
 	});
 
 	test('updateProfile should fallback to default message when error is empty', async () => {
@@ -440,7 +443,8 @@ describe('auth store', () => {
 		});
 	});
 
-	test('changePassword should return false and set error on failure', async () => {
+	test('changePassword should return false and set error on failure and log warning', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		changePassword.mockRejectedValue({
 			response: {
 				data: {
@@ -457,6 +461,8 @@ describe('auth store', () => {
 
 		expect(ok).toBe(false);
 		expect(store.errorMessage).toBe('Invalid credentials');
+		expect(warnSpy).toHaveBeenCalledWith('[auth] changePassword failed:', 'Invalid credentials');
+		warnSpy.mockRestore();
 	});
 
 	test('updateSettings should merge settings fields', async () => {
@@ -499,7 +505,8 @@ describe('auth store', () => {
 		});
 	});
 
-	test('updateSettings should expose error message on failure', async () => {
+	test('updateSettings should expose error message on failure and log warning', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		patchCurrentUserSettings.mockRejectedValue({
 			response: {
 				data: {
@@ -514,6 +521,8 @@ describe('auth store', () => {
 		});
 
 		expect(store.errorMessage).toBe('failed-settings');
+		expect(warnSpy).toHaveBeenCalledWith('[auth] updateSettings failed:', 'failed-settings');
+		warnSpy.mockRestore();
 	});
 
 	test('updateSettings should fallback to err.message when response message is missing', async () => {

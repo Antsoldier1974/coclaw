@@ -125,6 +125,7 @@ export const useAuthStore = defineStore('auth', {
 				};
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Update profile failed';
+				console.warn('[auth] updateProfile failed:', this.errorMessage);
 			} finally {
 				this.loading = false;
 			}
@@ -136,6 +137,7 @@ export const useAuthStore = defineStore('auth', {
 				return true;
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Change password failed';
+				console.warn('[auth] changePassword failed:', this.errorMessage);
 				return false;
 			}
 		},
@@ -154,6 +156,7 @@ export const useAuthStore = defineStore('auth', {
 				applyUserPreferences(this.user);
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Update settings failed';
+				console.warn('[auth] updateSettings failed:', this.errorMessage);
 			} finally {
 				this.loading = false;
 			}

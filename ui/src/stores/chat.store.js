@@ -622,7 +622,7 @@ export function createChatStore(storeKey, opts = {}) {
 							console.debug('[chat] reconnected after accepted, reconciling messages');
 							// settle 交给 reconcileAfterLoad 的双条件判定，避免 agent 仍在执行时过早清除 streaming 消息
 							await this.__reconcileMessages();
-						} catch {}
+						} catch (e) { console.debug('[chat] reconnect-after-accepted failed:', e?.message); }
 						return { accepted: true };
 					}
 					// 断连且尚未 accepted：等待重连后自动重试一次
@@ -639,7 +639,7 @@ export function createChatStore(storeKey, opts = {}) {
 							} finally {
 								this.__retried = false;
 							}
-						} catch {}
+						} catch (e) { console.debug('[chat] retry-after-reconnect failed:', e?.message); }
 					}
 					if (this.__accepted) {
 						// 已被服务端接受，保留消息并从服务端拉取真实状态

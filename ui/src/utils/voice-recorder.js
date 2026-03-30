@@ -130,6 +130,7 @@ export class VoiceRecorder {
 			}, this.__maxDuration);
 		}
 		catch (err) {
+			console.warn('[VoiceRecorder] start failed:', err);
 			const msg = (err.message || '').toLowerCase();
 			if (msg.includes('device') && msg.includes('not') && msg.includes('found')) {
 				this.__fail('NotFoundError');

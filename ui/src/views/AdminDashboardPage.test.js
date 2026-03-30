@@ -110,12 +110,16 @@ test('should render dashboard data after successful load', async () => {
 	expect(wrapper.text()).toContain('李四');
 });
 
-test('should call notify.error on fetch failure', async () => {
-	mockFetchAdminDashboard.mockRejectedValueOnce(new Error('Network error'));
+test('should call notify.error on fetch failure and log warning', async () => {
+	const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+	const err = new Error('Network error');
+	mockFetchAdminDashboard.mockRejectedValueOnce(err);
 	createWrapper();
 	await flushPromises();
 
 	expect(mockNotifyError).toHaveBeenCalledWith('Network error');
+	expect(warnSpy).toHaveBeenCalledWith('[AdminDashboardPage] loadData failed:', err);
+	warnSpy.mockRestore();
 });
 
 test('should format time ago correctly', async () => {

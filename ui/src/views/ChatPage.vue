@@ -621,6 +621,7 @@ export default {
 				}
 			}
 			catch (err) {
+				console.warn('[ChatPage] onSlashCommand failed:', err);
 				this.notify.error(err?.message || this.$t('slashCmd.error'));
 			}
 		},

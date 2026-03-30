@@ -11,13 +11,16 @@ vi.mock('../services/bots.api.js', () => ({
 	unbindBotByUser: vi.fn().mockResolvedValue({}),
 }));
 
+import { unbindBotByUser } from '../services/bots.api.js';
+
+const mockNotify = {
+	success: vi.fn(),
+	error: vi.fn(),
+	info: vi.fn(),
+	warning: vi.fn(),
+};
 vi.mock('../composables/use-notify.js', () => ({
-	useNotify: () => ({
-		success: vi.fn(),
-		error: vi.fn(),
-		info: vi.fn(),
-		warning: vi.fn(),
-	}),
+	useNotify: () => mockNotify,
 }));
 
 const mockLoadDashboard = vi.fn().mockResolvedValue(undefined);
@@ -226,5 +229,35 @@ describe('ManageBotsPage', () => {
 		await flushPromises();
 
 		expect(mockLoadDashboard).not.toHaveBeenCalled();
+	});
+
+	test('loadData 异常时 log warning 并 notify error', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		const err = new Error('dashboard boom');
+		mockLoadDashboard.mockImplementation(() => { throw err; });
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] loadData failed:', err);
+		expect(mockNotify.error).toHaveBeenCalledWith('dashboard boom');
+		warnSpy.mockRestore();
+	});
+
+	test('onUnbindByUser 异常时 log warning 并 notify error', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(null);
+		const err = new Error('unbind boom');
+		unbindBotByUser.mockRejectedValueOnce(err);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		await wrapper.vm.onUnbindByUser('1');
+
+		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] onUnbindByUser failed:', err);
+		expect(mockNotify.error).toHaveBeenCalled();
+		expect(wrapper.vm.unbindingId).toBe('');
+		warnSpy.mockRestore();
 	});
 });

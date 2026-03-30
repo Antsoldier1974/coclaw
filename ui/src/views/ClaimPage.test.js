@@ -95,12 +95,16 @@ test('should show invalid error on CLAIM_CODE_INVALID', async () => {
 	expect(wrapper.text()).toContain('Code invalid');
 });
 
-test('should show generic error on unknown error', async () => {
-	mockClaimBot.mockRejectedValueOnce(new Error('network error'));
+test('should show generic error on unknown error and log warning', async () => {
+	const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+	const err = new Error('network error');
+	mockClaimBot.mockRejectedValueOnce(err);
 	const wrapper = createWrapper({ query: { code: '12345678' } });
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('Failed');
+	expect(warnSpy).toHaveBeenCalledWith('[ClaimPage] claimBot failed:', err);
+	warnSpy.mockRestore();
 });
 
 test('should clear navigation timer on unmount', async () => {

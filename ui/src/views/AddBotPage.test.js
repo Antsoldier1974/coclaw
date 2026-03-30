@@ -124,13 +124,17 @@ test('should show loading state before code is ready', async () => {
 	expect(wrapper.text()).not.toContain('方式一：通过对话');
 });
 
-test('should show error state and retry button on failure', async () => {
-	mockCreateBindingCode.mockRejectedValueOnce(new Error('network error'));
+test('should show error state and retry button on failure and log warning', async () => {
+	const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+	const err = new Error('network error');
+	mockCreateBindingCode.mockRejectedValueOnce(err);
 	const wrapper = createWrapper();
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('network error');
 	expect(wrapper.text()).toContain('重试');
+	expect(warnSpy).toHaveBeenCalledWith('[AddBotPage] startBinding failed:', err);
+	warnSpy.mockRestore();
 });
 
 test('should show copy buttons as text buttons', async () => {

@@ -137,6 +137,7 @@ export default {
 				this.data = await fetchAdminDashboard();
 			}
 			catch (err) {
+				console.warn('[AdminDashboardPage] loadData failed:', err);
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? 'Load failed');
 			}
 			finally {
