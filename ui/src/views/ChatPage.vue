@@ -425,7 +425,12 @@ export default {
 		connReady: {
 			immediate: true,
 			handler(ready) {
-				if (!ready || !this.chatStore) return;
+				if (!ready) {
+					// 断连时清除 guard，确保重连后可再次触发
+					this.__connReadyStore = null;
+					return;
+				}
+				if (!this.chatStore) return;
 				this.__onConnReady();
 			},
 		},
@@ -636,6 +641,9 @@ export default {
 		 */
 		async __onConnReady() {
 			if (!this.chatStore) return;
+			// 同一 store 实例去重：chatStore watcher 和 connReady watcher 可能在同一 tick 各触发一次
+			if (this.__connReadyStore === this.chatStore) return;
+			this.__connReadyStore = this.chatStore;
 			// 与 __handleForegroundResume 去重
 			this.__lastResumeAt = Date.now();
 			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
