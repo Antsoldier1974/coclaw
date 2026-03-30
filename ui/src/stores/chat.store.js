@@ -13,7 +13,7 @@ import { fileToBase64, chatFilesDir, topicFilesDir, buildAttachmentBlock } from 
 import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { waitForConnected } from '../utils/wait-connected.js';
-import { useBotsStore } from './bots.store.js';
+import { useBotsStore, getReadyConn } from './bots.store.js';
 
 const MSG_PAGE_SIZE = 50;
 
@@ -160,8 +160,8 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__initialized = true;
 					if (!this.botId || skipLoad) return;
 
-					const conn = this.__getConnection();
-					if (!conn || conn.state !== 'connected') {
+					const conn = getReadyConn(this.botId);
+					if (!conn) {
 						console.debug('[chat] activate: connection not ready, waiting for connReady');
 						this.loading = true;
 						return;
@@ -215,16 +215,9 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__messagesLoaded = true;
 					return false;
 				}
-				const conn = this.__getConnection();
+				const conn = getReadyConn(this.botId);
 				if (!conn) {
-					console.debug('[chat] loadMessages: no connection for botId=%s', this.botId);
-					if (!silent) this.errorText = 'Bot not connected';
-					this.loading = false;
-					return false;
-				}
-				// 连接存在但尚未就绪 → 保持 loading，等待 retry
-				if (conn.state !== 'connected') {
-					console.debug('[chat] loadMessages: connection not ready state=%s botId=%s', conn.state, this.botId);
+					console.debug('[chat] loadMessages: connection not ready botId=%s', this.botId);
 					if (!silent) this.loading = true;
 					return false;
 				}
@@ -297,8 +290,8 @@ export function createChatStore(storeKey, opts = {}) {
 				if (!this.hasMoreMessages || this.messagesLoading) return false;
 				if (this.topicMode || !this.chatSessionKey) return false;
 
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') return false;
+				const conn = getReadyConn(this.botId);
+				if (!conn) return false;
 
 				this.messagesLoading = true;
 				try {
@@ -345,13 +338,8 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__messagesLoaded = true;
 					return false;
 				}
-				const conn = this.__getConnection();
+				const conn = getReadyConn(this.botId);
 				if (!conn) {
-					if (!silent) this.errorText = 'Bot not connected';
-					this.loading = false;
-					return false;
-				}
-				if (conn.state !== 'connected') {
 					if (!silent) this.loading = true;
 					return false;
 				}
@@ -403,8 +391,8 @@ export function createChatStore(storeKey, opts = {}) {
 				if (!this.topicMode && !this.chatSessionKey) return { accepted: false };
 				if (this.topicMode && !this.sessionId) return { accepted: false };
 
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') {
+				const conn = getReadyConn(this.botId);
+				if (!conn) {
 					throw new Error('Bot not connected');
 				}
 
@@ -665,8 +653,8 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @returns {Promise<string | null>} 新 sessionId，失败返回 null
 			 */
 			async resetChat() {
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') {
+				const conn = getReadyConn(this.botId);
+				if (!conn) {
 					throw new Error('Bot not connected');
 				}
 				this.resetting = true;
@@ -723,8 +711,8 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @param {string} command - 如 '/compact'、'/new'、'/help'
 			 */
 			async sendSlashCommand(command) {
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected' || this.sending) return;
+				const conn = getReadyConn(this.botId);
+				if (!conn || this.sending) return;
 
 				this.sending = true;
 
@@ -906,8 +894,8 @@ export function createChatStore(storeKey, opts = {}) {
 			 */
 			async __loadChatHistory() {
 				if (this.topicMode || !this.chatSessionKey) return;
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') return;
+				const conn = getReadyConn(this.botId);
+				if (!conn) return;
 				try {
 					const agentId = this.__resolveAgentId();
 					const result = await conn.request('coclaw.chatHistory.list', {
@@ -959,8 +947,8 @@ export function createChatStore(storeKey, opts = {}) {
 					const entry = this.historySessionIds[this.__historyLoadedCount];
 					console.debug('[chat] loadNextHistory: loading session %d/%d id=%s',
 						this.__historyLoadedCount + 1, this.historySessionIds.length, entry.sessionId);
-					const conn = this.__getConnection();
-					if (!conn || conn.state !== 'connected') return false;
+					const conn = getReadyConn(this.botId);
+					if (!conn) return false;
 
 					const agentId = this.__resolveAgentId();
 					const result = await conn.request('coclaw.sessions.getById', {
@@ -1079,8 +1067,8 @@ export function createChatStore(storeKey, opts = {}) {
 			},
 
 			async __reconcileMessages() {
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') return false;
+				const conn = getReadyConn(this.botId);
+				if (!conn) return false;
 
 				try {
 					await this.loadMessages({ silent: true });

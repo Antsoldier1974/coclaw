@@ -169,7 +169,7 @@ export default {
 		/** 跟踪 bot 增删/上线/连接就绪变化，触发 agents 和 topics 重新加载 */
 		botListKey() {
 			return (this.botsStore?.items ?? [])
-				.map((b) => `${b.id}:${b.online}:${b.connState === 'connected'}`)
+				.map((b) => `${b.id}:${b.online}:${b.dcReady}`)
 				.join(',');
 		},
 		botActionItems() {

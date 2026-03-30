@@ -45,12 +45,22 @@ vi.mock('../services/bots.api.js', () => ({
 
 function mockConn(overrides = {}) {
 	return {
-		state: 'connected',
 		request: vi.fn(),
 		on: vi.fn(),
 		off: vi.fn(),
 		...overrides,
 	};
+}
+
+/** 注册 mock conn 并设置 botsStore 中 bot 的 dcReady */
+function setConn(botId, conn, { dcReady = true } = {}) {
+	mockConnections.set(String(botId), conn);
+	const botsStore = useBotsStore();
+	if (!botsStore.byId[String(botId)]) {
+		botsStore.byId[String(botId)] = { id: String(botId), dcReady };
+	} else {
+		botsStore.byId[String(botId)].dcReady = dcReady;
+	}
 }
 
 /**
@@ -129,7 +139,7 @@ describe('useChatStore', () => {
 				flatMessages: [{ role: 'user', content: 'hi' }],
 				history: historyItems,
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -157,7 +167,7 @@ describe('useChatStore', () => {
 		test('重复调用 activate 时做静默刷新（不重复 init）', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -170,7 +180,7 @@ describe('useChatStore', () => {
 
 		test('skipLoad 跳过消息加载但注册 WS 监听', async () => {
 			const conn = mockConn();
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
 			await store.activate({ skipLoad: true });
@@ -195,7 +205,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -219,7 +229,7 @@ describe('useChatStore', () => {
 				{ role: 'assistant', content: 'hi there' },
 			];
 			setupConnForLoad(conn, { flatMessages: flatMsgs, currentSessionId: 'cur-123' });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -246,7 +256,7 @@ describe('useChatStore', () => {
 			expect(store.messages).toHaveLength(0);
 		});
 
-		test('连接缺失时返回 false 并设置 errorText', async () => {
+		test('连接缺失时返回 false 并保持 loading', async () => {
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
 			store.botId = '999'; // 无对应连接
@@ -254,13 +264,12 @@ describe('useChatStore', () => {
 
 			const ok = await store.loadMessages();
 			expect(ok).toBe(false);
-			expect(store.errorText).toBe('Bot not connected');
-			expect(store.loading).toBe(false);
+			expect(store.loading).toBe(true);
 		});
 
 		test('连接存在但未就绪时保持 loading 状态，不设 errorText', async () => {
-			const conn = mockConn({ state: 'connecting' });
-			mockConnections.set('1', conn);
+			const conn = mockConn();
+			setConn('1', conn, { dcReady: false });
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -279,7 +288,7 @@ describe('useChatStore', () => {
 			botsStore.setBots([{ id: '1', online: true }]);
 
 			const conn = mockConn();
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -305,7 +314,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockRejectedValue(new Error('network error'));
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -336,7 +345,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			setupConnForLoad(conn, { flatMessages: [{ role: 'user', content: 'old' }] });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -362,7 +371,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -399,7 +408,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'topic-1';
@@ -438,7 +447,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('topic:t1', { botId: '1', agentId: 'main' });
 			store.sessionId = 't1';
@@ -472,7 +481,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('topic:t2', { botId: '1', agentId: 'main' });
 			store.sessionId = 't2';
@@ -502,7 +511,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('topic:t3', { botId: '1', agentId: 'main' });
 			store.sessionId = 't3';
@@ -527,8 +536,8 @@ describe('useChatStore', () => {
 		});
 
 		test('连接未就绪（非 connected 状态）时抛出错误', async () => {
-			const conn = mockConn({ state: 'connecting' });
-			mockConnections.set('1', conn);
+			const conn = mockConn();
+			setConn('1', conn, { dcReady: false });
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -568,7 +577,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -598,7 +607,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -624,7 +633,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -652,7 +661,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -679,7 +688,7 @@ describe('useChatStore', () => {
 				if (method === 'coclaw.sessions.getById') return Promise.resolve({ messages: [] });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'topic-1';
@@ -713,7 +722,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -755,7 +764,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -806,7 +815,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -840,7 +849,7 @@ describe('useChatStore', () => {
 				if (method === 'agent') return new Promise(() => {});
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -868,7 +877,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -906,7 +915,7 @@ describe('useChatStore', () => {
 			const conn = mockConn({ rtc: { isReady: true } });
 			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
 			conn.request.mockImplementation(() => Promise.resolve(null));
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -939,7 +948,7 @@ describe('useChatStore', () => {
 				if (method === 'agent') return Promise.reject(new Error('send failed'));
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -961,7 +970,7 @@ describe('useChatStore', () => {
 				if (method === 'agent') return new Promise(() => {});
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1001,7 +1010,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1045,7 +1054,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1082,7 +1091,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1117,7 +1126,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1155,7 +1164,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1172,7 +1181,7 @@ describe('useChatStore', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 
-			const conn = mockConn({ state: 'disconnected' });
+			const conn = mockConn();
 			let callCount = 0;
 			conn.request.mockImplementation((method) => {
 				if (method === 'agent') {
@@ -1189,7 +1198,7 @@ describe('useChatStore', () => {
 			connForSend.off = vi.fn();
 
 			let firstGet = true;
-			mockConnections.set('1', connForSend);
+			setConn('1', connForSend);
 			const origGet = mockConnections.get.bind(mockConnections);
 			mockConnections.get = (id) => {
 				if (id === '1' && callCount > 0 && firstGet) {
@@ -1237,7 +1246,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1267,7 +1276,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1288,7 +1297,7 @@ describe('useChatStore', () => {
 				if (method === 'agent') return Promise.resolve({ status: 'rejected' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1315,7 +1324,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ entry: { sessionId: 'sess-new' } });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1343,7 +1352,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ entry: {} }); // 无 sessionId
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1362,7 +1371,7 @@ describe('useChatStore', () => {
 				resettingDuring = useChatStore().resetting;
 				return Promise.resolve({ entry: { sessionId: 'sess-new' } });
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1379,7 +1388,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ entry: { sessionId: 'new-sess' } });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1402,7 +1411,7 @@ describe('useChatStore', () => {
 		test('未 accepted 时取消：清理 streaming 并删除本地消息', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
-			mockConnections.set('1', mockConn());
+			setConn('1', mockConn());
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1431,7 +1440,7 @@ describe('useChatStore', () => {
 				if (method === 'agent') return new Promise(() => {});
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1466,7 +1475,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1496,7 +1505,7 @@ describe('useChatStore', () => {
 	describe('cleanup', () => {
 		test('清理发送状态但保留数据（store 持续存活）', () => {
 			const conn = mockConn();
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1755,7 +1764,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1774,7 +1783,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ history: [] });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1788,7 +1797,7 @@ describe('useChatStore', () => {
 
 		test('topic 模式下跳过', async () => {
 			const conn = mockConn();
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1802,7 +1811,7 @@ describe('useChatStore', () => {
 
 		test('chatSessionKey 为空时跳过', async () => {
 			const conn = mockConn();
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1819,7 +1828,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockRejectedValue(new Error('rpc failed'));
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1837,7 +1846,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ history: [] });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1871,7 +1880,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1896,7 +1905,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ messages: [] });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1956,7 +1965,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -1982,7 +1991,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockRejectedValue(new Error('load failed'));
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -2006,7 +2015,7 @@ describe('useChatStore', () => {
 
 			const conn = mockConn();
 			conn.request.mockRejectedValue(new Error('load failed'));
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.botId = '1';
@@ -2057,7 +2066,7 @@ describe('useChatStore', () => {
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -2085,7 +2094,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'topic-1';
@@ -2119,7 +2128,7 @@ describe('useChatStore', () => {
 		beforeEach(() => {
 			store = useChatStore();
 			conn = mockConn();
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 			store.botId = '1';
 			store.sessionId = 'sess-1';
 			store.chatSessionKey = 'agent:main:main';
@@ -2169,7 +2178,7 @@ describe('useChatStore', () => {
 		});
 
 		test('连接未就绪时不发送', async () => {
-			conn.state = 'connecting';
+			useBotsStore().byId['1'].dcReady = false;
 			await store.sendSlashCommand('/help');
 			expect(conn.request).not.toHaveBeenCalled();
 		});
@@ -2436,7 +2445,7 @@ describe('useChatStore', () => {
 		test('loadMessages 默认 limit 为 50', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn, { flatMessages: [] });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2450,7 +2459,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			const msgs = Array.from({ length: 10 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: msgs });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2463,7 +2472,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			const msgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: msgs });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2476,7 +2485,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i + 50}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2500,7 +2509,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2521,7 +2530,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			const msgs = [{ role: 'user', content: 'hi' }];
 			setupConnForLoad(conn, { flatMessages: msgs });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2535,7 +2544,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2562,7 +2571,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2593,7 +2602,7 @@ describe('useChatStore', () => {
 				if (method === 'coclaw.sessions.getById') return Promise.resolve({ messages: [{ role: 'user', content: 'hi' }] });
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2606,7 +2615,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2635,7 +2644,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			const msgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: msgs });
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store1 = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store1.activate();
@@ -2658,8 +2667,8 @@ describe('useChatStore', () => {
 
 	describe('activate 简化', () => {
 		test('连接未就绪时 activate 标记 loading 并等待 connReady 驱动', async () => {
-			const conn = mockConn({ state: 'connecting' });
-			mockConnections.set('1', conn);
+			const conn = mockConn();
+			setConn('1', conn, { dcReady: false });
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2677,7 +2686,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, {
 				flatMessages: [{ role: 'user', content: 'hello' }],
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2689,7 +2698,7 @@ describe('useChatStore', () => {
 
 		test('skipLoad 时 activate 不加载消息', async () => {
 			const conn = mockConn();
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate({ skipLoad: true });
@@ -2702,7 +2711,7 @@ describe('useChatStore', () => {
 		test('dispose 不再涉及 conn 监听清理', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();
@@ -2732,7 +2741,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			store.__initialized = true;
@@ -2764,7 +2773,7 @@ describe('useChatStore', () => {
 				}
 				return Promise.resolve(null);
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			store.__initialized = true;
@@ -2792,7 +2801,7 @@ describe('useChatStore', () => {
 					{ role: 'assistant', content: 'hello', stopReason: 'stop' },
 				],
 			});
-			mockConnections.set('1', conn);
+			setConn('1', conn);
 
 			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
 			await store.activate();

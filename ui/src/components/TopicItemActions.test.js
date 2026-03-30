@@ -26,6 +26,7 @@ vi.mock('../composables/use-notify.js', () => ({
 
 import TopicItemActions from './TopicItemActions.vue';
 import { useTopicsStore } from '../stores/topics.store.js';
+import { useBotsStore } from '../stores/bots.store.js';
 
 const UPopoverStub = {
 	props: ['open'],
@@ -58,6 +59,8 @@ const UIconStub = {
 function createWrapper(props = {}) {
 	const pinia = createPinia();
 	setActivePinia(pinia);
+	const botsStore = useBotsStore();
+	botsStore.byId['bot-1'] = { id: 'bot-1', dcReady: true };
 	return mount(TopicItemActions, {
 		props: {
 			topicId: 't1',

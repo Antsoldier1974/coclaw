@@ -4,8 +4,7 @@
  */
 import { defineStore } from 'pinia';
 
-import { useBotConnections } from '../services/bot-connection-manager.js';
-import { useBotsStore } from './bots.store.js';
+import { useBotsStore, getReadyConn } from './bots.store.js';
 
 let _loadingPromise = null;
 
@@ -38,11 +37,7 @@ export const useTopicsStore = defineStore('topics', {
 				this.byId = {};
 				return;
 			}
-			const manager = useBotConnections();
-			const connectedBots = bots.filter((b) => {
-				const conn = manager.get(b.id);
-				return conn && conn.state === 'connected';
-			});
+			const connectedBots = bots.filter((b) => getReadyConn(b.id));
 			if (!connectedBots.length) {
 				console.debug('[topics] loadAll: no connected bots, skipping reload');
 				return;
@@ -59,13 +54,12 @@ export const useTopicsStore = defineStore('topics', {
 		},
 
 		async __doLoadAll(connectedBots) {
-			const manager = useBotConnections();
 			const botsStore = useBotsStore();
 			const queriedBotIds = new Set(connectedBots.map((b) => String(b.id)));
 			const tasks = [];
 			for (const bot of connectedBots) {
-				const conn = manager.get(String(bot.id));
-				if (!conn || conn.state !== 'connected') continue;
+				const conn = getReadyConn(bot.id);
+				if (!conn) continue;
 				// 当前版本只支持 main agent 的 topic（受限于 OpenClaw agent 路由机制）
 				tasks.push(
 					conn.request('coclaw.topics.list', { agentId: 'main' })
@@ -115,8 +109,8 @@ export const useTopicsStore = defineStore('topics', {
 		 * @returns {Promise<string>} topicId
 		 */
 		async createTopic(botId, agentId) {
-			const conn = useBotConnections().get(String(botId));
-			if (!conn || conn.state !== 'connected') throw new Error('Bot not connected');
+			const conn = getReadyConn(botId);
+			if (!conn) throw new Error('Bot not connected');
 			const result = await conn.request('coclaw.topics.create', { agentId });
 			const topicId = result?.topicId;
 			if (!topicId) throw new Error('Failed to create topic');
@@ -130,8 +124,8 @@ export const useTopicsStore = defineStore('topics', {
 		 * @param {string} topicId
 		 */
 		async deleteTopic(botId, topicId) {
-			const conn = useBotConnections().get(String(botId));
-			if (!conn || conn.state !== 'connected') throw new Error('Bot not connected');
+			const conn = getReadyConn(botId);
+			if (!conn) throw new Error('Bot not connected');
 			const result = await conn.request('coclaw.topics.delete', { topicId });
 			if (result?.ok === false) throw new Error('Topic not found');
 			delete this.byId[topicId];
@@ -144,8 +138,8 @@ export const useTopicsStore = defineStore('topics', {
 		 * @param {{ title?: string }} changes
 		 */
 		async updateTopic(botId, topicId, changes) {
-			const conn = useBotConnections().get(String(botId));
-			if (!conn || conn.state !== 'connected') throw new Error('Bot not connected');
+			const conn = getReadyConn(botId);
+			if (!conn) throw new Error('Bot not connected');
 			const result = await conn.request('coclaw.topics.update', { topicId, changes });
 			const updated = result?.topic;
 			if (!updated) throw new Error('Update failed');
@@ -160,8 +154,8 @@ export const useTopicsStore = defineStore('topics', {
 		 * @param {string} topicId
 		 */
 		generateTitle(botId, topicId) {
-			const conn = useBotConnections().get(String(botId));
-			if (!conn || conn.state !== 'connected') return;
+			const conn = getReadyConn(botId);
+			if (!conn) return;
 			conn.request('coclaw.topics.generateTitle', { topicId })
 				.then((res) => {
 					const title = res?.title;

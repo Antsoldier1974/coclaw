@@ -54,7 +54,7 @@ vi.mock('../services/webrtc-connection.js', () => ({
 
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
-import { useBotsStore, __resetAwaitingConnIds } from './bots.store.js';
+import { useBotsStore, __resetAwaitingConnIds, getReadyConn } from './bots.store.js';
 import { useDashboardStore } from './dashboard.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useTopicsStore } from './topics.store.js';
@@ -1097,5 +1097,41 @@ describe('dcReady 响应式标记', () => {
 		cbs.onRtcStateChange('connected', null);
 		// dcReady 由 initRtc resolve 设置，rtcState 的 connected 回调不应改变它
 		expect(store.byId['1'].dcReady).toBe(false);
+	});
+});
+
+describe('getReadyConn', () => {
+	test('bot 不存在时返回 null', () => {
+		useBotsStore();
+		expect(getReadyConn('999')).toBeNull();
+	});
+
+	test('dcReady=false 时返回 null', () => {
+		const store = useBotsStore();
+		store.byId['1'] = { id: '1', dcReady: false };
+		expect(getReadyConn('1')).toBeNull();
+	});
+
+	test('dcReady=true 且 conn 存在时返回 conn', () => {
+		const store = useBotsStore();
+		store.byId['1'] = { id: '1', dcReady: true };
+		const fakeConn = { request: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		expect(getReadyConn('1')).toBe(fakeConn);
+	});
+
+	test('dcReady=true 但 conn 不存在时返回 null', () => {
+		const store = useBotsStore();
+		store.byId['1'] = { id: '1', dcReady: true };
+		mockManager.get.mockReturnValue(undefined);
+		expect(getReadyConn('1')).toBeNull();
+	});
+
+	test('botId 归一化为 string', () => {
+		const store = useBotsStore();
+		store.byId['42'] = { id: '42', dcReady: true };
+		const fakeConn = { request: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		expect(getReadyConn(42)).toBe(fakeConn);
 	});
 });

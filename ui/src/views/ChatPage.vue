@@ -238,7 +238,7 @@ export default {
 			if (!this.isNewTopic) return false;
 			if (!this.newTopicBotId) return false;
 			const bot = this.botsStore.byId[this.newTopicBotId];
-			return bot?.connState === 'connected';
+			return !!bot?.dcReady;
 		},
 		/** 当前上下文的 agentId */
 		currentAgentId() {

@@ -247,7 +247,7 @@ export default {
 		agentId() { return this.$route.params.agentId; },
 		connReady() {
 			const bot = this.botsStore.byId[this.botId];
-			return bot?.connState === 'connected';
+			return !!bot?.dcReady;
 		},
 		pageTitle() {
 			const display = this.agentsStore.getAgentDisplay(this.botId, this.agentId);

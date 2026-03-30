@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia';
 
-import { useBotConnections } from '../services/bot-connection-manager.js';
-import { useBotsStore } from './bots.store.js';
+import { useBotsStore, getReadyConn } from './bots.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { mapToolsToCapabilities } from '../utils/capability-map.js';
 import { generateModelTags } from '../utils/model-tags.js';
@@ -144,8 +143,8 @@ export const useDashboardStore = defineStore('dashboard', {
 		 */
 		async loadDashboard(botId) {
 			const id = String(botId);
-			const conn = useBotConnections().get(id);
-			if (!conn || conn.state !== 'connected') return;
+			const conn = getReadyConn(id);
+			if (!conn) return;
 
 			// 初始化 entry
 			if (!this.byBot[id]) {
