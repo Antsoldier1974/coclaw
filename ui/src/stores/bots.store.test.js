@@ -1315,3 +1315,61 @@ describe('bridge connState 同步', () => {
 		expect(store.byId['1'].lastAliveAt).toBe(ts);
 	});
 });
+
+describe('dcReady 响应式标记', () => {
+	test('createBotState 初始 dcReady 为 false', () => {
+		const store = useBotsStore();
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+		expect(store.byId['1'].dcReady).toBe(false);
+	});
+
+	test('WS disconnected 时 dcReady 置为 false', async () => {
+		const store = useBotsStore();
+		let stateCallback;
+		const fakeConn = {
+			state: 'disconnected',
+			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
+			__onAlive: null,
+			disconnectedAt: 0,
+			lastAliveAt: 0,
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+		store.fetched = false;
+		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+		await store.loadBots();
+
+		// 模拟 dcReady 为 true
+		store.byId['1'].dcReady = true;
+
+		// WS 断开 → dcReady 应置 false
+		fakeConn.disconnectedAt = Date.now();
+		stateCallback('disconnected');
+		expect(store.byId['1'].dcReady).toBe(false);
+	});
+
+	test('__rtcCallbacks: rtcState failed/closed 时 dcReady 置为 false', () => {
+		const store = useBotsStore();
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+		store.byId['1'].dcReady = true;
+
+		const cbs = store.__rtcCallbacks('1');
+
+		cbs.onRtcStateChange('failed', null);
+		expect(store.byId['1'].dcReady).toBe(false);
+
+		store.byId['1'].dcReady = true;
+		cbs.onRtcStateChange('closed', null);
+		expect(store.byId['1'].dcReady).toBe(false);
+	});
+
+	test('__rtcCallbacks: rtcState connected 时不改变 dcReady', () => {
+		const store = useBotsStore();
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+		store.byId['1'].dcReady = false;
+
+		const cbs = store.__rtcCallbacks('1');
+		cbs.onRtcStateChange('connected', null);
+		// dcReady 由 initRtc resolve 设置，rtcState 的 connected 回调不应改变它
+		expect(store.byId['1'].dcReady).toBe(false);
+	});
+});

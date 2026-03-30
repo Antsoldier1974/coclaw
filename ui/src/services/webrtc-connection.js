@@ -12,6 +12,8 @@ import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
 
 const MAX_ICE_RESTARTS = 5;
 const MAX_FULL_REBUILDS = 3;
+/** disconnected 状态超时：超过此时间仍未恢复则升级到 failed 恢复链 */
+const DISCONNECTED_TIMEOUT_MS = 10_000;
 
 /** 发送流控：高水位（暂停发送），远低于浏览器 16MB 上限 */
 const DC_HIGH_WATER_MARK = 1024 * 1024;
@@ -148,6 +150,8 @@ export class WebRtcConnection {
 		this.__reassembler = null;
 		/** 外部接管恢复时为 true，抑制 __onIceFailed 内部级联 */
 		this.__externalRecovery = false;
+		/** disconnected 状态超时定时器 */
+		this.__disconnectedTimer = null;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
@@ -170,6 +174,7 @@ export class WebRtcConnection {
 
 	/** 关闭连接（主动关闭，不再自动恢复） */
 	close() {
+		this.__clearDisconnectedTimer();
 		this.__removeRtcListener();
 		this.__rejectSendQueue('connection closed');
 		if (this.__pc) {
@@ -303,6 +308,7 @@ export class WebRtcConnection {
 	 * @returns {Promise<boolean>} true = connected, false = 失败或超时
 	 */
 	attemptIceRestart(timeoutMs = 5000) {
+		this.__clearDisconnectedTimer();
 		const pc = this.__pc;
 		if (!pc || this.__state === 'closed') return Promise.resolve(false);
 		// PC 已 connected → 无需 restart，直接视为成功
@@ -419,15 +425,19 @@ export class WebRtcConnection {
 			this.__log('info', `connectionState: ${s}`);
 
 			if (s === 'connected') {
+				this.__clearDisconnectedTimer();
 				this.__iceRestartCount = 0; // 连接成功，重置 ICE restart 计数
 				this.__setState('connected');
 				this.__resolveCandidateType(pc);
 			} else if (s === 'disconnected') {
-				// 短暂网络抖动，等待 ICE 自动恢复，仅日志
+				// 短暂网络抖动，等待 ICE 自动恢复；设超时兜底防止永远卡住
 				this.__log('info', 'ICE disconnected, waiting for auto-recovery...');
+				this.__startDisconnectedTimer();
 			} else if (s === 'failed') {
+				this.__clearDisconnectedTimer();
 				this.__onIceFailed();
 			} else if (s === 'closed') {
+				this.__clearDisconnectedTimer();
 				this.__setState('closed');
 			}
 		};
@@ -461,6 +471,8 @@ export class WebRtcConnection {
 			if (this.__rpcChannel === dc) {
 				this.__rpcChannel = null;
 				this.__rejectSendQueue('DataChannel closed');
+				// 已发出的 pending RPC 永远收不到响应，立即 reject
+				this.__botConn.__rejectAllPending('DataChannel closed', 'DC_CLOSED');
 			}
 		};
 		dc.onmessage = (event) => {
@@ -500,6 +512,26 @@ export class WebRtcConnection {
 		const queue = this.__sendQueue.splice(0);
 		for (const { reject } of queue) {
 			reject(new Error(msg));
+		}
+	}
+
+	/** @private 启动 disconnected 状态超时定时器 */
+	__startDisconnectedTimer() {
+		this.__clearDisconnectedTimer();
+		this.__disconnectedTimer = setTimeout(() => {
+			this.__disconnectedTimer = null;
+			if (this.__pc?.connectionState === 'disconnected') {
+				this.__log('warn', 'ICE disconnected timeout (%dms), escalating to recovery', DISCONNECTED_TIMEOUT_MS);
+				this.__onIceFailed();
+			}
+		}, DISCONNECTED_TIMEOUT_MS);
+	}
+
+	/** @private 清除 disconnected 超时定时器 */
+	__clearDisconnectedTimer() {
+		if (this.__disconnectedTimer) {
+			clearTimeout(this.__disconnectedTimer);
+			this.__disconnectedTimer = null;
 		}
 	}
 

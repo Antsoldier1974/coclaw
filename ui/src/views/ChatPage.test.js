@@ -612,6 +612,7 @@ describe('ChatPage watchers', () => {
 		// bot 上线 + 连接就绪 → connReady 变为 true
 		botsStore.byId['bot-1'].online = true;
 		botsStore.byId['bot-1'].connState = 'connected';
+		botsStore.byId['bot-1'].dcReady = true;
 		await wrapper.vm.$nextTick();
 
 		expect(loadSpy).toHaveBeenCalled();
@@ -625,6 +626,7 @@ describe('ChatPage watchers', () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
 		botsStore.byId['bot-1'].connState = 'connected';
+		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 
 		// 预创建 chatStore 并挂 spy（组件 computed 会复用同一实例）
@@ -679,6 +681,7 @@ describe('ChatPage watchers', () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
 		botsStore.byId['bot-1'].connState = 'connected';
+		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
 
@@ -743,6 +746,7 @@ describe('ChatPage foreground resume', () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
 		botsStore.byId['bot-1'].connState = 'connected';
+		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
 
@@ -785,6 +789,7 @@ describe('ChatPage foreground resume', () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
 		botsStore.byId['bot-1'].connState = 'connected';
+		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
 		loadSpy.mockClear();
@@ -808,6 +813,7 @@ describe('ChatPage foreground resume', () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
 		botsStore.byId['bot-1'].connState = 'connected';
+		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
 

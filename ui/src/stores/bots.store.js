@@ -51,6 +51,7 @@ function createBotState(bot) {
 		pluginInfo: null,
 		rtcState: null,
 		rtcTransportInfo: null,
+		dcReady: false,
 	};
 }
 
@@ -240,6 +241,7 @@ export const useBotsStore = defineStore('bots', {
 				bot.connState = s;
 				if (s === 'disconnected') {
 					bot.disconnectedAt = conn.disconnectedAt;
+					bot.dcReady = false;
 				}
 				// connected 转换 → 触发初始化/重连
 				if (s === 'connected' && prev !== 'connected') {
@@ -275,6 +277,7 @@ export const useBotsStore = defineStore('bots', {
 					if (!bot) return;
 					bot.rtcState = state;
 					if (transportInfo) bot.rtcTransportInfo = transportInfo;
+					if (state === 'failed' || state === 'closed') bot.dcReady = false;
 				},
 			};
 		},
@@ -301,6 +304,8 @@ export const useBotsStore = defineStore('bots', {
 				// 单次 RTC 尝试：initRtc 内部有幂等守卫（RTC 仍健康则 no-op）
 				// 不使用 __ensureRtc（3 轮重试过重，会在 tab 切换等场景造成长时间阻塞）
 				initRtc(id, conn, this.__rtcCallbacks(id)).then((result) => {
+					const bot = this.byId[id];
+					if (result === 'rtc' && bot) bot.dcReady = true;
 					if (result !== 'rtc') return;
 					if (conn.disconnectedAt > 0) {
 						const gap = Date.now() - conn.disconnectedAt;
@@ -330,14 +335,20 @@ export const useBotsStore = defineStore('bots', {
 
 			try {
 				const rtc = conn.rtc;
-				// RTC 已连接且健康 → 无需操作
-				if (rtc && rtc.state === 'connected') return;
+				// RTC 已连接且健康 → 确保 dcReady 正确
+				if (rtc && rtc.state === 'connected') {
+					const bot = this.byId[id];
+					if (bot && rtc.isReady) bot.dcReady = true;
+					return;
+				}
 				// 已有 RTC 但未关闭（disconnected 等）→ 尝试 ICE restart 快速恢复
 				if (rtc && rtc.state !== 'closed' && rtc.state !== 'failed') {
 					console.debug('[bots] ensureRtc: attempting ICE restart botId=%s', id);
 					const ok = await rtc.attemptIceRestart(5000);
 					if (ok) {
 						console.debug('[bots] ensureRtc: ICE restart succeeded botId=%s', id);
+						const bot = this.byId[id];
+						if (bot) bot.dcReady = true;
 						return;
 					}
 					console.debug('[bots] ensureRtc: ICE restart failed, will rebuild botId=%s', id);
@@ -358,7 +369,10 @@ export const useBotsStore = defineStore('bots', {
 					console.debug('[bots] ensureRtc: build attempt %d/%d failed botId=%s', i + 1, RTC_BUILD_MAX_RETRIES, id);
 				}
 
-				if (result !== 'rtc') {
+				if (result === 'rtc') {
+					const bot = this.byId[id];
+					if (bot) bot.dcReady = true;
+				} else {
 					console.warn('[bots] ensureRtc: all attempts exhausted, bot unreachable botId=%s', id);
 				}
 			} finally {
@@ -377,6 +391,7 @@ export const useBotsStore = defineStore('bots', {
 			// 等待 RTC 建立（DC 是唯一的 RPC 通道）
 			await this.__ensureRtc(id);
 			if (!conn.rtc?.isReady) throw new Error('RTC not available');
+			if (bot) bot.dcReady = true;
 
 			// DC 就绪，后续 RPC 走 DataChannel
 			const info = await checkPluginVersion(conn);

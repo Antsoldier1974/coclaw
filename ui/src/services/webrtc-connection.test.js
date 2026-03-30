@@ -98,6 +98,7 @@ function createMockBotConn() {
 		__listeners: listeners,
 		setRtc: vi.fn(),
 		clearRtc: vi.fn(),
+		__rejectAllPending: vi.fn(),
 		__onRtcMessage: vi.fn(),
 	};
 }
@@ -259,6 +260,65 @@ describe('WebRtcConnection — 状态变更', () => {
 		expect(rtc.state).toBe('connected'); // 仍是 connected
 
 		rtc.close();
+	});
+
+	test('disconnected 超时后升级到 __onIceFailed 恢复链', async () => {
+		vi.useFakeTimers();
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+
+		const failedSpy = vi.spyOn(rtc, '__onIceFailed');
+
+		// 进入 disconnected
+		pc.connectionState = 'disconnected';
+		pc.onconnectionstatechange();
+
+		// 未超时前不触发
+		vi.advanceTimersByTime(9_999);
+		expect(failedSpy).not.toHaveBeenCalled();
+
+		// 超时后触发恢复
+		vi.advanceTimersByTime(1);
+		expect(failedSpy).toHaveBeenCalledTimes(1);
+
+		rtc.close();
+		vi.useRealTimers();
+	});
+
+	test('disconnected 后自动恢复到 connected 时清除超时定时器', async () => {
+		vi.useFakeTimers();
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+
+		const failedSpy = vi.spyOn(rtc, '__onIceFailed');
+
+		// 进入 disconnected → 启动定时器
+		pc.connectionState = 'disconnected';
+		pc.onconnectionstatechange();
+
+		// 5s 后恢复 connected → 清除定时器
+		vi.advanceTimersByTime(5_000);
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+
+		// 超时点过后不应触发
+		vi.advanceTimersByTime(10_000);
+		expect(failedSpy).not.toHaveBeenCalled();
+
+		rtc.close();
+		vi.useRealTimers();
 	});
 
 	test('onconnectionstatechange → closed 更新状态', async () => {
@@ -1136,8 +1196,8 @@ describe('WebRtcConnection — send 流控', () => {
 		rtc.close();
 	});
 
-	test('DC close 时 reject 队列中所有消息', async () => {
-		const { rtc, dc } = await makeReady();
+	test('DC close 时 reject 队列中所有消息并 reject pending RPC', async () => {
+		const { rtc, dc, botConn } = await makeReady();
 		dc.bufferedAmount = HIGH;
 
 		const p1 = rtc.send({ seq: 1 });
@@ -1148,6 +1208,7 @@ describe('WebRtcConnection — send 流控', () => {
 
 		await expect(p1).rejects.toThrow('DataChannel closed');
 		await expect(p2).rejects.toThrow('DataChannel closed');
+		expect(botConn.__rejectAllPending).toHaveBeenCalledWith('DataChannel closed', 'DC_CLOSED');
 	});
 
 	test('close() 时 reject 队列中所有消息', async () => {

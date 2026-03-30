@@ -330,6 +330,7 @@ export default {
 			const bot = this.botsStore.byId[this.currentBotId];
 			if (!bot || !bot.online) return false;
 			if (bot.connState !== 'connected') return false;
+			if (!bot.dcReady) return false;
 			if (this.isTopicRoute) return true;
 			return this.agentVerified;
 		},
