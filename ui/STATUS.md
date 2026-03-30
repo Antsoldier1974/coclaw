@@ -1,5 +1,18 @@
 # UI Workspace Status
 
+## 2026-03-30
+- **RTC 信令通道重构（UI 侧）**：将 per-bot WebSocket 信令迁移至 per-tab 单一信令 WS
+  - 新增 `services/signaling-connection.js`：Per-tab 单例，管理 `/api/v1/rtc/signal` 信令 WS，connId 管理（client 生成、跨 WS 重连持久）、心跳、自动重连、resume 协议、前台恢复
+  - 重构 `services/bot-connection.js`：移除全部 WS 管理代码（619→170 行），仅保留 DC RPC + 事件系统
+  - 适配 `services/webrtc-connection.js`：5 处 `sendRaw` → `sendSignaling`，信令监听迁移至 SignalingConnection，ICE restart 配额修复（信令不可用时不消耗配额）
+  - 简化 `services/bot-connection-manager.js`：移除 `conn.connect()` 调用
+  - 适配 `stores/bots.store.js`：新增 `__bridgeSignaling()`（state/resumed/foreground-resume 事件）、简化 `__bridgeConn()`、修复 `conn.disconnectedAt` → `bot.disconnectedAt`
+  - 适配 `utils/wait-connected.js`：`connState` → `dcReady`
+  - 适配 `stores/auth.store.js`：logout 时断开信令 WS
+  - 新增 `signaling-connection.test.js`（36 tests），更新 bot-connection/webrtc-connection/bots.store/auth.store 等测试
+  - 设计文档：`docs/designs/rtc-signaling-channel.md`
+  - **待后续**：初始化触发链路重建（§9）、session 过期处理、View 层 connState→dcReady 迁移
+
 ## 2026-03-21
 - **修复 `/new` 斜杠命令后旧 session 内容丢失**：
   - **根因**：`/new` 触发 session 轮换后，`loadMessages` 用新 session 消息替换 `this.messages`，旧消息丢失。依赖服务端 `session_start` 钩子异步写入 `coclaw-chat-history.json` 的即时可见性不可靠（竞态条件）

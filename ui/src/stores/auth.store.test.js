@@ -34,6 +34,11 @@ vi.mock('../services/bot-connection-manager.js', () => ({
 	__resetBotConnections: vi.fn(),
 }));
 
+const mockSigDisconnect = vi.fn();
+vi.mock('../services/signaling-connection.js', () => ({
+	useSignalingConnection: () => ({ disconnect: mockSigDisconnect, state: 'connected' }),
+}));
+
 vi.mock('../services/bots.api.js', () => ({
 	listBots: vi.fn(() => Promise.resolve([])),
 }));
@@ -283,7 +288,7 @@ describe('auth store', () => {
 		expect(botsStore.items).toEqual([]);
 	});
 
-	test('logout should disconnect all bot connections', async () => {
+	test('logout should disconnect all bot connections and signaling WS', async () => {
 		logout.mockResolvedValue();
 		const store = useAuthStore();
 		store.user = { id: '3' };
@@ -291,6 +296,7 @@ describe('auth store', () => {
 		await store.logout();
 
 		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
 	});
 
 	test('login 成功后调用 draftStore.onUserChanged', async () => {

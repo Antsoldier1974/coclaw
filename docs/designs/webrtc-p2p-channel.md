@@ -364,36 +364,9 @@ RTC 不可恢复
 | 单次 RTC `failed` | ICE restart 未耗尽 |
 | WS 断开重连 | RTC 可能仍健康 |
 
-### 8.4 RTC 与 WS 解耦
+### 8.4–8.6 信令通道相关恢复（已被取代）
 
-RTC 独立管理，WS 断开重连不影响健康的 RTC 连接。
-
-```
-WS 断开重连
-  │  若 RTC 仍然 connected → 无操作，RTC 继续工作
-  │  若 RTC 不存在        → 重新执行传输选择流程
-  │  若 RTC 已 failed     → 全新建连（full rebuild，新 connId）
-
-RTC 自身恢复
-  │  disconnected → 等 ICE 自动恢复
-  │  failed       → ICE restart（需 WS 在线传信令）
-  │              → 若 WS 此时也断了，等 WS 恢复后再 restart
-  │  ICE restart 失败 → full rebuild
-  │  full rebuild 耗尽 → 降级到 WS
-```
-
-### 8.5 connId 跨 WS 重连
-
-WS 重连后 Server 分配新 `connId`，Plugin 侧 `WebRtcPeer.__sessions` 以旧 `connId` 为 key。
-
-处理方案：
-- RTC 仍 `connected`：无需信令，无问题
-- RTC 已 `failed`：直接 full rebuild（新 PC、新 offer、新 connId），不尝试 ICE restart
-- **ICE restart 仅在同一 WS 连接内使用**（connId 不变时）
-
-### 8.6 WS 重连后重新触发传输选择
-
-WS 状态监听器为**持久**监听，每次 WS `connected` 时调用 `initRtcAndSelectTransport`。该函数已有防重入守卫（RTC 健康时跳过），重复调用安全。
+> **注（2026-03-30 更新）**：§8.4–8.6 已被 [RTC 信令通道设计 §7](rtc-signaling-channel.md) 取代。关键变更：connId 由 UI 侧生成并在 WS 重连后持久保留；ICE restart 跨 WS 重连可用；"降级到 WS"已移除（DataChannel 是唯一 RPC 通道）。
 
 ### 8.7 TURN 凭证刷新
 
@@ -412,13 +385,13 @@ WS 始终保持，职责：信令通道、业务交互（认证等）、Plugin-S
 | # | 场景 | 处理 |
 |---|------|------|
 | 1 | RTC `disconnected` | 等待 ICE 自动恢复 |
-| 2 | RTC `failed`，WS 在线且 connId 未变 | ICE restart（最多 5 次） |
-| 3 | ICE restart 耗尽 | full rebuild（最多 3 次） |
+| 2 | RTC `failed`，信令 WS 在线 | ICE restart（connId 不变，最多 5 次） |
+| 3 | ICE restart 耗尽 | full rebuild（复用 connId，最多 3 次） |
 | 4 | full rebuild 耗尽 | reject 挂起请求（`RTC_LOST`），等下次 WS 重连重试 |
-| 5 | WS 断开，RTC 仍 `connected` | RTC 不动，用户可继续交互 |
-| 6 | WS 重连，RTC 仍 `connected` | 跳过 initRtc，RTC 继续工作 |
-| 7 | WS 重连，RTC 已 `failed` | 直接 full rebuild（新 connId） |
-| 8 | WS 断开，RTC 也 `failed` | 等 WS 恢复后 full rebuild |
+| 5 | 信令 WS 断开，RTC 仍 `connected` | RTC 不动，用户可继续交互 |
+| 6 | 信令 WS 重连，RTC 仍 `connected` | 跳过 initRtc，RTC 继续工作 |
+| 7 | 信令 WS 重连，RTC 已 `failed` | full rebuild（复用 connId） |
+| 8 | 信令 WS 断开，RTC 也 `failed` | 等 WS 恢复后 full rebuild |
 | 9 | 业务请求时 DC 未就绪 | reject `DC_NOT_READY` |
 
 ---

@@ -1,7 +1,7 @@
 # RTC 信令通道设计
 
 > 创建时间：2026-03-30
-> 状态：草案
+> 状态：Server 侧 + UI 侧均已实施
 > 范围：UI ↔ Server 之间的 WebRTC 信令传输通道重构
 > 前置：[WebRTC P2P 数据通道设计](webrtc-p2p-channel.md)
 
@@ -479,7 +479,7 @@ signalingConn.sendSignaling(this.botId, 'rtc:offer', { sdp });
 
 对用户而言，真正关心的状态是 `dcReady`（能否发消息）。原 `connState`（per-bot WS 状态）退化为信令通道的全局状态，不再直接驱动 per-bot 的 UI 呈现。
 
-**`waitForConnected` 及消息重试逻辑**需同步适配：从监听 `connState` 改为监听 `dcReady`。涉及文件：`src/utils/wait-connected.js`、`src/stores/chat.store.js`。
+**`waitForConnected` 及消息重试逻辑**已适配：改为监听 `dcReady`。涉及文件：`src/utils/wait-connected.js`、`src/stores/chat.store.js`。
 
 **WS 重连后 RTC 状态检查**：
 
@@ -617,7 +617,7 @@ sendSignaling(botId, type, payload) → boolean
 
 ---
 
-## 十、风险与约束
+## 十一、风险与约束
 
 | 风险 | 缓解 |
 |------|------|

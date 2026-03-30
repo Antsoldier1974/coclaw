@@ -1,72 +1,32 @@
 /**
- * 单个 Bot 的 WebSocket 持久连接
- * 职责：连接生命周期、RPC 协议、心跳、自动重连、事件分发
+ * 单个 Bot 的数据通道连接
+ * 职责：RPC over DataChannel、WebRtcConnection 引用管理、事件分发
  * 无 Vue 依赖，纯 JS
+ *
+ * WS 信令管理已迁移至 SignalingConnection（per-tab 单例）
  */
-import { resolveApiBaseUrl } from './http.js';
+import { useSignalingConnection } from './signaling-connection.js';
 
-const HB_PING_MS = 25_000;
-const HB_TIMEOUT_MS = 45_000;
-const HB_MAX_MISS = 2; // 2 次 miss（~90s）再判定断连
 const DEFAULT_RPC_TIMEOUT_MS = 30 * 60_000; // 30 分钟兜底
-const INITIAL_RECONNECT_MS = 1000;
-const MAX_RECONNECT_MS = 30_000;
-const RECONNECT_JITTER = 0.3;
-/** 前台恢复：连接探测超时 */
-const PROBE_TIMEOUT_MS = 2500;
-/** 前台恢复：超过此时长无消息则假定连接已死 */
-const ASSUME_DEAD_MS = 45_000;
 /** 短暂抖动 vs 实质断连分界 */
 const BRIEF_DISCONNECT_MS = 5000;
-/** 防重入节流（visibilitychange + app:foreground） */
-const FOREGROUND_THROTTLE_MS = 500;
 const TERMINAL_STATUSES = new Set(['ok', 'error']);
 
 // 导出常量供外部模块使用
 export { BRIEF_DISCONNECT_MS };
 
-function resolveWsUrl(httpBaseUrl, botId) {
-	const url = new URL(httpBaseUrl);
-	url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-	url.pathname = '/api/v1/bots/stream';
-	url.searchParams.set('role', 'ui');
-	url.searchParams.set('botId', botId);
-	return url.toString();
-}
-
 /**
- * Per-bot 持久 WS 连接
+ * Per-bot 数据通道连接
  *
  * 事件:
- * - `state`          — 连接状态变更 (data: 'connecting' | 'connected' | 'disconnected')
- * - `event:<name>`   — server 推送事件 (data: payload)
- * - `session-expired` — session 过期
- * - `bot-unbound`    — bot 已解绑
+ * - `event:<name>` — DataChannel 推送事件 (data: payload)
  */
 export class BotConnection {
 	/**
 	 * @param {string} botId
-	 * @param {object} [options]
-	 * @param {string} [options.baseUrl] - HTTP API base URL
-	 * @param {Function} [options.WebSocket] - WebSocket 构造函数（测试注入）
 	 */
-	constructor(botId, options = {}) {
+	constructor(botId) {
 		this.botId = String(botId);
-		this.__baseUrl = options.baseUrl ?? resolveApiBaseUrl();
-		this.__WS = options.WebSocket ?? globalThis.WebSocket;
-
-		this.__ws = null;
-		this.__state = 'disconnected';
-		this.__intentionalClose = false;
-
-		// 重连
-		this.__reconnectTimer = null;
-		this.__reconnectDelay = INITIAL_RECONNECT_MS;
-
-		// 心跳
-		this.__hbInterval = null;
-		this.__hbTimer = null;
-		this.__hbMissCount = 0;
 
 		// RPC pending
 		this.__pending = new Map();
@@ -77,43 +37,6 @@ export class BotConnection {
 
 		/** @type {import('./webrtc-connection.js').WebRtcConnection | null} */
 		this.__rtc = null;
-
-		// visibility / foreground / network 恢复重连
-		this.__boundVisibilityHandler = null;
-		this.__boundForegroundHandler = null;
-		this.__boundNetworkHandler = null;
-		this.__lastForegroundAt = 0; // 防重入节流
-
-		// 连接感知时间戳
-		/** @type {number} 最后一次确认连接活着的时间（收到任何 WS 消息时更新） */
-		this.__lastAliveAt = 0;
-		/** @type {((ts: number) => void) | null} 外部回调：每次确认连接存活时调用 */
-		this.__onAlive = null;
-		/** @type {number} 断连时间戳（state → disconnected 时记录） */
-		this.__disconnectedAt = 0;
-		/** @type {number | null} probe 定时器 */
-		this.__probeTimer = null;
-	}
-
-	/** @returns {'disconnected' | 'connecting' | 'connected'} */
-	get state() {
-		return this.__state;
-	}
-
-	/** @returns {number} 最后一次确认连接存活的时间戳 */
-	get lastAliveAt() {
-		return this.__lastAliveAt;
-	}
-
-	/** @returns {number} 最近一次断连的时间戳（0 表示从未断连） */
-	get disconnectedAt() {
-		return this.__disconnectedAt;
-	}
-
-	/** @returns {number} 断连持续时长（ms），若未断连返回 0 */
-	get disconnectDuration() {
-		if (!this.__disconnectedAt || this.__state !== 'disconnected') return 0;
-		return Date.now() - this.__disconnectedAt;
 	}
 
 	/** @returns {import('./webrtc-connection.js').WebRtcConnection | null} */
@@ -128,33 +51,15 @@ export class BotConnection {
 		this.__rejectAllPending('RTC connection lost', 'RTC_LOST');
 	}
 
-	/** 建立连接（幂等） */
-	connect() {
-		if (this.__ws) return;
-		console.debug('[BotConn] connect botId=%s', this.botId);
-		this.__intentionalClose = false;
-		if (typeof document !== 'undefined' && !this.__boundVisibilityHandler) {
-			this.__boundVisibilityHandler = () => this.__onVisibilityChange();
-			document.addEventListener('visibilitychange', this.__boundVisibilityHandler);
-		}
-		if (typeof window !== 'undefined' && !this.__boundForegroundHandler) {
-			this.__boundForegroundHandler = () => this.__onAppForeground();
-			window.addEventListener('app:foreground', this.__boundForegroundHandler);
-		}
-		if (typeof window !== 'undefined' && !this.__boundNetworkHandler) {
-			this.__boundNetworkHandler = () => this.__handleForegroundResume('network:online');
-			window.addEventListener('network:online', this.__boundNetworkHandler);
-		}
-		this.__doConnect();
-	}
-
-	/** 主动断开，不再自动重连 */
+	/** 断开：关闭 RTC + reject pending + 释放 connId */
 	disconnect() {
 		console.debug('[BotConn] disconnect botId=%s', this.botId);
-		this.__intentionalClose = true;
-		this.__clearReconnect();
-		this.__cleanup();
-		this.__setState('disconnected');
+		if (this.__rtc) {
+			try { this.__rtc.close(); } catch (err) { console.debug('[BotConn] rtc.close() failed: %s', err?.message); }
+			this.__rtc = null;
+		}
+		this.__rejectAllPending('connection closed');
+		useSignalingConnection().releaseConnId(this.botId);
 	}
 
 	/**
@@ -198,20 +103,6 @@ export class BotConnection {
 		});
 	}
 
-	/**
-	 * 发送非 RPC 原始消息（用于 WebRTC 信令等）
-	 * @param {object} payload - 完整消息对象，直接 JSON 序列化发送
-	 * @returns {boolean} 是否发送成功
-	 */
-	sendRaw(payload) {
-		if (!this.__ws || this.__ws.readyState !== 1) return false;
-		try {
-			this.__ws.send(JSON.stringify(payload));
-			return true;
-		}
-		catch { return false; }
-	}
-
 	/** @param {string} event @param {Function} cb */
 	on(event, cb) {
 		const set = this.__listeners.get(event) ?? new Set();
@@ -233,101 +124,6 @@ export class BotConnection {
 			try { cb(data); }
 			catch (e) { console.error('[BotConn] listener error:', e); }
 		}
-	}
-
-	__setState(newState) {
-		if (this.__state === newState) return;
-		const prev = this.__state;
-		this.__state = newState;
-		if (newState === 'disconnected') {
-			this.__disconnectedAt = Date.now();
-		}
-		console.debug('[BotConn] state %s→%s botId=%s', prev, newState, this.botId);
-		this.__emit('state', newState);
-	}
-
-	__doConnect() {
-		this.__setState('connecting');
-		const wsUrl = resolveWsUrl(this.__baseUrl, this.botId);
-		let ws;
-		try {
-			ws = new this.__WS(wsUrl);
-		}
-		catch {
-			this.__setState('disconnected');
-			this.__scheduleReconnect();
-			return;
-		}
-		this.__ws = ws;
-
-		ws.addEventListener('open', () => {
-			if (this.__ws !== ws) return;
-			console.debug('[BotConn] ws open botId=%s', this.botId);
-			this.__setState('connected');
-			this.__reconnectDelay = INITIAL_RECONNECT_MS;
-			this.__startHeartbeat();
-		});
-
-		ws.addEventListener('message', (event) => {
-			if (this.__ws !== ws) return;
-			this.__resetHbTimeout();
-			this.__onMessage(event);
-		});
-
-		ws.addEventListener('close', (ev) => {
-			if (this.__ws !== ws) return;
-			console.debug('[BotConn] ws close botId=%s code=%d reason=%s', this.botId, ev.code, ev.reason);
-			this.__clearHeartbeat();
-			this.__clearProbe();
-			// WS 仅承载信令，pending 请求均在 DC 上，WS close 不影响它们
-			this.__ws = null;
-			if (!this.__intentionalClose) {
-				this.__setState('disconnected');
-				this.__scheduleReconnect();
-			}
-		});
-
-		ws.addEventListener('error', () => {
-			console.debug('[BotConn] ws error botId=%s', this.botId);
-		});
-	}
-
-	__onMessage(event) {
-		let payload;
-		try {
-			payload = JSON.parse(String(event.data ?? '{}'));
-		}
-		catch { return; }
-
-		// 系统消息始终处理
-		if (payload?.type === 'pong') return;
-
-		// rtc 信令消息 → 转发给 WebRtcConnection
-		if (payload?.type?.startsWith('rtc:')) {
-			this.__emit('rtc', payload);
-			return;
-		}
-
-		// session 过期（server 侧主动通知，预留）
-		if (payload?.type === 'session.expired') {
-			console.debug('[BotConn] session.expired botId=%s', this.botId);
-			this.__emit('session-expired');
-			this.disconnect();
-			return;
-		}
-
-		// bot 解绑
-		if (payload?.type === 'bot.unbound') {
-			console.debug('[BotConn] bot.unbound botId=%s', this.botId);
-			this.__emit('bot-unbound', payload);
-			this.__intentionalClose = true;
-			this.__clearReconnect();
-			this.__cleanup();
-			this.__setState('disconnected');
-			return;
-		}
-
-		// 业务消息（res / event）：WS 不承载业务数据，全部走 DC，此处忽略
 	}
 
 	/** DataChannel 消息处理（由 WebRtcConnection 回调） */
@@ -385,226 +181,6 @@ export class BotConnection {
 		if (waiter.onUnknownStatus) {
 			waiter.onUnknownStatus(status, payload.payload);
 		}
-	}
-
-	// --- 心跳 ---
-
-	__startHeartbeat() {
-		this.__clearHeartbeat();
-		this.__hbMissCount = 0;
-		this.__hbInterval = setInterval(() => {
-			if (this.__ws?.readyState === 1) {
-				try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
-				catch {}
-			}
-		}, HB_PING_MS);
-		this.__resetHbTimeout();
-	}
-
-	__resetHbTimeout() {
-		this.__hbMissCount = 0;
-		this.__lastAliveAt = Date.now();
-		if (this.__onAlive) this.__onAlive(this.__lastAliveAt);
-		if (this.__hbTimer) clearTimeout(this.__hbTimer);
-		this.__hbTimer = setTimeout(() => {
-			this.__onHbMiss();
-		}, HB_TIMEOUT_MS);
-	}
-
-	__onHbMiss() {
-		this.__hbMissCount++;
-		if (this.__hbMissCount < HB_MAX_MISS) {
-			console.debug(
-				'[BotConn] heartbeat miss (%d/%d) botId=%s',
-				this.__hbMissCount, HB_MAX_MISS, this.botId,
-			);
-			if (this.__ws?.readyState === 1) {
-				try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
-				catch {}
-			}
-			this.__hbTimer = setTimeout(() => {
-				this.__onHbMiss();
-			}, HB_TIMEOUT_MS);
-			return;
-		}
-		console.warn(
-			'[BotConn] heartbeat timeout (%d misses, ~%ds) botId=%s',
-			this.__hbMissCount, this.__hbMissCount * HB_TIMEOUT_MS / 1000,
-			this.botId,
-		);
-		try { this.__ws?.close(4000, 'heartbeat_timeout'); }
-		catch {}
-	}
-
-	__clearHeartbeat() {
-		if (this.__hbInterval) { clearInterval(this.__hbInterval); this.__hbInterval = null; }
-		if (this.__hbTimer) { clearTimeout(this.__hbTimer); this.__hbTimer = null; }
-		this.__hbMissCount = 0;
-	}
-
-	// --- 重连 ---
-
-	__scheduleReconnect() {
-		if (this.__intentionalClose || this.__reconnectTimer) return;
-		const jitter = 1 + (Math.random() * 2 - 1) * RECONNECT_JITTER;
-		const delay = Math.min(this.__reconnectDelay * jitter, MAX_RECONNECT_MS);
-		console.debug('[BotConn] reconnect in %dms botId=%s', Math.round(delay), this.botId);
-		this.__reconnectTimer = setTimeout(() => {
-			this.__reconnectTimer = null;
-			if (!this.__intentionalClose) {
-				this.__reconnectDelay = Math.min(this.__reconnectDelay * 2, MAX_RECONNECT_MS);
-				this.__doConnect();
-			}
-		}, delay);
-	}
-
-	__clearReconnect() {
-		if (this.__reconnectTimer) {
-			clearTimeout(this.__reconnectTimer);
-			this.__reconnectTimer = null;
-		}
-	}
-
-	// --- Visibility / Foreground 恢复重连 ---
-
-	__onVisibilityChange() {
-		if (typeof document === 'undefined') return;
-		if (document.visibilityState !== 'visible') return;
-		this.__handleForegroundResume('visibility');
-	}
-
-	__onAppForeground() {
-		this.__handleForegroundResume('app:foreground');
-	}
-
-	/**
-	 * 前台恢复统一入口（visibilitychange / app:foreground 共用）
-	 * @param {string} source - 触发来源（日志用）
-	 */
-	__handleForegroundResume(source) {
-		if (this.__intentionalClose) return;
-		// 防重入节流：500ms 内不重复执行
-		const now = Date.now();
-		if (now - this.__lastForegroundAt < FOREGROUND_THROTTLE_MS) return;
-		this.__lastForegroundAt = now;
-
-		if (this.__state === 'disconnected') {
-			// 已知断开 → 即时重连
-			console.debug('[BotConn] %s → immediate reconnect botId=%s', source, this.botId);
-			this.__clearReconnect();
-			this.__reconnectDelay = INITIAL_RECONNECT_MS;
-			this.__doConnect();
-			return;
-		}
-
-		if (this.__state === 'connecting') return; // 正在重连中
-
-		// state === 'connected'：根据 lastAliveAt 判断连接是否可能已死
-		const elapsed = now - this.__lastAliveAt;
-		if (elapsed > ASSUME_DEAD_MS) {
-			console.debug('[BotConn] %s → assume dead (elapsed=%dms) botId=%s', source, elapsed, this.botId);
-			this.forceReconnect();
-		} else if (this.__lastAliveAt > 0 && elapsed > PROBE_TIMEOUT_MS) {
-			// 超过探测超时时长未收到消息 → 有必要探测
-			console.debug('[BotConn] %s → probe (elapsed=%dms) botId=%s', source, elapsed, this.botId);
-			this.probe();
-		}
-		// elapsed <= PROBE_TIMEOUT_MS → 刚刚还收到过消息，无需探测
-
-		// RTC 恢复：若 PC 处于 disconnected（NAT 映射可能已失效），主动 ICE restart
-		if (this.__rtc?.tryIceRestart()) {
-			console.debug('[BotConn] %s → proactive RTC ICE restart botId=%s', source, this.botId);
-		}
-	}
-
-	/**
-	 * 探测连接存活性：发送 ping，若 PROBE_TIMEOUT_MS 内无响应则 forceReconnect
-	 */
-	probe() {
-		if (this.__probeTimer) return; // 已在探测中
-		if (!this.__ws || this.__ws.readyState !== 1) {
-			this.forceReconnect();
-			return;
-		}
-		const aliveAtBefore = this.__lastAliveAt;
-		try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
-		catch { this.forceReconnect(); return; }
-
-		this.__probeTimer = setTimeout(() => {
-			this.__probeTimer = null;
-			// 若期间收到过消息，lastAliveAt 会被更新
-			if (this.__lastAliveAt > aliveAtBefore) {
-				console.debug('[BotConn] probe ok botId=%s', this.botId);
-				return;
-			}
-			console.debug('[BotConn] probe timeout → forceReconnect botId=%s', this.botId);
-			this.forceReconnect();
-		}, PROBE_TIMEOUT_MS);
-	}
-
-	/**
-	 * 强制重连：关闭当前 WS → 立即重新建连
-	 * 不检查当前 state，适用于连接表面 connected 但实际已死的情况
-	 */
-	forceReconnect() {
-		if (this.__intentionalClose) return;
-		console.debug('[BotConn] forceReconnect botId=%s', this.botId);
-		this.__clearProbe();
-		this.__clearHeartbeat();
-		this.__clearReconnect();
-		const ws = this.__ws;
-		this.__ws = null;
-		if (ws) {
-			// WS 仅承载信令，pending 请求均在 DC 上，WS close 不影响它们
-			try { ws.close(4000, 'force_reconnect'); }
-			catch {}
-		}
-		this.__setState('disconnected');
-		// forceReconnect 场景：连接表面仍在但实际已死，
-		// 用 lastAliveAt 修正断连时间戳以反映真实断连时长
-		if (this.__lastAliveAt > 0) {
-			this.__disconnectedAt = this.__lastAliveAt;
-		}
-		this.__reconnectDelay = INITIAL_RECONNECT_MS;
-		this.__doConnect();
-	}
-
-	__clearProbe() {
-		if (this.__probeTimer) {
-			clearTimeout(this.__probeTimer);
-			this.__probeTimer = null;
-		}
-	}
-
-	// --- 清理 ---
-
-	__cleanup() {
-		this.__clearHeartbeat();
-		this.__clearProbe();
-		if (this.__boundVisibilityHandler && typeof document !== 'undefined') {
-			document.removeEventListener('visibilitychange', this.__boundVisibilityHandler);
-			this.__boundVisibilityHandler = null;
-		}
-		if (this.__boundForegroundHandler && typeof window !== 'undefined') {
-			window.removeEventListener('app:foreground', this.__boundForegroundHandler);
-			this.__boundForegroundHandler = null;
-		}
-		if (this.__boundNetworkHandler && typeof window !== 'undefined') {
-			window.removeEventListener('network:online', this.__boundNetworkHandler);
-			this.__boundNetworkHandler = null;
-		}
-		const ws = this.__ws;
-		this.__ws = null;
-		if (ws) {
-			try { ws.close(1000, 'disconnect'); }
-			catch {}
-		}
-		// 完整拆除时关闭 RTC 连接并重置状态
-		if (this.__rtc) {
-			try { this.__rtc.close(); } catch {}
-			this.__rtc = null;
-		}
-		this.__rejectAllPending('connection closed');
 	}
 
 	__rejectAllPending(message, code = 'DC_CLOSED') {

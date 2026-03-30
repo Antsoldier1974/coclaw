@@ -1,0 +1,435 @@
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+	SignalingConnection,
+	useSignalingConnection,
+	__resetSignalingConnection,
+} from './signaling-connection.js';
+
+// --- MockWebSocket ---
+
+class MockWebSocket {
+	constructor(url) {
+		this.url = url;
+		this.readyState = 0;
+		this.__listeners = {};
+		this.sent = [];
+		this.closed = false;
+		this.closeCode = null;
+		MockWebSocket.lastInstance = this;
+		MockWebSocket.instances.push(this);
+	}
+	addEventListener(event, cb) {
+		if (!this.__listeners[event]) this.__listeners[event] = [];
+		this.__listeners[event].push(cb);
+	}
+	removeEventListener(event, cb) {
+		if (!this.__listeners[event]) return;
+		this.__listeners[event] = this.__listeners[event].filter(fn => fn !== cb);
+	}
+	send(data) {
+		if (this.readyState !== 1) throw new Error('ws not open');
+		this.sent.push(data);
+	}
+	close(code, reason) {
+		this.closed = true;
+		this.closeCode = code;
+		this.readyState = 3;
+	}
+	simulateOpen() {
+		this.readyState = 1;
+		(this.__listeners['open'] ?? []).forEach(cb => cb());
+	}
+	simulateMessage(data) {
+		const payload = typeof data === 'string' ? data : JSON.stringify(data);
+		(this.__listeners['message'] ?? []).forEach(cb => cb({ data: payload }));
+	}
+	simulateClose(code = 1000, reason = '') {
+		this.readyState = 3;
+		(this.__listeners['close'] ?? []).forEach(cb => cb({ code, reason }));
+	}
+	static reset() {
+		MockWebSocket.lastInstance = null;
+		MockWebSocket.instances = [];
+	}
+}
+MockWebSocket.instances = [];
+MockWebSocket.lastInstance = null;
+
+function makeConnected() {
+	MockWebSocket.reset();
+	const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+	conn.connect();
+	const ws = MockWebSocket.lastInstance;
+	ws.simulateOpen();
+	return { conn, ws };
+}
+
+beforeEach(() => {
+	vi.useFakeTimers();
+	MockWebSocket.reset();
+});
+
+afterEach(() => {
+	vi.useRealTimers();
+});
+
+// --- 测试套件 ---
+
+describe('SignalingConnection – constructor', () => {
+	test('初始状态为 disconnected', () => {
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		expect(conn.state).toBe('disconnected');
+	});
+});
+
+describe('SignalingConnection – connect()', () => {
+	test('连接后状态变为 connecting → connected', () => {
+		const states = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('state', s => states.push(s));
+		conn.connect();
+		expect(conn.state).toBe('connecting');
+		MockWebSocket.lastInstance.simulateOpen();
+		expect(conn.state).toBe('connected');
+		expect(states).toEqual(['connecting', 'connected']);
+	});
+
+	test('幂等：已连接时不重复创建 WS', () => {
+		const { conn } = makeConnected();
+		conn.connect();
+		expect(MockWebSocket.instances.length).toBe(1);
+	});
+
+	test('WS URL 使用 /api/v1/rtc/signal 路径', () => {
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect();
+		expect(MockWebSocket.lastInstance.url).toContain('/api/v1/rtc/signal');
+	});
+
+	test('https base URL 生成 wss WS URL', () => {
+		const conn = new SignalingConnection({ baseUrl: 'https://example.com', WebSocket: MockWebSocket });
+		conn.connect();
+		expect(MockWebSocket.lastInstance.url).toMatch(/^wss:/);
+	});
+});
+
+describe('SignalingConnection – disconnect()', () => {
+	test('主动断开后不自动重连', () => {
+		const { conn, ws } = makeConnected();
+		conn.disconnect();
+		expect(conn.state).toBe('disconnected');
+		vi.advanceTimersByTime(60_000);
+		expect(MockWebSocket.instances.length).toBe(1); // 未创建新 WS
+	});
+});
+
+describe('SignalingConnection – connId 管理', () => {
+	test('getOrCreateConnId 生成并缓存 connId', () => {
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		const id1 = conn.getOrCreateConnId('bot1');
+		const id2 = conn.getOrCreateConnId('bot1');
+		expect(id1).toBe(id2);
+		expect(id1).toMatch(/^c_/);
+	});
+
+	test('不同 botId 生成不同 connId', () => {
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		const id1 = conn.getOrCreateConnId('bot1');
+		const id2 = conn.getOrCreateConnId('bot2');
+		expect(id1).not.toBe(id2);
+	});
+
+	test('releaseConnId 移除 connId 并发送 rtc:closed', () => {
+		const { conn, ws } = makeConnected();
+		const connId = conn.getOrCreateConnId('bot1');
+		conn.releaseConnId('bot1');
+		// 应发送 rtc:closed
+		const msgs = ws.sent.map(s => JSON.parse(s));
+		const closedMsg = msgs.find(m => m.type === 'rtc:closed');
+		expect(closedMsg).toBeTruthy();
+		expect(closedMsg.connId).toBe(connId);
+		expect(closedMsg.botId).toBe('bot1');
+		// 再次 getOrCreateConnId 应生成新的 connId
+		const newId = conn.getOrCreateConnId('bot1');
+		expect(newId).not.toBe(connId);
+	});
+
+	test('releaseConnId 对不存在的 botId 无副作用', () => {
+		const { conn, ws } = makeConnected();
+		conn.releaseConnId('nonexistent');
+		// 无 rtc:closed 消息
+		expect(ws.sent.length).toBe(0);
+	});
+});
+
+describe('SignalingConnection – sendSignaling()', () => {
+	test('WS 可用时发送消息并返回 true', () => {
+		const { conn, ws } = makeConnected();
+		const ok = conn.sendSignaling('bot1', 'rtc:offer', { sdp: 'test-sdp' });
+		expect(ok).toBe(true);
+		const msg = JSON.parse(ws.sent[0]);
+		expect(msg.type).toBe('rtc:offer');
+		expect(msg.botId).toBe('bot1');
+		expect(msg.connId).toMatch(/^c_/);
+		expect(msg.payload).toEqual({ sdp: 'test-sdp' });
+	});
+
+	test('无 payload 时消息不含 payload 字段', () => {
+		const { conn, ws } = makeConnected();
+		conn.sendSignaling('bot1', 'rtc:ready');
+		const msg = JSON.parse(ws.sent[0]);
+		expect(msg.type).toBe('rtc:ready');
+		expect(msg).not.toHaveProperty('payload');
+	});
+
+	test('WS 不可用时返回 false', () => {
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		const ok = conn.sendSignaling('bot1', 'rtc:offer', { sdp: 'x' });
+		expect(ok).toBe(false);
+	});
+
+	test('同一 botId 多次发送使用相同 connId', () => {
+		const { conn, ws } = makeConnected();
+		conn.sendSignaling('bot1', 'rtc:offer', { sdp: '1' });
+		conn.sendSignaling('bot1', 'rtc:ice', { candidate: 'c1' });
+		const msg1 = JSON.parse(ws.sent[0]);
+		const msg2 = JSON.parse(ws.sent[1]);
+		expect(msg1.connId).toBe(msg2.connId);
+	});
+});
+
+describe('SignalingConnection – 入站 RTC 信令', () => {
+	test('rtc:answer 按 toConnId 路由到对应 botId', () => {
+		const { conn, ws } = makeConnected();
+		const connId = conn.getOrCreateConnId('bot1');
+		const events = [];
+		conn.on('rtc', (e) => events.push(e));
+		ws.simulateMessage({ type: 'rtc:answer', toConnId: connId, payload: { sdp: 'ans' } });
+		expect(events.length).toBe(1);
+		expect(events[0].botId).toBe('bot1');
+		expect(events[0].type).toBe('rtc:answer');
+		expect(events[0].payload).toEqual({ sdp: 'ans' });
+	});
+
+	test('rtc:ice 按 toConnId 路由', () => {
+		const { conn, ws } = makeConnected();
+		const connId = conn.getOrCreateConnId('bot2');
+		const events = [];
+		conn.on('rtc', (e) => events.push(e));
+		ws.simulateMessage({ type: 'rtc:ice', toConnId: connId, payload: { candidate: 'c' } });
+		expect(events.length).toBe(1);
+		expect(events[0].botId).toBe('bot2');
+	});
+
+	test('未知 toConnId 的消息被忽略', () => {
+		const { conn, ws } = makeConnected();
+		const events = [];
+		conn.on('rtc', (e) => events.push(e));
+		ws.simulateMessage({ type: 'rtc:answer', toConnId: 'c_unknown', payload: {} });
+		expect(events.length).toBe(0);
+	});
+});
+
+describe('SignalingConnection – resume 协议', () => {
+	test('首次连接不发送 signal:resume', () => {
+		const { ws } = makeConnected();
+		const msgs = ws.sent.map(s => JSON.parse(s));
+		expect(msgs.find(m => m.type === 'signal:resume')).toBeUndefined();
+	});
+
+	test('重连后发送 signal:resume', () => {
+		const { conn, ws } = makeConnected();
+		// 注册 connId
+		conn.getOrCreateConnId('bot1');
+		conn.getOrCreateConnId('bot2');
+		// 模拟 WS 断开 + 重连
+		ws.simulateClose(1006);
+		vi.advanceTimersByTime(2000);
+		const ws2 = MockWebSocket.lastInstance;
+		ws2.simulateOpen();
+		const msgs = ws2.sent.map(s => JSON.parse(s));
+		const resume = msgs.find(m => m.type === 'signal:resume');
+		expect(resume).toBeTruthy();
+		expect(Object.keys(resume.connIds).length).toBe(2);
+		expect(resume.connIds).toHaveProperty('bot1');
+		expect(resume.connIds).toHaveProperty('bot2');
+	});
+
+	test('重连但无 connId 时不发送 resume', () => {
+		const { conn, ws } = makeConnected();
+		ws.simulateClose(1006);
+		vi.advanceTimersByTime(2000);
+		const ws2 = MockWebSocket.lastInstance;
+		ws2.simulateOpen();
+		expect(ws2.sent.length).toBe(0);
+	});
+
+	test('收到 signal:resumed 发出 resumed 事件', () => {
+		const { conn, ws } = makeConnected();
+		const events = [];
+		conn.on('resumed', () => events.push(true));
+		ws.simulateMessage({ type: 'signal:resumed' });
+		expect(events.length).toBe(1);
+	});
+});
+
+describe('SignalingConnection – 心跳', () => {
+	test('连接后定期发送 ping', () => {
+		const { ws } = makeConnected();
+		vi.advanceTimersByTime(25_000);
+		const pings = ws.sent.filter(s => JSON.parse(s).type === 'ping');
+		expect(pings.length).toBeGreaterThanOrEqual(1);
+	});
+
+	test('连续 miss 后关闭 WS 并重连', () => {
+		const { conn, ws } = makeConnected();
+		// 模拟不收到任何 pong → 心跳超时
+		vi.advanceTimersByTime(45_000); // 第一次 miss
+		vi.advanceTimersByTime(45_000); // 第二次 miss → 关闭 WS
+		expect(conn.state).toBe('disconnected');
+		// 应安排重连
+		vi.advanceTimersByTime(2000);
+		expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+	});
+});
+
+describe('SignalingConnection – 重连', () => {
+	test('WS 异常关闭后自动重连', () => {
+		const { conn, ws } = makeConnected();
+		ws.simulateClose(1006, 'abnormal');
+		expect(conn.state).toBe('disconnected');
+		vi.advanceTimersByTime(2000);
+		expect(MockWebSocket.instances.length).toBe(2);
+	});
+
+	test('指数退避：第二次重连延迟更长', () => {
+		const { conn, ws } = makeConnected();
+		ws.simulateClose(1006);
+		// 第一次重连 ~1s（含 jitter 最大 1.3s）
+		vi.advanceTimersByTime(1500);
+		const ws2 = MockWebSocket.lastInstance;
+		expect(ws2).not.toBe(ws); // 确认已创建新 WS
+		ws2.simulateClose(1006);
+		// 第二次重连 ~2s（指数退避，含 jitter 最大 2.6s）
+		vi.advanceTimersByTime(3000);
+		expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(3);
+	});
+});
+
+describe('SignalingConnection – 前台恢复', () => {
+	test('foreground-resume 事件被发出', () => {
+		const { conn } = makeConnected();
+		const events = [];
+		conn.on('foreground-resume', () => events.push(true));
+		// 模拟 visibilitychange（需要 500ms 后才不被节流）
+		vi.advanceTimersByTime(1000);
+		conn.__handleForegroundResume('test');
+		expect(events.length).toBe(1);
+	});
+
+	test('disconnected 状态下前台恢复触发即时重连', () => {
+		const { conn, ws } = makeConnected();
+		ws.simulateClose(1006);
+		expect(conn.state).toBe('disconnected');
+		vi.advanceTimersByTime(600); // 过节流期
+		conn.__handleForegroundResume('test');
+		// 应创建新 WS
+		expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+	});
+});
+
+describe('SignalingConnection – probe()', () => {
+	test('探测成功：收到 pong 后不触发 forceReconnect', () => {
+		const { conn, ws } = makeConnected();
+		vi.advanceTimersByTime(100); // 推进时间使 lastAliveAt 可被区分
+		conn.probe();
+		// 模拟收到 pong（更新 lastAliveAt）
+		ws.simulateMessage({ type: 'pong' });
+		vi.advanceTimersByTime(3000);
+		// 不应触发 forceReconnect（WS 仍是同一个实例）
+		expect(MockWebSocket.instances.length).toBe(1);
+	});
+
+	test('探测超时触发 forceReconnect', () => {
+		const { conn, ws } = makeConnected();
+		conn.probe();
+		// 不回复 pong → 2.5s 后超时
+		vi.advanceTimersByTime(2600);
+		// 应触发 forceReconnect → disconnected → 重连
+		expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+	});
+});
+
+describe('SignalingConnection – catch 路径日志', () => {
+	test('WS constructor 失败时输出 warn 并重连', () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const FailWS = function () { throw new Error('ws constructor boom'); };
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: FailWS });
+		conn.connect();
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[SigConn] WS constructor failed'), 'ws constructor boom');
+		expect(conn.state).toBe('disconnected');
+		warnSpy.mockRestore();
+		conn.disconnect();
+	});
+
+	test('sendRaw 发送失败时输出 warn', () => {
+		const { conn, ws } = makeConnected();
+		ws.send = () => { throw new Error('send boom'); };
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const ok = conn.sendSignaling('bot1', 'rtc:offer', { sdp: 'x' });
+		expect(ok).toBe(false);
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[SigConn] sendRaw failed'), 'send boom');
+		warnSpy.mockRestore();
+	});
+
+	test('JSON 解析失败时输出 warn', () => {
+		const { conn, ws } = makeConnected();
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		ws.simulateMessage('not valid json {{{');
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[SigConn] message parse failed'), expect.any(String));
+		warnSpy.mockRestore();
+	});
+
+	test('probe ping 发送失败时输出 debug 并 forceReconnect', () => {
+		const { conn, ws } = makeConnected();
+		ws.send = () => { throw new Error('probe send fail'); };
+		const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+		conn.probe();
+		expect(debugSpy).toHaveBeenCalledWith(
+			expect.stringContaining('[SigConn] probe ping send failed'),
+			expect.stringContaining('probe send fail'),
+		);
+		debugSpy.mockRestore();
+	});
+
+	test('入站 rtc:closed 清理 connId 映射', () => {
+		const { conn, ws } = makeConnected();
+		const connId = conn.getOrCreateConnId('bot1');
+		const events = [];
+		conn.on('rtc', (e) => events.push(e));
+		ws.simulateMessage({ type: 'rtc:closed', toConnId: connId });
+		// 应收到事件
+		expect(events.length).toBe(1);
+		expect(events[0].type).toBe('rtc:closed');
+		// connId 应被清理：再次 getOrCreateConnId 应生成新的
+		const newConnId = conn.getOrCreateConnId('bot1');
+		expect(newConnId).not.toBe(connId);
+	});
+});
+
+describe('SignalingConnection – 单例', () => {
+	afterEach(() => __resetSignalingConnection());
+
+	test('useSignalingConnection 返回同一实例', () => {
+		const a = useSignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		const b = useSignalingConnection();
+		expect(a).toBe(b);
+	});
+
+	test('__resetSignalingConnection 重置单例', () => {
+		const a = useSignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		__resetSignalingConnection();
+		const b = useSignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		expect(a).not.toBe(b);
+	});
+});

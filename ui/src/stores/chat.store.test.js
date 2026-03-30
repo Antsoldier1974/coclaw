@@ -1061,6 +1061,7 @@ describe('useChatStore', () => {
 			botsStore.setBots([{ id: '1', online: true }]);
 			// waitForConnected 读取 byId.connState
 			botsStore.byId['1'].connState = 'connected';
+			botsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -1097,6 +1098,7 @@ describe('useChatStore', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 			botsStore.byId['1'].connState = 'connected';
+			botsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -1131,6 +1133,7 @@ describe('useChatStore', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 			botsStore.byId['1'].connState = 'connected';
+			botsStore.byId['1'].dcReady = true;
 
 			const capturedKeys = [];
 			const conn = mockConn();
@@ -1219,6 +1222,7 @@ describe('useChatStore', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 			botsStore.byId['1'].connState = 'connected';
+			botsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -1248,6 +1252,7 @@ describe('useChatStore', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 			botsStore.byId['1'].connState = 'connected';
+			botsStore.byId['1'].dcReady = true;
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {

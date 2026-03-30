@@ -15,6 +15,7 @@ import {
 } from '../i18n/index.js';
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useSignalingConnection } from '../services/signaling-connection.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
@@ -107,6 +108,7 @@ export const useAuthStore = defineStore('auth', {
 			draftStore.onUserChanged();
 			syncThemeModeFromSettings(null);
 			useBotConnections().disconnectAll();
+			useSignalingConnection().disconnect();
 			useSessionsStore().$reset();
 			useBotsStore().$reset();
 			console.log('[auth] logged out');

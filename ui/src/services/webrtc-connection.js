@@ -9,6 +9,7 @@
  */
 import { httpClient } from './http.js';
 import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
+import { useSignalingConnection } from './signaling-connection.js';
 
 const MAX_ICE_RESTARTS = 5;
 const MAX_FULL_REBUILDS = 3;
@@ -121,7 +122,7 @@ export function __getRtcInstance(botId) {
 export class WebRtcConnection {
 	/**
 	 * @param {string} botId
-	 * @param {import('./bot-connection.js').BotConnection} botConn - 关联的 WS 连接
+	 * @param {import('./bot-connection.js').BotConnection} botConn - 关联的 DC 连接
 	 * @param {object} [opts]
 	 * @param {function} [opts.PeerConnection] - 可替换的 RTCPeerConnection 构造函数（测试用）
 	 */
@@ -178,7 +179,7 @@ export class WebRtcConnection {
 		this.__removeRtcListener();
 		this.__rejectSendQueue('connection closed');
 		if (this.__pc) {
-			this.__botConn.sendRaw({ type: 'rtc:closed' });
+			useSignalingConnection().sendSignaling(this.botId, 'rtc:closed');
 			this.__pc.close();
 			this.__pc = null;
 		}
@@ -346,7 +347,9 @@ export class WebRtcConnection {
 			};
 
 			timer = setTimeout(() => { timer = null; cleanup(false); }, timeoutMs);
-			this.__doIceRestart().catch(() => cleanup(false));
+			this.__doIceRestart().then((sent) => {
+				if (!sent) cleanup(false); // 信令不可用，无需等超时
+			}).catch(() => cleanup(false));
 		});
 	}
 
@@ -384,10 +387,7 @@ export class WebRtcConnection {
 		// 创建并发送 offer
 		const offer = await pc.createOffer();
 		await pc.setLocalDescription(offer);
-		this.__botConn.sendRaw({
-			type: 'rtc:offer',
-			payload: { sdp: offer.sdp },
-		});
+		useSignalingConnection().sendSignaling(this.botId, 'rtc:offer', { sdp: offer.sdp });
 		this.__log('info', `offer sent for bot ${this.botId}${isRebuild ? ' (rebuild)' : ''}`);
 	}
 
@@ -409,13 +409,10 @@ export class WebRtcConnection {
 
 	/** @private */
 	__setupPcEvents(pc) {
-		// ICE candidate → 通过 WS 发给 Plugin
+		// ICE candidate → 通过信令 WS 发给 Plugin
 		pc.onicecandidate = (event) => {
 			if (!event.candidate) return;
-			this.__botConn.sendRaw({
-				type: 'rtc:ice',
-				payload: event.candidate.toJSON(),
-			});
+			useSignalingConnection().sendSignaling(this.botId, 'rtc:ice', event.candidate.toJSON());
 		};
 
 		// 连接状态变更
@@ -462,7 +459,7 @@ export class WebRtcConnection {
 
 		dc.onopen = () => {
 			this.__log('info', 'DataChannel "rpc" opened');
-			this.__botConn.sendRaw({ type: 'rtc:ready' });
+			useSignalingConnection().sendSignaling(this.botId, 'rtc:ready');
 			this.onReady?.();
 		};
 		dc.onclose = () => {
@@ -579,12 +576,18 @@ export class WebRtcConnection {
 	// --- 内部：恢复 ---
 
 	/** @private ICE failed 时的恢复策略 */
-	__onIceFailed() {
+	async __onIceFailed() {
 		if (this.__externalRecovery) return; // 外部接管恢复，跳过内部级联
 		if (this.__iceRestartCount < MAX_ICE_RESTARTS) {
-			this.__iceRestartCount++;
-			this.__log('info', `ICE failed, attempting ICE restart (${this.__iceRestartCount}/${MAX_ICE_RESTARTS})`);
-			this.__doIceRestart();
+			this.__log('info', `ICE failed, attempting ICE restart (${this.__iceRestartCount + 1}/${MAX_ICE_RESTARTS})`);
+			const sent = await this.__doIceRestart();
+			if (sent) {
+				this.__iceRestartCount++;
+			} else {
+				// 信令不可用，不消耗配额，等 WS 恢复后重试
+				this.__log('warn', 'ICE restart skipped: signaling unavailable');
+			}
+			return;
 		} else if (this.__rebuildCount < MAX_FULL_REBUILDS) {
 			this.__rebuildCount++;
 			this.__log('info', `ICE restart exhausted, full rebuild (${this.__rebuildCount}/${MAX_FULL_REBUILDS})`);
@@ -595,18 +598,25 @@ export class WebRtcConnection {
 		}
 	}
 
-	/** @private ICE restart：不重建 PeerConnection，仅重新协商路径 */
+	/**
+	 * @private ICE restart：不重建 PeerConnection，仅重新协商路径
+	 * @returns {Promise<boolean>} true 表示 offer 已发出，false 表示信令不可用
+	 */
 	async __doIceRestart() {
 		const pc = this.__pc;
-		if (!pc) return;
+		if (!pc) return false;
 		try {
 			const offer = await pc.createOffer({ iceRestart: true });
 			await pc.setLocalDescription(offer);
-			this.__botConn.sendRaw({
-				type: 'rtc:offer',
-				payload: { sdp: offer.sdp, iceRestart: true },
-			});
+			const sent = useSignalingConnection().sendSignaling(
+				this.botId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true },
+			);
+			if (!sent) {
+				this.__log('warn', 'ICE restart offer not sent: signaling WS unavailable');
+				return false;
+			}
 			this.__log('info', 'ICE restart offer sent');
+			return true;
 		}
 		catch (err) {
 			this.__log('warn', `ICE restart offer failed: ${err?.message}`);
@@ -617,6 +627,7 @@ export class WebRtcConnection {
 			} else {
 				this.__setState('failed');
 			}
+			return false;
 		}
 	}
 
@@ -661,14 +672,17 @@ export class WebRtcConnection {
 	/** @private 确保 rtc 事件监听已注册（幂等） */
 	__ensureRtcListener() {
 		if (this.__onRtcMsg) return;
-		this.__onRtcMsg = (msg) => this.__onSignaling(msg);
-		this.__botConn.on('rtc', this.__onRtcMsg);
+		this.__onRtcMsg = ({ botId, type, payload }) => {
+			if (botId !== this.botId) return; // 按 botId 过滤
+			this.__onSignaling({ type, payload });
+		};
+		useSignalingConnection().on('rtc', this.__onRtcMsg);
 	}
 
 	/** @private 移除 rtc 事件监听 */
 	__removeRtcListener() {
 		if (this.__onRtcMsg) {
-			this.__botConn.off('rtc', this.__onRtcMsg);
+			useSignalingConnection().off('rtc', this.__onRtcMsg);
 			this.__onRtcMsg = null;
 		}
 	}

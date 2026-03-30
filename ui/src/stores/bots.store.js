@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 
 import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useSignalingConnection } from '../services/signaling-connection.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
@@ -169,7 +170,50 @@ export const useBotsStore = defineStore('bots', {
 		},
 
 		/**
-		 * 桥接 conn state → byId[botId]（每个 conn 实例只注册一次）
+		 * 注册全局信令 WS 事件桥接（仅注册一次）
+		 */
+		__bridgeSignaling() {
+			if (this.__signalingBridged) return;
+			this.__signalingBridged = true;
+			const sigConn = useSignalingConnection();
+
+			// 信令 WS 状态 → 同步到所有 bot 的 connState
+			sigConn.on('state', (s) => {
+				for (const [id, bot] of Object.entries(this.byId)) {
+					const prev = bot.connState;
+					bot.connState = s;
+					if (s === 'disconnected') {
+						bot.disconnectedAt = Date.now();
+						bot.dcReady = false;
+					}
+					if (s === 'connected' && prev !== 'connected') {
+						this.__onBotConnected(id);
+					}
+				}
+			});
+
+			// WS 重连 + resume 完成 → 对在线 bot 恢复 RTC
+			sigConn.on('resumed', () => {
+				console.debug('[bots] signal:resumed → checking RTC for online bots');
+				for (const id of Object.keys(this.byId)) {
+					if (!this.byId[id]?.online) continue;
+					this.__ensureRtc(id).catch(() => {});
+				}
+			});
+
+			// 前台恢复 → 触发 ICE restart 检查
+			sigConn.on('foreground-resume', () => {
+				for (const id of Object.keys(this.byId)) {
+					const conn = useBotConnections().get(id);
+					if (conn?.rtc?.tryIceRestart()) {
+						console.debug('[bots] foreground-resume → ICE restart botId=%s', id);
+					}
+				}
+			});
+		},
+
+		/**
+		 * 桥接 DC 事件（每个 conn 实例只注册一次）
 		 */
 		__bridgeConn(botId) {
 			const conn = useBotConnections().get(botId);
@@ -177,52 +221,22 @@ export const useBotsStore = defineStore('bots', {
 			if (_bridgedConns.get(botId) === conn) return;
 			_bridgedConns.set(botId, conn);
 
-			conn.on('session-expired', () => {
-				console.warn('[bots] session-expired from botId=%s', botId);
-				window.dispatchEvent(new CustomEvent('auth:session-expired'));
-			});
-
-			conn.on('bot-unbound', () => {
-				console.debug('[bots] bot-unbound via WS botId=%s', botId);
-				this.removeBotById(botId);
-			});
-
-			// event:agent 集中桥接（阶段三）
+			// event:agent DC 事件桥接
 			conn.on('event:agent', (payload) => {
 				useAgentRunsStore().__dispatch(payload);
 			});
 
-			conn.on('state', (s) => {
-				const bot = this.byId[botId];
-				if (!bot) return;
-				const prev = bot.connState;
-				bot.connState = s;
-				if (s === 'disconnected') {
-					bot.disconnectedAt = conn.disconnectedAt;
-					bot.dcReady = false;
-				}
-				// connected 转换 → 触发初始化/重连
-				if (s === 'connected' && prev !== 'connected') {
-					this.__onBotConnected(botId);
-				}
-			});
+			// 确保全局信令桥接已注册
+			this.__bridgeSignaling();
 
-			// lastAliveAt 实时同步（每收到 WS 消息时更新）
-			conn.__onAlive = (ts) => {
-				const bot = this.byId[botId];
-				if (bot) bot.lastAliveAt = ts;
-			};
-
-			// 同步当前状态（conn 可能已经 connected）
+			// 同步当前信令 WS 状态到新 bot
 			const bot = this.byId[botId];
-			if (bot && conn.state !== bot.connState) {
+			const sigState = useSignalingConnection().state;
+			if (bot && sigState !== bot.connState) {
 				const prev = bot.connState;
-				bot.connState = conn.state;
-				if (conn.state === 'connected') {
-					bot.lastAliveAt = conn.lastAliveAt || Date.now();
-					if (prev !== 'connected') {
-						this.__onBotConnected(botId);
-					}
+				bot.connState = sigState;
+				if (sigState === 'connected' && prev !== 'connected') {
+					this.__onBotConnected(botId);
 				}
 			}
 		},
@@ -258,15 +272,15 @@ export const useBotsStore = defineStore('bots', {
 					console.warn('[bots] fullInit failed for botId=%s: %s', id, err?.message);
 				});
 			} else {
-				console.debug('[bots] ws reconnected botId=%s → re-establish RTC', id);
+				console.debug('[bots] signaling reconnected botId=%s → re-establish RTC', id);
 				// 单次 RTC 尝试：initRtc 内部有幂等守卫（RTC 仍健康则 no-op）
 				// 不使用 __ensureRtc（3 轮重试过重，会在 tab 切换等场景造成长时间阻塞）
 				initRtc(id, conn, this.__rtcCallbacks(id)).then((result) => {
 					const bot = this.byId[id];
 					if (result === 'rtc' && bot) bot.dcReady = true;
 					if (result !== 'rtc') return;
-					if (conn.disconnectedAt > 0) {
-						const gap = Date.now() - conn.disconnectedAt;
+					if (bot?.disconnectedAt > 0) {
+						const gap = Date.now() - bot.disconnectedAt;
 						if (gap >= BRIEF_DISCONNECT_MS) {
 							console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
 							useAgentsStore().loadAgents(id).catch(() => {});
@@ -318,7 +332,7 @@ export const useBotsStore = defineStore('bots', {
 
 				let result = 'failed';
 				for (let i = 0; i < RTC_BUILD_MAX_RETRIES; i++) {
-					if (!this.byId[id] || conn.state !== 'connected') {
+					if (!this.byId[id] || useSignalingConnection().state !== 'connected') {
 						console.debug('[bots] ensureRtc: bail-out (bot removed or WS disconnected) botId=%s', id);
 						break;
 					}

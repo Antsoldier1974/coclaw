@@ -1,0 +1,542 @@
+/**
+ * RTC 信令 WS 连接（per-tab 单例）
+ *
+ * 职责：管理唯一的信令 WS（/api/v1/rtc/signal）、connId 管理、
+ * 心跳、自动重连、resume 协议、前台恢复事件。
+ * 无 Vue 依赖，纯 JS。
+ */
+import { resolveApiBaseUrl } from './http.js';
+
+const HB_PING_MS = 25_000;
+const HB_TIMEOUT_MS = 45_000;
+const HB_MAX_MISS = 2;
+const INITIAL_RECONNECT_MS = 1000;
+const MAX_RECONNECT_MS = 30_000;
+const RECONNECT_JITTER = 0.3;
+/** 前台恢复：连接探测超时 */
+const PROBE_TIMEOUT_MS = 2500;
+/** 前台恢复：超过此时长无消息则假定连接已死 */
+const ASSUME_DEAD_MS = 45_000;
+/** 防重入节流（visibilitychange + app:foreground） */
+const FOREGROUND_THROTTLE_MS = 500;
+
+function resolveSignalingWsUrl(httpBaseUrl) {
+	const url = new URL(httpBaseUrl);
+	url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+	url.pathname = '/api/v1/rtc/signal';
+	return url.toString();
+}
+
+/**
+ * Per-tab 信令 WS 连接
+ *
+ * 事件:
+ * - `state`             — WS 状态变更 (data: 'connecting' | 'connected' | 'disconnected')
+ * - `rtc`               — 入站 RTC 信令 (data: { botId, type, payload })
+ * - `resumed`           — WS 重连 + resume 完成
+ * - `foreground-resume`  — 前台恢复，通知 RTC 层检查 PC 状态
+ */
+export class SignalingConnection {
+	/**
+	 * @param {object} [options]
+	 * @param {string} [options.baseUrl] - HTTP API base URL
+	 * @param {Function} [options.WebSocket] - WebSocket 构造函数（测试注入）
+	 */
+	constructor(options = {}) {
+		this.__baseUrl = options.baseUrl ?? resolveApiBaseUrl();
+		this.__WS = options.WebSocket ?? globalThis.WebSocket;
+
+		this.__ws = null;
+		this.__state = 'disconnected';
+		this.__intentionalClose = false;
+
+		// 重连
+		this.__reconnectTimer = null;
+		this.__reconnectDelay = INITIAL_RECONNECT_MS;
+
+		// 心跳
+		this.__hbInterval = null;
+		this.__hbTimer = null;
+		this.__hbMissCount = 0;
+
+		// connId 管理
+		/** @type {Map<string, string>} botId → connId */
+		this.__connIds = new Map();
+		/** @type {Map<string, string>} connId → botId（反向索引） */
+		this.__connIdToBotId = new Map();
+
+		// 事件监听
+		this.__listeners = new Map();
+
+		// 前台恢复
+		this.__boundVisibilityHandler = null;
+		this.__boundForegroundHandler = null;
+		this.__boundNetworkHandler = null;
+		this.__lastForegroundAt = 0;
+
+		// 连接感知
+		this.__lastAliveAt = 0;
+		this.__probeTimer = null;
+
+		// 重连后是否需要 resume
+		this.__hasConnectedBefore = false;
+	}
+
+	/** @returns {'disconnected' | 'connecting' | 'connected'} */
+	get state() {
+		return this.__state;
+	}
+
+	/** @returns {number} 最后一次确认连接存活的时间戳 */
+	get lastAliveAt() {
+		return this.__lastAliveAt;
+	}
+
+	// --- 公共 API ---
+
+	/** 建立连接（幂等） */
+	connect() {
+		if (this.__ws) return;
+		console.debug('[SigConn] connect');
+		this.__intentionalClose = false;
+		if (typeof document !== 'undefined' && !this.__boundVisibilityHandler) {
+			this.__boundVisibilityHandler = () => this.__onVisibilityChange();
+			document.addEventListener('visibilitychange', this.__boundVisibilityHandler);
+		}
+		if (typeof window !== 'undefined' && !this.__boundForegroundHandler) {
+			this.__boundForegroundHandler = () => this.__onAppForeground();
+			window.addEventListener('app:foreground', this.__boundForegroundHandler);
+		}
+		if (typeof window !== 'undefined' && !this.__boundNetworkHandler) {
+			this.__boundNetworkHandler = () => this.__handleForegroundResume('network:online');
+			window.addEventListener('network:online', this.__boundNetworkHandler);
+		}
+		this.__doConnect();
+	}
+
+	/** 主动断开，不再自动重连 */
+	disconnect() {
+		console.debug('[SigConn] disconnect');
+		this.__intentionalClose = true;
+		this.__hasConnectedBefore = false;
+		this.__clearReconnect();
+		this.__cleanup();
+		this.__setState('disconnected');
+	}
+
+	/**
+	 * 获取或创建某 bot 的 connId
+	 * @param {string} botId
+	 * @returns {string}
+	 */
+	getOrCreateConnId(botId) {
+		const id = String(botId);
+		let connId = this.__connIds.get(id);
+		if (!connId) {
+			connId = `c_${crypto.randomUUID()}`;
+			this.__connIds.set(id, connId);
+			this.__connIdToBotId.set(connId, id);
+		}
+		return connId;
+	}
+
+	/**
+	 * 释放某 bot 的 connId（bot 解绑/移除时调用）
+	 * @param {string} botId
+	 */
+	releaseConnId(botId) {
+		const id = String(botId);
+		const connId = this.__connIds.get(id);
+		if (!connId) return;
+		console.debug('[SigConn] releaseConnId botId=%s connId=%s', id, connId);
+		// 尝试通知 server 释放路由（best-effort）
+		this.__sendRaw({ type: 'rtc:closed', botId: id, connId });
+		this.__connIds.delete(id);
+		this.__connIdToBotId.delete(connId);
+	}
+
+	/**
+	 * 发送 RTC 信令
+	 * @param {string} botId
+	 * @param {string} type - 消息类型（如 'rtc:offer'）
+	 * @param {object} [payload] - 信令载荷
+	 * @returns {boolean} 是否发送成功（false 表示 WS 不可用）
+	 */
+	sendSignaling(botId, type, payload) {
+		const connId = this.getOrCreateConnId(botId);
+		const msg = { type, botId: String(botId), connId };
+		if (payload !== undefined) msg.payload = payload;
+		return this.__sendRaw(msg);
+	}
+
+	/** @param {string} event @param {Function} cb */
+	on(event, cb) {
+		const set = this.__listeners.get(event) ?? new Set();
+		set.add(cb);
+		this.__listeners.set(event, set);
+	}
+
+	/** @param {string} event @param {Function} cb */
+	off(event, cb) {
+		this.__listeners.get(event)?.delete(cb);
+	}
+
+	// --- 内部方法 ---
+
+	__emit(event, data) {
+		const cbs = this.__listeners.get(event);
+		if (!cbs) return;
+		for (const cb of cbs) {
+			try { cb(data); }
+			catch (e) { console.error('[SigConn] listener error:', e); }
+		}
+	}
+
+	__setState(newState) {
+		if (this.__state === newState) return;
+		const prev = this.__state;
+		this.__state = newState;
+		console.debug('[SigConn] state %s→%s', prev, newState);
+		this.__emit('state', newState);
+	}
+
+	/**
+	 * @param {object} payload
+	 * @returns {boolean}
+	 */
+	__sendRaw(payload) {
+		if (!this.__ws || this.__ws.readyState !== 1) return false;
+		try {
+			this.__ws.send(JSON.stringify(payload));
+			return true;
+		}
+		catch (err) {
+			console.warn('[SigConn] sendRaw failed: %s', err?.message);
+			return false;
+		}
+	}
+
+	__doConnect() {
+		this.__setState('connecting');
+		const wsUrl = resolveSignalingWsUrl(this.__baseUrl);
+		let ws;
+		try {
+			ws = new this.__WS(wsUrl);
+		}
+		catch (err) {
+			console.warn('[SigConn] WS constructor failed: %s', err?.message);
+			this.__setState('disconnected');
+			this.__scheduleReconnect();
+			return;
+		}
+		this.__ws = ws;
+
+		ws.addEventListener('open', () => {
+			if (this.__ws !== ws) return;
+			console.debug('[SigConn] ws open');
+			this.__setState('connected');
+			this.__reconnectDelay = INITIAL_RECONNECT_MS;
+			this.__startHeartbeat();
+
+			// 重连且有活跃 connId → 发送 resume
+			if (this.__hasConnectedBefore && this.__connIds.size > 0) {
+				this.__sendResume();
+			}
+			this.__hasConnectedBefore = true;
+		});
+
+		ws.addEventListener('message', (event) => {
+			if (this.__ws !== ws) return;
+			this.__resetHbTimeout();
+			this.__onMessage(event);
+		});
+
+		ws.addEventListener('close', (ev) => {
+			if (this.__ws !== ws) return;
+			console.debug('[SigConn] ws close code=%d reason=%s', ev.code, ev.reason);
+			this.__clearHeartbeat();
+			this.__clearProbe();
+			this.__ws = null;
+			if (!this.__intentionalClose) {
+				this.__setState('disconnected');
+				this.__scheduleReconnect();
+			}
+		});
+
+		ws.addEventListener('error', () => {
+			console.debug('[SigConn] ws error');
+		});
+	}
+
+	__onMessage(event) {
+		let payload;
+		try {
+			payload = JSON.parse(String(event.data ?? '{}'));
+		}
+		catch (err) {
+			console.warn('[SigConn] message parse failed: %s', err?.message);
+			return;
+		}
+
+		if (payload?.type === 'pong') return;
+
+		// resume 确认
+		if (payload?.type === 'signal:resumed') {
+			console.debug('[SigConn] signal:resumed');
+			this.__emit('resumed');
+			return;
+		}
+
+		// 入站 RTC 信令：rtc:answer / rtc:ice / rtc:closed
+		if (payload?.type?.startsWith('rtc:')) {
+			const connId = payload.toConnId;
+			const botId = connId ? this.__connIdToBotId.get(connId) : null;
+			if (!botId) {
+				console.warn('[SigConn] rtc msg for unknown connId=%s type=%s', connId, payload.type);
+				return;
+			}
+			// server 端关闭通知 → 清理本地 connId 映射
+			if (payload.type === 'rtc:closed') {
+				console.debug('[SigConn] rtc:closed received for botId=%s connId=%s', botId, connId);
+				this.__connIds.delete(botId);
+				this.__connIdToBotId.delete(connId);
+			}
+			this.__emit('rtc', {
+				botId,
+				type: payload.type,
+				payload: payload.payload,
+			});
+			return;
+		}
+
+		// 未识别消息
+		console.debug('[SigConn] unknown msg type=%s', payload?.type);
+	}
+
+	__sendResume() {
+		const connIds = Object.fromEntries(this.__connIds);
+		console.debug('[SigConn] sending signal:resume (%d connId(s))', this.__connIds.size);
+		this.__sendRaw({ type: 'signal:resume', connIds });
+	}
+
+	// --- 心跳 ---
+
+	__startHeartbeat() {
+		this.__clearHeartbeat();
+		this.__hbMissCount = 0;
+		this.__hbInterval = setInterval(() => {
+			if (this.__ws?.readyState === 1) {
+				try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
+				catch (err) { console.debug('[SigConn] ping send failed: %s', err?.message); }
+			}
+		}, HB_PING_MS);
+		this.__resetHbTimeout();
+	}
+
+	__resetHbTimeout() {
+		this.__hbMissCount = 0;
+		this.__lastAliveAt = Date.now();
+		if (this.__hbTimer) clearTimeout(this.__hbTimer);
+		this.__hbTimer = setTimeout(() => this.__onHbMiss(), HB_TIMEOUT_MS);
+	}
+
+	__onHbMiss() {
+		this.__hbMissCount++;
+		console.debug('[SigConn] hb miss %d/%d', this.__hbMissCount, HB_MAX_MISS);
+		if (this.__hbMissCount >= HB_MAX_MISS) {
+			console.warn('[SigConn] hb max miss → closing WS');
+			const ws = this.__ws;
+			this.__ws = null;
+			this.__clearHeartbeat();
+			if (ws) {
+				try { ws.close(4001, 'heartbeat_timeout'); } catch (err) { console.debug('[SigConn] ws.close failed: %s', err?.message); }
+			}
+			if (!this.__intentionalClose) {
+				this.__setState('disconnected');
+				this.__scheduleReconnect();
+			}
+		} else {
+			// 再发一次 ping 并重置 timeout
+			if (this.__ws?.readyState === 1) {
+				try { this.__ws.send(JSON.stringify({ type: 'ping' })); } catch (err) { console.debug('[SigConn] ping send failed: %s', err?.message); }
+			}
+			this.__hbTimer = setTimeout(() => this.__onHbMiss(), HB_TIMEOUT_MS);
+		}
+	}
+
+	__clearHeartbeat() {
+		if (this.__hbInterval) { clearInterval(this.__hbInterval); this.__hbInterval = null; }
+		if (this.__hbTimer) { clearTimeout(this.__hbTimer); this.__hbTimer = null; }
+		this.__hbMissCount = 0;
+	}
+
+	// --- 重连 ---
+
+	__scheduleReconnect() {
+		if (this.__intentionalClose || this.__reconnectTimer) return;
+		const jitter = 1 + (Math.random() * 2 - 1) * RECONNECT_JITTER;
+		const delay = Math.min(this.__reconnectDelay * jitter, MAX_RECONNECT_MS);
+		console.debug('[SigConn] reconnect in %dms', Math.round(delay));
+		this.__reconnectTimer = setTimeout(() => {
+			this.__reconnectTimer = null;
+			if (!this.__intentionalClose) {
+				this.__reconnectDelay = Math.min(this.__reconnectDelay * 2, MAX_RECONNECT_MS);
+				this.__doConnect();
+			}
+		}, delay);
+	}
+
+	__clearReconnect() {
+		if (this.__reconnectTimer) {
+			clearTimeout(this.__reconnectTimer);
+			this.__reconnectTimer = null;
+		}
+	}
+
+	// --- Visibility / Foreground 恢复 ---
+
+	__onVisibilityChange() {
+		if (typeof document === 'undefined') return;
+		if (document.visibilityState !== 'visible') return;
+		this.__handleForegroundResume('visibility');
+	}
+
+	__onAppForeground() {
+		this.__handleForegroundResume('app:foreground');
+	}
+
+	/**
+	 * 前台恢复统一入口（visibilitychange / app:foreground / network:online 共用）
+	 * @param {string} source - 触发来源（日志用）
+	 */
+	__handleForegroundResume(source) {
+		if (this.__intentionalClose) return;
+		// 防重入节流
+		const now = Date.now();
+		if (now - this.__lastForegroundAt < FOREGROUND_THROTTLE_MS) return;
+		this.__lastForegroundAt = now;
+
+		if (this.__state === 'disconnected') {
+			console.debug('[SigConn] %s → immediate reconnect', source);
+			this.__clearReconnect();
+			this.__reconnectDelay = INITIAL_RECONNECT_MS;
+			this.__doConnect();
+			// 通知 RTC 层检查 PC 状态（NAT 映射可能已过期）
+			this.__emit('foreground-resume');
+			return;
+		}
+
+		if (this.__state === 'connecting') return;
+
+		// state === 'connected'：根据 lastAliveAt 判断连接是否可能已死
+		const elapsed = now - this.__lastAliveAt;
+		if (elapsed > ASSUME_DEAD_MS) {
+			console.debug('[SigConn] %s → assume dead (elapsed=%dms)', source, elapsed);
+			this.forceReconnect();
+		} else if (this.__lastAliveAt > 0 && elapsed > PROBE_TIMEOUT_MS) {
+			console.debug('[SigConn] %s → probe (elapsed=%dms)', source, elapsed);
+			this.probe();
+		}
+
+		// 通知 RTC 层检查 PC 状态（与 WS probe 并行，不串行依赖）
+		this.__emit('foreground-resume');
+	}
+
+	/** 探测连接存活性 */
+	probe() {
+		if (this.__probeTimer) return;
+		if (!this.__ws || this.__ws.readyState !== 1) {
+			this.forceReconnect();
+			return;
+		}
+		const aliveAtBefore = this.__lastAliveAt;
+		try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
+		catch (err) {
+			console.debug('[SigConn] probe ping send failed: %s → forceReconnect', err?.message);
+			this.forceReconnect();
+			return;
+		}
+
+		this.__probeTimer = setTimeout(() => {
+			this.__probeTimer = null;
+			if (this.__lastAliveAt > aliveAtBefore) {
+				console.debug('[SigConn] probe ok');
+				return;
+			}
+			console.debug('[SigConn] probe timeout → forceReconnect');
+			this.forceReconnect();
+		}, PROBE_TIMEOUT_MS);
+	}
+
+	/** 强制重连 */
+	forceReconnect() {
+		if (this.__intentionalClose) return;
+		console.debug('[SigConn] forceReconnect');
+		this.__clearProbe();
+		this.__clearHeartbeat();
+		this.__clearReconnect();
+		const ws = this.__ws;
+		this.__ws = null;
+		if (ws) {
+			try { ws.close(4000, 'force_reconnect'); } catch (err) { console.debug('[SigConn] ws.close failed: %s', err?.message); }
+		}
+		this.__setState('disconnected');
+		this.__reconnectDelay = INITIAL_RECONNECT_MS;
+		this.__doConnect();
+	}
+
+	__clearProbe() {
+		if (this.__probeTimer) {
+			clearTimeout(this.__probeTimer);
+			this.__probeTimer = null;
+		}
+	}
+
+	// --- 清理 ---
+
+	__cleanup() {
+		this.__clearHeartbeat();
+		this.__clearProbe();
+		if (this.__boundVisibilityHandler && typeof document !== 'undefined') {
+			document.removeEventListener('visibilitychange', this.__boundVisibilityHandler);
+			this.__boundVisibilityHandler = null;
+		}
+		if (this.__boundForegroundHandler && typeof window !== 'undefined') {
+			window.removeEventListener('app:foreground', this.__boundForegroundHandler);
+			this.__boundForegroundHandler = null;
+		}
+		if (this.__boundNetworkHandler && typeof window !== 'undefined') {
+			window.removeEventListener('network:online', this.__boundNetworkHandler);
+			this.__boundNetworkHandler = null;
+		}
+		const ws = this.__ws;
+		this.__ws = null;
+		if (ws) {
+			try { ws.close(1000, 'disconnect'); } catch (err) { console.debug('[SigConn] cleanup ws.close failed: %s', err?.message); }
+		}
+	}
+}
+
+// --- 单例 ---
+
+let instance = null;
+
+/**
+ * 获取 SignalingConnection 单例
+ * @param {object} [options] - 仅首次创建时生效
+ * @returns {SignalingConnection}
+ */
+export function useSignalingConnection(options) {
+	if (!instance) {
+		instance = new SignalingConnection(options);
+	}
+	return instance;
+}
+
+/** @internal 仅供测试重置 */
+export function __resetSignalingConnection() {
+	if (instance) {
+		instance.disconnect();
+	}
+	instance = null;
+}

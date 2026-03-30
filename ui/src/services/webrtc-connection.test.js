@@ -1,4 +1,23 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// mock signaling-connection 单例
+const mockSendSignaling = vi.fn().mockReturnValue(true);
+const sigListeners = {};
+vi.mock('./signaling-connection.js', () => ({
+	useSignalingConnection: () => ({
+		sendSignaling: mockSendSignaling,
+		on(event, cb) { (sigListeners[event] ??= []).push(cb); },
+		off(event, cb) {
+			if (sigListeners[event]) sigListeners[event] = sigListeners[event].filter(c => c !== cb);
+		},
+	}),
+}));
+
+/** 触发 signaling 'rtc' 事件（模拟入站信令） */
+function fireRtcSignal(data) {
+	for (const cb of sigListeners['rtc'] ?? []) cb(data);
+}
+
 import {
 	WebRtcConnection,
 	initRtc,
@@ -8,6 +27,13 @@ import {
 	__resetRtcInstances,
 	__getRtcInstance,
 } from './webrtc-connection.js';
+
+// 全局重置 mock 状态
+beforeEach(() => {
+	mockSendSignaling.mockClear();
+	mockSendSignaling.mockReturnValue(true);
+	for (const key of Object.keys(sigListeners)) delete sigListeners[key];
+});
 
 // --- Mock RTCPeerConnection ---
 
@@ -85,17 +111,7 @@ class MockRTCPeerConnection {
 // --- Mock BotConnection ---
 
 function createMockBotConn() {
-	const listeners = {};
 	return {
-		sendRaw: vi.fn().mockReturnValue(true),
-		on(event, cb) { (listeners[event] ??= []).push(cb); },
-		off(event, cb) {
-			if (listeners[event]) listeners[event] = listeners[event].filter((c) => c !== cb);
-		},
-		__fire(event, data) {
-			for (const cb of listeners[event] ?? []) cb(data);
-		},
-		__listeners: listeners,
 		setRtc: vi.fn(),
 		clearRtc: vi.fn(),
 		__rejectAllPending: vi.fn(),
@@ -131,14 +147,12 @@ describe('WebRtcConnection — 基础建连', () => {
 	test('connect 发送 offer 并创建 rpc DataChannel', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		mockSendSignaling.mockClear();
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		expect(rtc.state).toBe('connecting');
-		expect(botConn.sendRaw).toHaveBeenCalledWith({
-			type: 'rtc:offer',
-			payload: { sdp: 'mock-sdp-offer' },
-		});
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:offer', { sdp: 'mock-sdp-offer' });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		expect(pc.__channels.length).toBe(1);
@@ -451,10 +465,9 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		};
 		pc.onicecandidate({ candidate: mockCandidate });
 
-		expect(botConn.sendRaw).toHaveBeenCalledWith({
-			type: 'rtc:ice',
-			payload: { candidate: 'candidate:123', sdpMid: '0', sdpMLineIndex: 0 },
-		});
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:ice', { candidate: 'candidate:123', sdpMid: '0', sdpMLineIndex: 0 },
+		);
 
 		rtc.close();
 	});
@@ -464,12 +477,12 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
-		botConn.sendRaw.mockClear();
+		mockSendSignaling.mockClear();
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		pc.onicecandidate({ candidate: null });
 
-		expect(botConn.sendRaw).not.toHaveBeenCalled();
+		expect(mockSendSignaling).not.toHaveBeenCalled();
 
 		rtc.close();
 	});
@@ -479,7 +492,7 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
-		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		expect(pc.__remoteDesc).toEqual({ type: 'answer', sdp: 'mock-answer-sdp' });
@@ -493,13 +506,13 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		// 先设置 answer，等 setRemoteDescription 完成
-		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
 		await vi.waitFor(() => {
 			expect(MockRTCPeerConnection.lastInstance.__remoteDesc).toBeTruthy();
 		});
 
 		const icePayload = { candidate: 'candidate:456', sdpMid: '0', sdpMLineIndex: 0 };
-		botConn.__fire('rtc', { type: 'rtc:ice', payload: icePayload });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:ice', payload: icePayload });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		expect(pc.__candidates).toContainEqual(icePayload);
@@ -516,15 +529,15 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		// answer 到达前先发 ICE candidates
 		const ice1 = { candidate: 'candidate:111', sdpMid: '0', sdpMLineIndex: 0 };
 		const ice2 = { candidate: 'candidate:222', sdpMid: '0', sdpMLineIndex: 0 };
-		botConn.__fire('rtc', { type: 'rtc:ice', payload: ice1 });
-		botConn.__fire('rtc', { type: 'rtc:ice', payload: ice2 });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:ice', payload: ice1 });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:ice', payload: ice2 });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		// answer 前不应添加
 		expect(pc.__candidates).toHaveLength(0);
 
 		// answer 到达后触发排空
-		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
 		await vi.waitFor(() => {
 			expect(pc.__candidates).toHaveLength(2);
 		});
@@ -543,7 +556,7 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		const pc = MockRTCPeerConnection.lastInstance;
 		pc.__channels[0].onopen();
 
-		expect(botConn.sendRaw).toHaveBeenCalledWith({ type: 'rtc:ready' });
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:ready');
 
 		rtc.close();
 	});
@@ -576,10 +589,10 @@ describe('WebRtcConnection — close', () => {
 		const pc = MockRTCPeerConnection.lastInstance;
 		rtc.close();
 
-		expect(botConn.sendRaw).toHaveBeenCalledWith({ type: 'rtc:closed' });
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:closed');
 		expect(pc.__closed).toBe(true);
 		expect(rtc.state).toBe('closed');
-		expect(botConn.__listeners['rtc']?.length ?? 0).toBe(0);
+		expect(sigListeners['rtc']?.length ?? 0).toBe(0);
 	});
 
 	test('close 后再 close 不重复发送 rtc:closed', async () => {
@@ -588,11 +601,11 @@ describe('WebRtcConnection — close', () => {
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		rtc.close();
-		botConn.sendRaw.mockClear();
+		mockSendSignaling.mockClear();
 		rtc.close();
 
-		const closedCalls = botConn.sendRaw.mock.calls.filter(
-			([msg]) => msg.type === 'rtc:closed',
+		const closedCalls = mockSendSignaling.mock.calls.filter(
+			([_botId, type]) => type === 'rtc:closed',
 		);
 		expect(closedCalls.length).toBe(0);
 	});
@@ -617,10 +630,9 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 
 		// 等待异步 ICE restart 完成
 		await vi.waitFor(() => {
-			expect(botConn.sendRaw).toHaveBeenCalledWith({
-				type: 'rtc:offer',
-				payload: { sdp: 'mock-sdp-ice-restart', iceRestart: true },
-			});
+			expect(mockSendSignaling).toHaveBeenCalledWith(
+				'bot1', 'rtc:offer', { sdp: 'mock-sdp-ice-restart', iceRestart: true },
+			);
 		});
 
 		// 应发起 ICE restart，不重建 PeerConnection
@@ -765,11 +777,11 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 		await vi.waitFor(() => expect(pcInstances.length).toBe(2));
 
 		// rtc 监听器应仍只有 1 个
-		expect(botConn.__listeners['rtc']?.length).toBe(1);
+		expect(sigListeners['rtc']?.length).toBe(1);
 
 		// 信令仍可正常工作
 		const newPc = MockRTCPeerConnection.lastInstance;
-		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'new-answer' } });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'new-answer' } });
 		expect(newPc.__remoteDesc).toEqual({ type: 'answer', sdp: 'new-answer' });
 
 		rtc.close();
@@ -794,10 +806,9 @@ describe('WebRtcConnection — tryIceRestart（前台恢复主动 ICE restart）
 		expect(result).toBe(true);
 
 		await vi.waitFor(() => {
-			expect(botConn.sendRaw).toHaveBeenCalledWith({
-				type: 'rtc:offer',
-				payload: { sdp: 'mock-sdp-ice-restart', iceRestart: true },
-			});
+			expect(mockSendSignaling).toHaveBeenCalledWith(
+				'bot1', 'rtc:offer', { sdp: 'mock-sdp-ice-restart', iceRestart: true },
+			);
 		});
 
 		// 不重建 PeerConnection
@@ -1047,7 +1058,7 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 		dc.onopen();
 
 		expect(readyFn).toHaveBeenCalledTimes(1);
-		expect(botConn.sendRaw).toHaveBeenCalledWith({ type: 'rtc:ready' });
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:ready');
 	});
 
 	test('dc.onmessage 回调 botConn.__onRtcMessage', async () => {
