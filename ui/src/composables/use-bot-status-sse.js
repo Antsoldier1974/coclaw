@@ -1,7 +1,6 @@
 import { onBeforeUnmount, ref } from 'vue';
 
 const HB_TIMEOUT_MS = 65_000; // server 30s 间隔，留 ~2x 余量
-const SNAPSHOT_TIMEOUT_MS = 5_000; // 快照到达超时，回退到 loadBots
 
 /**
  * 通过 SSE 实时接收 bot 快照、状态变更及解绑通知。
@@ -15,7 +14,6 @@ export function useBotStatusSse(botsStore) {
 	let es = null;
 	let stopped = false;
 	let hbTimer = null;
-	let snapshotTimer = null;
 
 	function resetHbTimer() {
 		clearTimeout(hbTimer);
@@ -31,11 +29,6 @@ export function useBotStatusSse(botsStore) {
 		hbTimer = null;
 	}
 
-	function clearSnapshotTimer() {
-		clearTimeout(snapshotTimer);
-		snapshotTimer = null;
-	}
-
 	function start() {
 		if (stopped || es) return;
 		es = new EventSource('/api/v1/bots/status-stream');
@@ -44,16 +37,6 @@ export function useBotStatusSse(botsStore) {
 			console.debug('[SSE] connected');
 			connected.value = true;
 			resetHbTimer();
-			// 快照超时保护：若 server 未能推送快照，回退到 HTTP loadBots
-			if (!botsStore.fetched) {
-				clearSnapshotTimer();
-				snapshotTimer = setTimeout(() => {
-					if (!botsStore.fetched) {
-						console.warn('[SSE] snapshot timeout, falling back to loadBots');
-						botsStore.loadBots().catch(() => {});
-					}
-				}, SNAPSHOT_TIMEOUT_MS);
-			}
 		};
 
 		es.onmessage = (evt) => {
@@ -63,7 +46,6 @@ export function useBotStatusSse(botsStore) {
 				console.debug('[SSE] event=%s', data.event, data);
 				switch (data.event) {
 					case 'bot.snapshot':
-						clearSnapshotTimer();
 						botsStore.applySnapshot(data.items);
 						break;
 					case 'bot.status':
@@ -91,7 +73,6 @@ export function useBotStatusSse(botsStore) {
 			console.debug('[SSE] error/disconnected');
 			connected.value = false;
 			clearHbTimer();
-			clearSnapshotTimer();
 		};
 	}
 
@@ -105,7 +86,6 @@ export function useBotStatusSse(botsStore) {
 		}
 		connected.value = false;
 		clearHbTimer();
-		clearSnapshotTimer();
 		start();
 	}
 
@@ -125,7 +105,6 @@ export function useBotStatusSse(botsStore) {
 		}
 		connected.value = false;
 		clearHbTimer();
-		clearSnapshotTimer();
 		window.removeEventListener('app:foreground', onForeground);
 		window.removeEventListener('network:online', onNetworkOnline);
 	}

@@ -20,7 +20,6 @@ vi.mock('../composables/use-notify.js', () => ({
 	}),
 }));
 
-const mockLoadBots = vi.fn().mockResolvedValue(undefined);
 const mockLoadDashboard = vi.fn().mockResolvedValue(undefined);
 const mockGetDashboard = vi.fn().mockReturnValue(null);
 const mockClearDashboard = vi.fn();
@@ -34,7 +33,6 @@ vi.mock('../stores/bots.store.js', () => ({
 			return map;
 		},
 		fetched: true, // SSE 快照已到达
-		loadBots: mockLoadBots,
 	}),
 }));
 
@@ -110,7 +108,6 @@ describe('ManageBotsPage', () => {
 	beforeEach(() => {
 		mockBots = [];
 		mockGetDashboard.mockReturnValue(null);
-		mockLoadBots.mockResolvedValue(undefined);
 		mockLoadDashboard.mockResolvedValue(undefined);
 		vi.clearAllMocks();
 	});
@@ -159,12 +156,11 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.find('[data-testid="bot-99"]').exists()).toBe(true);
 	});
 
-	test('mounted 时加载 dashboard（不调用 loadBots，由 SSE 快照维护）', async () => {
+	test('mounted 时加载 dashboard', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		createWrapper();
 		await flushPromises();
 
-		expect(mockLoadBots).not.toHaveBeenCalled();
 		expect(mockLoadDashboard).toHaveBeenCalledWith('1');
 	});
 
@@ -224,11 +220,11 @@ describe('ManageBotsPage', () => {
 		await flushPromises();
 
 		wrapper.unmount();
-		mockLoadBots.mockClear();
+		mockLoadDashboard.mockClear();
 
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 		await flushPromises();
 
-		expect(mockLoadBots).not.toHaveBeenCalled();
+		expect(mockLoadDashboard).not.toHaveBeenCalled();
 	});
 });

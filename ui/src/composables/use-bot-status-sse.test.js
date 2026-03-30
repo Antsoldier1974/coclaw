@@ -22,12 +22,10 @@ describe('useBotStatusSse', () => {
 
 	beforeEach(() => {
 		store = {
-			fetched: false,
 			applySnapshot: vi.fn(),
 			updateBotOnline: vi.fn(),
 			addOrUpdateBot: vi.fn(),
 			removeBotById: vi.fn(),
-			loadBots: vi.fn().mockResolvedValue([]),
 		};
 		useSessionsStore().removeSessionsByBotId.mockReset();
 
@@ -67,13 +65,12 @@ describe('useBotStatusSse', () => {
 		expect(onBeforeUnmount).toHaveBeenCalledWith(expect.any(Function));
 	});
 
-	test('should set connected=true on open (without calling loadBots)', () => {
+	test('should set connected=true on open', () => {
 		const { connected } = createSse();
 
 		esInstance.onopen();
 
 		expect(connected.value).toBe(true);
-		// 不再调用 loadBots——由 server 推送 bot.snapshot
 		expect(store.applySnapshot).not.toHaveBeenCalled();
 	});
 
@@ -155,41 +152,6 @@ describe('useBotStatusSse', () => {
 		esInstance.onmessage({ data: 'not json' });
 
 		expect(store.updateBotOnline).not.toHaveBeenCalled();
-	});
-
-	test('snapshot timeout: should call loadBots if snapshot not received within 5s', () => {
-		store.fetched = false;
-		createSse();
-		esInstance.onopen();
-
-		expect(store.loadBots).not.toHaveBeenCalled();
-
-		vi.advanceTimersByTime(5_000);
-		expect(store.loadBots).toHaveBeenCalledTimes(1);
-	});
-
-	test('snapshot timeout: should not call loadBots if snapshot arrives in time', () => {
-		store.fetched = false;
-		createSse();
-		esInstance.onopen();
-
-		// 快照在 3s 内到达
-		vi.advanceTimersByTime(3_000);
-		esInstance.onmessage({
-			data: JSON.stringify({ event: 'bot.snapshot', items: [] }),
-		});
-
-		vi.advanceTimersByTime(5_000);
-		expect(store.loadBots).not.toHaveBeenCalled();
-	});
-
-	test('snapshot timeout: should not start timer if already fetched', () => {
-		store.fetched = true;
-		createSse();
-		esInstance.onopen();
-
-		vi.advanceTimersByTime(10_000);
-		expect(store.loadBots).not.toHaveBeenCalled();
 	});
 
 	test('should set connected=false on error and clear heartbeat timer', () => {

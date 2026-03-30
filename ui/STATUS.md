@@ -48,7 +48,7 @@
   - 新增 `BotConnectionManager` 单例（`services/bot-connection-manager.js`）：管理所有 BotConnection 实例的生命周期
   - 新增 `chatStore`（`stores/chat.store.js`）：从 ChatPage 抽取的通信/消息/streaming 逻辑
   - 重构 `sessionsStore`：改用持久连接（`useBotConnections().get()`）替代临时 WS
-  - 重构 `botsStore`：loadBots 后自动同步连接（`syncConnections`）
+  - 重构 `botsStore`：applySnapshot 后自动同步连接（`syncConnections`）
   - 重构 `authStore`：logout 时断开所有连接（`disconnectAll`）
   - 重写 `ChatPage.vue`：从 ~700 行精简到 ~230 行，纯 UI 层委托 chatStore
   - 移除 `gateway.ws.js` 及其测试（ticket 机制已废弃，改用 session cookie 认证）

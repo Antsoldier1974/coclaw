@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia';
 
-import { listBots } from '../services/bots.api.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
@@ -58,8 +57,7 @@ function createBotState(bot) {
 export const useBotsStore = defineStore('bots', {
 	state: () => ({
 		byId: {},
-		loading: false,
-		/** loadBots 至少成功完成过一次 */
+		/** applySnapshot 至少成功完成过一次 */
 		fetched: false,
 	}),
 	getters: {
@@ -129,7 +127,7 @@ export const useBotsStore = defineStore('bots', {
 			delete this.byId[id];
 		},
 		/**
-		 * 应用 SSE 推送的全量 bot 快照（替代 loadBots 作为主要数据源）
+		 * 应用 SSE 推送的全量 bot 快照
 		 * @param {object[]} items - server 推送的 bot 列表
 		 */
 		applySnapshot(items) {
@@ -167,46 +165,6 @@ export const useBotsStore = defineStore('bots', {
 			manager.syncConnections(botIds);
 			for (const id of botIds) {
 				this.__bridgeConn(id);
-			}
-		},
-		/**
-		 * 通过 HTTP 全量获取 bot 列表。
-		 * 注：UI 主流程已通过 SSE bot.snapshot 获取 bot 列表，此方法作为后备保留。
-		 */
-		async loadBots() {
-			if (this.fetched) return;
-			this.loading = true;
-			try {
-				const bots = await listBots();
-				const newById = {};
-				for (const b of bots) {
-					const id = String(b.id);
-					const existing = this.byId[id];
-					if (existing) {
-						// 保留运行时状态（connState、initialized 等），更新基础信息
-						// 若 WS 实际已连接，不让 HTTP 快照的 online 覆盖本地值
-						const preserveOnline = existing.connState === 'connected';
-						Object.assign(existing, b, { id });
-						if (preserveOnline) existing.online = true;
-						newById[id] = existing;
-					} else {
-						newById[id] = createBotState({ ...b, id });
-					}
-				}
-				this.byId = newById;
-				this.fetched = true;
-				console.debug('[bots] loaded %d bot(s)', bots.length);
-
-				const botIds = bots.map((b) => String(b.id));
-				const manager = useBotConnections();
-				manager.syncConnections(botIds);
-
-				for (const id of botIds) {
-					this.__bridgeConn(id);
-				}
-				return this.items;
-			} finally {
-				this.loading = false;
 			}
 		},
 

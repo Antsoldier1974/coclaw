@@ -268,7 +268,7 @@ export default {
 	},
 	methods: {
 		async loadAllData() {
-			// 等待 SSE 快照到达（bot 数据由 SSE 维护，无需主动 loadBots）
+			// 等待 SSE 快照到达
 			if (!this.botsStore?.fetched) {
 				await new Promise((resolve) => {
 					const timer = setTimeout(() => { unwatch(); resolve(); }, 10_000);

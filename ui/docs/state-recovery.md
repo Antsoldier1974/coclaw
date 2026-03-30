@@ -100,7 +100,6 @@
   - **浏览器原生重连**：`EventSource` 断开后自动重连
   - **前台恢复强制重建**：`app:foreground` / `network:online` → `restart()`，销毁旧 EventSource 并新建
   - 两种路径的 `onopen` 后 server 推送 `bot.snapshot` 全量快照，UI 通过 `applySnapshot()` 同步
-  - **快照超时保护**：`onopen` 后 5s 内未收到 `bot.snapshot` 则回退到 HTTP `loadBots()`
 - **场景**：Web + Capacitor
 
 ### 2.7 SSE 心跳与超时检测
@@ -118,7 +117,7 @@
 
 - **文件**：`stores/bots.store.js`（`__onBotConnected`）
 - **触发**：bot WS 重连成功且已初始化过（非首次），且断连时长 ≥ 5s（`BRIEF_DISCONNECT_MS`）
-- **行为**：重新 `loadAgents()`、`loadAllSessions()`、`loadAllTopics()`（bot 列表由 SSE 快照维护，不再调 `loadBots()`）
+- **行为**：重新 `loadAgents()`、`loadAllSessions()`、`loadAllTopics()`（bot 列表由 SSE 快照维护）
 - **短暂抖动（< 5s）**：跳过刷新，避免无意义开销
 - **场景**：Web + Capacitor
 
@@ -154,7 +153,6 @@
 - **文件**：`composables/use-bot-status-sse.js`、`stores/bots.store.js`（`applySnapshot`）
 - **触发**：SSE 连接/重连成功后，server 主动推送 `bot.snapshot` 事件
 - **行为**：`botsStore.applySnapshot(items)` 全量更新 bot 列表（同步连接、清理已移除 bot 的 RTC/sessions/agentRuns）
-- **超时保护**：`onopen` 后 5s 内未收到 `bot.snapshot` 则回退到 HTTP `loadBots()`
 - **场景**：Web + Capacitor
 
 ### 3.6 Dashboard / ManageBots 前台恢复
