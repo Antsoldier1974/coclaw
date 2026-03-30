@@ -417,3 +417,40 @@ test('handleMessage: rtc:offer bot 离线时 UI 不收到消息', async () => {
 	assert.equal(ws.sent.length, 0, 'UI should not receive any message');
 	cleanup();
 });
+
+// --- validateBotOwnership 异常分支 ---
+
+test('handleMessage: findBotById 抛异常时视为归属验证失败', async () => {
+	const ws = createMockWs();
+	const fwd = createForwardMock();
+	const throwingFindBot = () => Promise.reject(new Error('db connection lost'));
+	await handleMessage(ws, 'u1', JSON.stringify({
+		type: 'rtc:offer',
+		botId: '1',
+		connId: 'c_db_err',
+		payload: { sdp: 'sdp' },
+	}), { findBotByIdFn: throwingFindBot, forwardToBotFn: fwd });
+
+	assert.equal(fwd.calls.length, 0, 'should not forward when DB errors');
+	assert.equal(lookup('c_db_err'), null, 'should not register');
+	cleanup();
+});
+
+test('handleMessage: findBotById 抛异常时 signal:resume 跳过该条目', async () => {
+	const ws = createMockWs();
+	let callCount = 0;
+	const sometimesThrowFindBot = (id) => {
+		callCount++;
+		if (String(id) === '1') return Promise.resolve({ id, userId: 'u1' });
+		return Promise.reject(new Error('db timeout'));
+	};
+	await handleMessage(ws, 'u1', JSON.stringify({
+		type: 'signal:resume',
+		connIds: { 1: 'c_ok', 2: 'c_fail' },
+	}), { findBotByIdFn: sometimesThrowFindBot, forwardToBotFn: createForwardMock() });
+
+	assert.equal(lookup('c_ok')?.botId, '1');
+	assert.equal(lookup('c_fail'), null);
+	assert.equal(ws.sent[0].type, 'signal:resumed');
+	cleanup();
+});

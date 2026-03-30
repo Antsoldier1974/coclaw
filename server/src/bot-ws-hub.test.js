@@ -525,3 +525,66 @@ test('getWebSocketCloseCode: token_revoked/bot_unbound → 4001, bot_blocked →
 	assert.equal(getWebSocketCloseCode('bot_blocked'), 4003);
 	assert.equal(getWebSocketCloseCode('other'), 4000);
 });
+
+// --- catch 块日志覆盖测试 ---
+
+test('broadcastToUi: ws.send 抛异常时不中断其他 socket 的发送', () => {
+	const badWs = createMockWs({ connId: 'c_bad' });
+	badWs.send = () => { throw new Error('ws closed'); };
+	const goodWs = createMockWs({ connId: 'c_good' });
+	setupSockets('bot1', { ui: [badWs, goodWs] });
+
+	// 通过 onBotMessage 触发 broadcastToUi（type=res 走 broadcastToUi 路径）
+	onBotMessage('bot1', createMockWs(), JSON.stringify({
+		type: 'res',
+		id: 'test-1',
+		ok: true,
+		payload: {},
+	}));
+
+	// badWs 发送失败但 goodWs 应收到
+	assert.equal(goodWs.sent.length, 1);
+	assert.equal(goodWs.sent[0].type, 'res');
+	cleanupSockets('bot1');
+});
+
+test('forwardToBot: ws.send 抛异常时不中断且仍返回 true', () => {
+	const badBotWs = {
+		readyState: 1,
+		send() { throw new Error('ws write error'); },
+	};
+	setupSockets('bot1', { bot: [badBotWs] });
+
+	const uiWs = createMockWs({ connId: 'c_ui1' });
+	// 通过 onUiMessage 触发 forwardToBot（type=req）
+	onUiMessage('bot1', uiWs, JSON.stringify({
+		type: 'req',
+		id: 'rpc-1',
+		method: 'test',
+		params: {},
+	}));
+
+	// forwardToBot 的 send 抛异常但不应崩溃
+	// 且不会给 UI 回 BOT_OFFLINE 错误（因为 forwardToBot 返回 true）
+	assert.equal(uiWs.sent.length, 0);
+	cleanupSockets('bot1');
+});
+
+test('onBotMessage: bot.unbound 中 ws.close 抛异常时不崩溃', () => {
+	const botWs = createMockWs();
+	botWs.close = () => { throw new Error('close failed'); };
+	const uiWs = createMockWs({ connId: 'c_ui' });
+	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+
+	// 不应抛异常
+	onBotMessage('bot1', botWs, JSON.stringify({
+		type: 'bot.unbound',
+		reason: 'token_revoked',
+		botId: 'bot1',
+	}));
+
+	// UI 应收到 bot.unbound
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'bot.unbound');
+	cleanupSockets('bot1');
+});
