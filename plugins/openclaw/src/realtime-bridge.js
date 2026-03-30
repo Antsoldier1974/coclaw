@@ -10,6 +10,7 @@ import {
 	buildDeviceAuthPayloadV3,
 } from './device-identity.js';
 import { getRuntime } from './runtime.js';
+import { setSender as setRemoteLogSender } from './remote-log.js';
 
 const DEFAULT_GATEWAY_WS_URL = `ws://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || '18789'}`;
 const RECONNECT_MS = 10_000;
@@ -777,6 +778,9 @@ export class RealtimeBridge {
 		sock.addEventListener('open', () => {
 			this.__clearConnectTimer();
 			this.logger.info?.(`[coclaw] realtime bridge connected: ${maskedTarget}`);
+			setRemoteLogSender((msg) => {
+				if (sock.readyState === 1) sock.send(JSON.stringify(msg));
+			});
 			this.__startServerHeartbeat(sock);
 			this.__ensureGatewayConnection();
 		});
@@ -827,6 +831,7 @@ export class RealtimeBridge {
 			if (this.serverWs !== null && this.serverWs !== sock) {
 				return;
 			}
+			setRemoteLogSender(null);
 			const wasIntentional = this.intentionallyClosed;
 			this.serverWs = null;
 			this.intentionallyClosed = false;
@@ -867,6 +872,7 @@ export class RealtimeBridge {
 			}
 			this.__clearServerHeartbeat();
 			this.__clearConnectTimer();
+			setRemoteLogSender(null);
 			this.logger.warn?.(`[coclaw] realtime bridge error, will retry in ${RECONNECT_MS}ms: ${String(err?.message ?? err)}`);
 			this.serverWs = null;
 			this.__closeGatewayWs();
@@ -894,6 +900,7 @@ export class RealtimeBridge {
 
 	async stop() {
 		this.started = false;
+		setRemoteLogSender(null);
 		this.__clearServerHeartbeat();
 		this.__clearConnectTimer();
 		if (this.reconnectTimer) {

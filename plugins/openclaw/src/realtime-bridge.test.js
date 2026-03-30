@@ -8,6 +8,7 @@ import { RealtimeBridge, ensureAgentSession, gatewayAgentRpc, restartRealtimeBri
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
+import { remoteLog, __reset as resetRemoteLog, __buffer as remoteLogBuffer } from './remote-log.js';
 
 class FakeWebSocket {
 	static instances = [];
@@ -2318,6 +2319,96 @@ test('RealtimeBridge cleanup should reset __webrtcPeerReady', async () => {
 		assert.equal(bridge.__webrtcPeerReady, null, 'promise lock should be cleared on ws close');
 	} finally {
 		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+// --- remote-log sender 集成测试 ---
+
+test('RealtimeBridge should wire remote-log sender on open and flush buffered logs', async () => {
+	const prevHome = saveHomedir();
+	FakeWebSocket.instances = [];
+	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
+	const bridge = createBridge();
+	try {
+		resetRemoteLog();
+		// 在连接前缓冲日志
+		remoteLog('before-connect');
+
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		// flush 是异步的
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 应通过 server WS 发送缓冲的日志
+		const logMsg = server.sent.find((s) => {
+			try { return JSON.parse(s).type === 'log'; } catch { return false; }
+		});
+		assert.ok(logMsg, 'should have sent a log message via server WS');
+		const parsed = JSON.parse(logMsg);
+		assert.ok(parsed.logs.some((l) => l.text === 'before-connect'));
+		assert.equal(remoteLogBuffer.length, 0, 'buffer should be drained after flush');
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should clear remote-log sender on close', async () => {
+	const prevHome = saveHomedir();
+	FakeWebSocket.instances = [];
+	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
+	const bridge = createBridge();
+	try {
+		resetRemoteLog();
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		await new Promise((r) => setTimeout(r, 10));
+
+		// 断开连接
+		server.emit('close', { code: 1006, reason: 'abnormal' });
+		await new Promise((r) => setTimeout(r, 10));
+
+		// 断开后缓冲的日志不应被发送
+		const sentBefore = server.sent.length;
+		remoteLog('after-close');
+		await new Promise((r) => setTimeout(r, 10));
+		assert.equal(server.sent.length, sentBefore, 'should not send after close');
+		assert.equal(remoteLogBuffer.length, 1, 'log should remain in buffer');
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should clear remote-log sender on stop', async () => {
+	const prevHome = saveHomedir();
+	FakeWebSocket.instances = [];
+	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
+	const bridge = createBridge();
+	try {
+		resetRemoteLog();
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		await new Promise((r) => setTimeout(r, 10));
+
+		await bridge.stop();
+
+		const sentBefore = server.sent.length;
+		remoteLog('after-stop');
+		await new Promise((r) => setTimeout(r, 10));
+		assert.equal(server.sent.length, sentBefore, 'should not send after stop');
+		assert.equal(remoteLogBuffer.length, 1, 'log should remain in buffer');
+	} finally {
+		resetRemoteLog();
 		restoreHomedir(prevHome);
 	}
 });
