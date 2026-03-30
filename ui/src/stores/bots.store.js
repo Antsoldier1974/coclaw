@@ -332,8 +332,8 @@ export const useBotsStore = defineStore('bots', {
 
 				let result = 'failed';
 				for (let i = 0; i < RTC_BUILD_MAX_RETRIES; i++) {
-					if (!this.byId[id] || useSignalingConnection().state !== 'connected') {
-						console.debug('[bots] ensureRtc: bail-out (bot removed or WS disconnected) botId=%s', id);
+					if (!this.byId[id]) {
+						console.debug('[bots] ensureRtc: bail-out (bot removed) botId=%s', id);
 						break;
 					}
 					result = await initRtc(id, conn, this.__rtcCallbacks(id));

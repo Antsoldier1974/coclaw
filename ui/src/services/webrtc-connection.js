@@ -347,9 +347,7 @@ export class WebRtcConnection {
 			};
 
 			timer = setTimeout(() => { timer = null; cleanup(false); }, timeoutMs);
-			this.__doIceRestart().then((sent) => {
-				if (!sent) cleanup(false); // 信令不可用，无需等超时
-			}).catch(() => cleanup(false));
+			this.__doIceRestart().catch(() => cleanup(false));
 		});
 	}
 
@@ -365,6 +363,9 @@ export class WebRtcConnection {
 			this.__pc = null;
 			this.__rpcChannel = null;
 		}
+
+		// 确保信令 WS 可用（rebuild 场景下 WS 可能已断开）
+		await useSignalingConnection().ensureConnected({ verify: true });
 
 		this.__remoteDescSet = false;
 		this.__pendingCandidates = [];
@@ -575,17 +576,23 @@ export class WebRtcConnection {
 
 	// --- 内部：恢复 ---
 
-	/** @private ICE failed 时的恢复策略 */
+	/**
+	 * @private ICE failed 时的恢复策略。
+	 * __doIceRestart 是纯函数（无内部 catch），所有异常在此统一处理：
+	 * - 成功 → 消耗配额（iceRestartCount++）
+	 * - 失败 → 不消耗配额，不升级（PC 停留在 failed，等 __ensureRtc 接管恢复）
+	 */
 	async __onIceFailed() {
 		if (this.__externalRecovery) return; // 外部接管恢复，跳过内部级联
 		if (this.__iceRestartCount < MAX_ICE_RESTARTS) {
 			this.__log('info', `ICE failed, attempting ICE restart (${this.__iceRestartCount + 1}/${MAX_ICE_RESTARTS})`);
-			const sent = await this.__doIceRestart();
-			if (sent) {
+			try {
+				await this.__doIceRestart();
 				this.__iceRestartCount++;
-			} else {
-				// 信令不可用，不消耗配额，等 WS 恢复后重试
-				this.__log('warn', 'ICE restart skipped: signaling unavailable');
+			} catch (err) {
+				// ensureConnected 超时/intentionalClose 或 createOffer 失败 → 不消耗配额
+				// PC 停留在 failed 状态，后续由 __ensureRtc（resumed/bot-online 触发）接管恢复
+				this.__log('warn', 'ICE restart skipped: %s', err?.message);
 			}
 			return;
 		} else if (this.__rebuildCount < MAX_FULL_REBUILDS) {
@@ -599,36 +606,21 @@ export class WebRtcConnection {
 	}
 
 	/**
-	 * @private ICE restart：不重建 PeerConnection，仅重新协商路径
-	 * @returns {Promise<boolean>} true 表示 offer 已发出，false 表示信令不可用
+	 * @private ICE restart：不重建 PeerConnection，仅重新协商路径。
+	 * 所有异常（ensureConnected / createOffer）均直接抛出，
+	 * 由调用方（__onIceFailed / attemptIceRestart）统一决策后续恢复。
+	 * @returns {Promise<void>}
 	 */
 	async __doIceRestart() {
 		const pc = this.__pc;
-		if (!pc) return false;
-		try {
-			const offer = await pc.createOffer({ iceRestart: true });
-			await pc.setLocalDescription(offer);
-			const sent = useSignalingConnection().sendSignaling(
-				this.botId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true },
-			);
-			if (!sent) {
-				this.__log('warn', 'ICE restart offer not sent: signaling WS unavailable');
-				return false;
-			}
-			this.__log('info', 'ICE restart offer sent');
-			return true;
-		}
-		catch (err) {
-			this.__log('warn', `ICE restart offer failed: ${err?.message}`);
-			// ICE restart 失败，尝试 full rebuild
-			if (this.__rebuildCount < MAX_FULL_REBUILDS) {
-				this.__rebuildCount++;
-				this.__doFullRebuild();
-			} else {
-				this.__setState('failed');
-			}
-			return false;
-		}
+		if (!pc) throw new Error('no PeerConnection');
+		await useSignalingConnection().ensureConnected({ verify: true });
+		const offer = await pc.createOffer({ iceRestart: true });
+		await pc.setLocalDescription(offer);
+		useSignalingConnection().sendSignaling(
+			this.botId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true },
+		);
+		this.__log('info', 'ICE restart offer sent');
 	}
 
 	/** @private 全新重建 PeerConnection */

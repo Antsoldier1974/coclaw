@@ -775,6 +775,15 @@ describe('FileTransferError', () => {
 
 // --- WebRtcConnection.createDataChannel 测试（补充） ---
 
+vi.mock('./signaling-connection.js', () => ({
+	useSignalingConnection: () => ({
+		sendSignaling: vi.fn().mockReturnValue(true),
+		ensureConnected: vi.fn().mockResolvedValue(undefined),
+		on() {},
+		off() {},
+	}),
+}));
+
 describe('WebRtcConnection.createDataChannel', () => {
 	// 直接 import 并使用已有的 mock PC
 	let WebRtcConnection;

@@ -2,10 +2,12 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // mock signaling-connection 单例
 const mockSendSignaling = vi.fn().mockReturnValue(true);
+const mockEnsureConnected = vi.fn().mockResolvedValue(undefined);
 const sigListeners = {};
 vi.mock('./signaling-connection.js', () => ({
 	useSignalingConnection: () => ({
 		sendSignaling: mockSendSignaling,
+		ensureConnected: mockEnsureConnected,
 		on(event, cb) { (sigListeners[event] ??= []).push(cb); },
 		off(event, cb) {
 			if (sigListeners[event]) sigListeners[event] = sigListeners[event].filter(c => c !== cb);
@@ -32,6 +34,8 @@ import {
 beforeEach(() => {
 	mockSendSignaling.mockClear();
 	mockSendSignaling.mockReturnValue(true);
+	mockEnsureConnected.mockReset();
+	mockEnsureConnected.mockResolvedValue(undefined);
 	for (const key of Object.keys(sigListeners)) delete sigListeners[key];
 });
 
@@ -638,6 +642,29 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 		// 应发起 ICE restart，不重建 PeerConnection
 		expect(pcInstances.length).toBe(1);
 		expect(pc.__createOfferOpts).toContainEqual({ iceRestart: true });
+
+		rtc.close();
+	});
+
+	test('ensureConnected reject 时 __onIceFailed 不消耗 ICE restart 配额', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		// ensureConnected 拒绝（模拟信令不可用）
+		mockEnsureConnected.mockRejectedValue(new Error('ensureConnected timeout'));
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+
+		// __onIceFailed 是异步的（fire-and-forget），等待 microtask 链完成
+		await new Promise((r) => setTimeout(r, 0));
+		// ensureConnected 异常 → __onIceFailed catch → 不递增 count
+		expect(rtc.__iceRestartCount).toBe(0);
+		// 也不应触发 full rebuild（rebuildCount 不变）
+		expect(rtc.__rebuildCount).toBe(0);
 
 		rtc.close();
 	});

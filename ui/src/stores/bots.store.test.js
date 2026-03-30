@@ -18,6 +18,7 @@ vi.mock('../services/bot-connection-manager.js', () => ({
 const sigListeners = {};
 const mockSigConn = {
 	state: 'disconnected',
+	ensureConnected: vi.fn().mockResolvedValue(undefined),
 	on(event, cb) { (sigListeners[event] ??= []).push(cb); },
 	off(event, cb) {
 		if (sigListeners[event]) sigListeners[event] = sigListeners[event].filter(c => c !== cb);
@@ -66,6 +67,7 @@ beforeEach(() => {
 	mockCloseRtcForBot.mockReset();
 	// 重置 signaling mock
 	mockSigConn.state = 'disconnected';
+	mockSigConn.ensureConnected.mockReset().mockResolvedValue(undefined);
 	for (const key of Object.keys(sigListeners)) delete sigListeners[key];
 	__resetAwaitingConnIds();
 });

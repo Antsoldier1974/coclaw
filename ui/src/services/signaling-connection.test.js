@@ -417,6 +417,127 @@ describe('SignalingConnection – catch 路径日志', () => {
 	});
 });
 
+describe('SignalingConnection – ensureConnected', () => {
+	test('connected + verify=false → 立即 resolve', async () => {
+		const { conn } = makeConnected();
+		await conn.ensureConnected({ verify: false });
+		// 无 forceReconnect（仍是同一 WS）
+		expect(MockWebSocket.instances.length).toBe(1);
+		conn.disconnect();
+	});
+
+	test('connected + verify=true → forceReconnect → 等新 WS → resolve', async () => {
+		const { conn } = makeConnected();
+		const p = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
+		// forceReconnect 创建了新 WS
+		expect(MockWebSocket.instances.length).toBe(2);
+		expect(conn.state).toBe('connecting');
+		// 模拟新 WS open
+		MockWebSocket.lastInstance.simulateOpen();
+		await p;
+		expect(conn.state).toBe('connected');
+		conn.disconnect();
+	});
+
+	test('connected + verify=true 冷却期内 → 立即 resolve（不 reconnect）', async () => {
+		const { conn } = makeConnected();
+		// 第一次 verify
+		const p1 = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
+		MockWebSocket.lastInstance.simulateOpen();
+		await p1;
+		const countAfterFirst = MockWebSocket.instances.length;
+		// 冷却期内第二次 verify → 应立即返回
+		await conn.ensureConnected({ verify: true, timeoutMs: 5000 });
+		expect(MockWebSocket.instances.length).toBe(countAfterFirst);
+		conn.disconnect();
+	});
+
+	test('connected + verify=true 冷却期后 → 再次 forceReconnect', async () => {
+		const { conn } = makeConnected();
+		// 第一次 verify
+		const p1 = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
+		MockWebSocket.lastInstance.simulateOpen();
+		await p1;
+		const countAfterFirst = MockWebSocket.instances.length;
+		// 超过冷却期（6s > VERIFY_COOLDOWN_MS 5s；心跳 25s/45s 不受影响）
+		vi.advanceTimersByTime(6000);
+		// 第二次 verify：冷却已过，应触发 forceReconnect
+		const p2 = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
+		expect(MockWebSocket.instances.length).toBeGreaterThan(countAfterFirst);
+		MockWebSocket.lastInstance.simulateOpen();
+		await p2;
+		conn.disconnect();
+	});
+
+	test('connecting → 等待 WS open → resolve', async () => {
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect(); // state → connecting
+		expect(conn.state).toBe('connecting');
+		const p = conn.ensureConnected({ timeoutMs: 5000 });
+		MockWebSocket.lastInstance.simulateOpen();
+		await p;
+		expect(conn.state).toBe('connected');
+		conn.disconnect();
+	});
+
+	test('disconnected → 触发 connect + 等待 → resolve', async () => {
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		// 初始为 disconnected，不调用 connect()
+		expect(conn.state).toBe('disconnected');
+		const p = conn.ensureConnected({ timeoutMs: 5000 });
+		// 应自动触发 __doConnect
+		expect(MockWebSocket.lastInstance).toBeTruthy();
+		expect(conn.state).toBe('connecting');
+		MockWebSocket.lastInstance.simulateOpen();
+		await p;
+		expect(conn.state).toBe('connected');
+		conn.disconnect();
+	});
+
+	test('intentionalClose → reject', async () => {
+		const { conn } = makeConnected();
+		conn.disconnect(); // __intentionalClose = true
+		await expect(conn.ensureConnected()).rejects.toThrow('intentionally closed');
+	});
+
+	test('超时 → reject', async () => {
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		const p = conn.ensureConnected({ timeoutMs: 3000 });
+		// 不模拟 WS open → 超时
+		vi.advanceTimersByTime(3000);
+		await expect(p).rejects.toThrow('ensureConnected timeout');
+		conn.disconnect();
+	});
+
+	test('等待期间 disconnect → 立即 reject（不等超时）', async () => {
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect();
+		// WS 未 open，state = connecting
+		const p = conn.ensureConnected({ timeoutMs: 10000 });
+		// 等待期间主动断开
+		conn.disconnect();
+		await expect(p).rejects.toThrow('intentionally closed');
+	});
+
+	test('多个并发调用不重复创建 WS', async () => {
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect();
+		const p1 = conn.ensureConnected({ timeoutMs: 5000 });
+		const p2 = conn.ensureConnected({ timeoutMs: 5000 });
+		// 只有一个 WS 实例
+		expect(MockWebSocket.instances.length).toBe(1);
+		MockWebSocket.lastInstance.simulateOpen();
+		await Promise.all([p1, p2]);
+		expect(conn.state).toBe('connected');
+		conn.disconnect();
+	});
+});
+
 describe('SignalingConnection – 单例', () => {
 	afterEach(() => __resetSignalingConnection());
 

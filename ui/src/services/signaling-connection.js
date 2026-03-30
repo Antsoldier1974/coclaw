@@ -19,6 +19,8 @@ const PROBE_TIMEOUT_MS = 2500;
 const ASSUME_DEAD_MS = 45_000;
 /** 防重入节流（visibilitychange + app:foreground） */
 const FOREGROUND_THROTTLE_MS = 500;
+/** ensureConnected verify 冷却期 */
+const VERIFY_COOLDOWN_MS = 5000;
 
 function resolveSignalingWsUrl(httpBaseUrl) {
 	const url = new URL(httpBaseUrl);
@@ -77,6 +79,8 @@ export class SignalingConnection {
 		// 连接感知
 		this.__lastAliveAt = 0;
 		this.__probeTimer = null;
+		/** @type {number} 上次 verify 成功的时间戳 */
+		this.__lastVerifiedAt = 0;
 
 		// 重连后是否需要 resume
 		this.__hasConnectedBefore = false;
@@ -112,6 +116,46 @@ export class SignalingConnection {
 			window.addEventListener('network:online', this.__boundNetworkHandler);
 		}
 		this.__doConnect();
+	}
+
+	/**
+	 * 确保信令 WS 已连接。
+	 * @param {object} [opts]
+	 * @param {boolean} [opts.verify=false] - true 时强制验证连接存活性（用于 RTC 恢复场景）
+	 * @param {number} [opts.timeoutMs=15000] - 超时毫秒数
+	 * @returns {Promise<void>} resolve = connected；reject = 超时或主动断开
+	 */
+	async ensureConnected({ verify = false, timeoutMs = 15_000 } = {}) {
+		if (this.__intentionalClose) {
+			throw new Error('SignalingConnection intentionally closed');
+		}
+
+		// verify 冷却：5s 内视同 verify=false
+		if (verify && (Date.now() - this.__lastVerifiedAt < VERIFY_COOLDOWN_MS)) {
+			verify = false;
+		}
+
+		if (this.__state === 'connected') {
+			if (!verify) return;
+			// verify=true + connected → force-reconnect 检测假活
+			this.forceReconnect();
+			await this.__waitForConnected(timeoutMs);
+			this.__lastVerifiedAt = Date.now();
+			return;
+		}
+
+		if (this.__state === 'connecting') {
+			await this.__waitForConnected(timeoutMs);
+			if (verify) this.__lastVerifiedAt = Date.now();
+			return;
+		}
+
+		// disconnected → 立即触发连接
+		this.__clearReconnect();
+		this.__reconnectDelay = INITIAL_RECONNECT_MS;
+		this.__doConnect();
+		await this.__waitForConnected(timeoutMs);
+		if (verify) this.__lastVerifiedAt = Date.now();
 	}
 
 	/** 主动断开，不再自动重连 */
@@ -483,6 +527,34 @@ export class SignalingConnection {
 		this.__setState('disconnected');
 		this.__reconnectDelay = INITIAL_RECONNECT_MS;
 		this.__doConnect();
+	}
+
+	/**
+	 * 等待状态变为 connected，超时则 reject。
+	 * @param {number} timeoutMs
+	 * @returns {Promise<void>}
+	 */
+	__waitForConnected(timeoutMs) {
+		return new Promise((resolve, reject) => {
+			if (this.__state === 'connected') { resolve(); return; }
+
+			let timer = null;
+			let handler = null;
+			const cleanup = () => {
+				if (timer) { clearTimeout(timer); timer = null; }
+				if (handler) { this.off('state', handler); handler = null; }
+			};
+			handler = (s) => {
+				if (s === 'connected') { cleanup(); resolve(); }
+				// disconnect() 被调用 → 不会再变为 connected，立即 reject
+				else if (this.__intentionalClose) { cleanup(); reject(new Error('SignalingConnection intentionally closed')); }
+			};
+			this.on('state', handler);
+			timer = setTimeout(() => {
+				cleanup();
+				reject(new Error('ensureConnected timeout'));
+			}, timeoutMs);
+		});
 	}
 
 	__clearProbe() {

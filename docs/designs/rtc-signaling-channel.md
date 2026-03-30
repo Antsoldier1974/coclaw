@@ -546,7 +546,135 @@ sendSignaling(botId, type, payload) → boolean
 
 ---
 
-## 八、边界情况
+## 八、ensureConnected：信令通道可用性保障
+
+> 状态：已实施（阶段一：force-reconnect）
+
+### 8.1 动机
+
+当前实现中，WS 不可用时的应对逻辑散布在多处（`__doIceRestart` 检查返回值、`__ensureRtc` bail-out guard、`__onBotConnected` 触发恢复、`resumed` 事件、`foreground-resume` 事件），形成了多个状态之间的复杂关联。
+
+核心问题：
+
+1. **offer 静默丢弃**：`__buildPeerConnection` 中 `sendSignaling` 返回值未检查，offer 写入死连接的 socket buffer → 15s 空等
+2. **ICE restart 跳过无后续**：`__onIceFailed` 中 `sendSignaling` 返回 false 后直接 return，PC 停留在 failed 状态，无重试安排
+3. **WS 假活未检测**：WS 表面 connected 但 TCP 已死（NAT 映射过期等），心跳检测最慢需 ~90s
+4. **WS 短暂闪断导致 full rebuild**：ICE restart 被跳过 → WS 恢复后走 `__onBotConnected` → full rebuild（~3-5s），而非 ICE restart（~1-2s）
+
+### 8.2 设计：阻塞式 ensureConnected 原语
+
+将"确保信令通道可用"收敛为 SignalingConnection 上的一个阻塞原语：
+
+```js
+/**
+ * 确保信令 WS 可用。
+ * @param {object} [opts]
+ * @param {boolean} [opts.verify=false] - true 时主动验证连接活性（用于 RTC 恢复场景）
+ * @param {number} [opts.timeoutMs=15000] - 等待超时
+ * @returns {Promise<void>} resolve 表示 WS 已 connected；reject 表示超时或主动断开
+ */
+async ensureConnected({ verify = false, timeoutMs = 15000 } = {})
+```
+
+行为：
+
+| WS 当前状态 | verify=false | verify=true |
+|------------|-------------|------------|
+| `connected` + 近期有消息（<5s） | 立即返回 | 立即返回（冷却期内） |
+| `connected` + 无近期消息 | 立即返回 | 探测存活 / force-reconnect，然后返回 |
+| `connecting` | 等待 connected | 等待 connected |
+| `disconnected` | 触发连接 + 等待 | 触发连接 + 等待 |
+| `intentionalClose` | reject | reject |
+
+### 8.3 verify 模式：WS 假活检测
+
+当 `verify=true` 时，ensureConnected 会主动验证 WS 连接活性：
+
+**阶段一（当前实施）**：直接 force-reconnect（简单粗暴，适用于用户量少的阶段）
+
+```js
+if (this.__state === 'connected' && verify) {
+    if (Date.now() - this.__lastVerifiedAt < VERIFY_COOLDOWN_MS) return; // 冷却
+    this.forceReconnect();
+    return this.__waitForConnected(timeoutMs);
+}
+```
+
+**阶段二（后续调优）**：先探测，探测失败再 force-reconnect
+
+```js
+if (this.__state === 'connected' && verify) {
+    if (Date.now() - this.__lastVerifiedAt < VERIFY_COOLDOWN_MS) return;
+    const elapsed = Date.now() - this.__lastAliveAt;
+    if (elapsed < PROBE_TIMEOUT_MS) { this.__lastVerifiedAt = Date.now(); return; }
+    const alive = await this.__probeAsync(PROBE_TIMEOUT_MS);
+    if (alive) { this.__lastVerifiedAt = Date.now(); return; }
+    this.forceReconnect();
+    return this.__waitForConnected(timeoutMs);
+}
+```
+
+阶段二中各场景耗时对比：
+
+| WS 状态 | 耗时 |
+|---------|------|
+| 健康 + 近期有消息 | 0ms |
+| 健康 + 无近期消息 | ~10-50ms（ping RTT） |
+| 假活 | ~2.5s（探测超时）+ ~100-500ms（重连） |
+| 已断开 | 等重连时间 |
+
+vs 当前（无 ensureConnected）：假活场景 → offer 静默丢弃 → **15s 空等**。
+
+### 8.4 冷却机制
+
+防止重试循环中重复 force-reconnect：
+
+- `__lastVerifiedAt`：上次 verify 成功完成的时间戳
+- 冷却窗口：5s（`VERIFY_COOLDOWN_MS`）
+- 在冷却期内，`verify=true` 视同 `verify=false`（直接返回）
+
+典型场景：`__ensureRtc` 的 3 轮重试 → 第 1 轮 verify + reconnect → 第 2、3 轮命中冷却 → 零额外开销。
+
+### 8.5 使用位置
+
+ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
+
+| 调用位置 | verify | 说明 |
+|---------|--------|------|
+| `__buildPeerConnection`（build/rebuild） | true | offer 是建连的发起消息，必须到达 |
+| `__doIceRestart` | true | ICE restart offer 是恢复的发起消息，必须到达 |
+
+后续的 ICE candidate（`rtc:ice`）和状态通知（`rtc:ready`、`rtc:closed`）不使用 ensureConnected：
+- ICE candidate 是异步多条 trickle，部分丢失可容忍（通常有冗余 candidate）
+- `rtc:ready` / `rtc:closed` 是通知性质，丢失不影响功能
+
+### 8.6 重入安全
+
+| 场景 | 行为 | 安全性 |
+|------|------|--------|
+| build 期间旧 PC 触发 restart | `__buildPeerConnection` 先清理旧 PC（detach 事件）再 await → 窗口消除 | ✅ |
+| 多 bot 同时 build | 第一个触发 forceReconnect，后续者 state=connecting → 加入等待 | ✅ |
+| `__ensureRtc` 重试循环 | 第 2+ 轮命中冷却 → 跳过 verify | ✅ |
+| `tryIceRestart` 与 `__onIceFailed` 并发 | 两者都 await 同一 WS 恢复，各自发出 offer，Plugin 幂等处理 | ✅（冗余但无害） |
+
+关键设计：`forceReconnect` 只在 `state === 'connected'` 时触发。`state` 为 `connecting` 或 `disconnected` 时仅等待，不重复触发重连。
+
+### 8.7 对恢复策略的简化
+
+引入 ensureConnected 后，§7 中多处 WS 可用性相关的应对逻辑已收敛：
+
+| 原有逻辑 | 变化 |
+|---------|------|
+| `__doIceRestart` 检查 `sendSignaling` 返回值 + 内部 catch 触发 rebuild | 移除 — `__doIceRestart` 简化为纯函数（无 catch），所有异常抛给调用方 |
+| `__onIceFailed` 中 `sent === false` 分支 | 移除 — `__doIceRestart` 要么成功要么抛异常，由 `__onIceFailed` 统一决策 |
+| `__onIceFailed` 的恢复决策 | 集中 — 成功时递增 iceRestartCount；失败时不消耗配额（PC 停留在 failed，由 `__ensureRtc` 接管） |
+| `__ensureRtc` 循环的 `sigConn.state !== 'connected'` bail-out | 移除 — `initRtc` 内部 await ensureConnected 自然阻塞或超时 |
+| §7.3 sendSignaling 返回值处理 | 简化 — 由 ensureConnected 在上游保障 WS 可用，sendSignaling 返回值退化为防御性检查 |
+| `__onBotConnected` 作为 WS 恢复后的唯一 RTC 恢复入口 | 减轻职责 — ensureConnected 使 ICE restart 可在 WS 闪断后自然延续，不再强制走 full rebuild |
+
+---
+
+## 九、边界情况
 
 | 场景 | 处理 |
 |------|------|
@@ -557,7 +685,7 @@ sendSignaling(botId, type, payload) → boolean
 | bot 在 WS 断开期间解绑 | SSE 推送 bot.unbound → UI 清理。Server 移除该 bot 相关 connId 路由。WS 重连时 resume 中该 bot 的 connId 被忽略（botId 校验失败） |
 | Server 重启 | 所有 connId 路由丢失。UI resume 重新注册，无需区分"恢复"和"首次注册"。Plugin 侧旧 session 通过 ICE failure 自清理 |
 | connId 冲突 | Server 注册时检查 connId 是否已被其他 WS 占用，冲突则拒绝 |
-| ICE restart 时 sendSignaling 返回 false | 不消耗 restart 配额，不升级到 full rebuild，等 WS 恢复 |
+| ICE restart 时信令不可用 | `ensureConnected` 阻塞等待 WS 恢复或超时；超时则 `__onIceFailed` catch 不消耗配额，PC 停留在 failed 等 `__ensureRtc` 接管 |
 | Full rebuild 复用 connId | Plugin 收到同 connId 新 offer → `closeByConnId` 清理旧 session → 创建新 session。已有逻辑支持 |
 | ICE restart 时 Plugin 已无 session（极端：WS+RTC 同时断开 >30s） | Plugin 对未知 connId 的 ICE restart offer 会 fall through 创建新 PC → DTLS 不匹配 → ICE failed → UI 恢复级联 → full rebuild。多耗 ~2-5s，可接受 |
 | WS 重连后直接发 rtc:offer（跳过 resume） | 隐式注册 connId，正常工作。resume 的价值是批量预注册，避免此窗口内 Plugin 回复丢失 |
@@ -566,7 +694,7 @@ sendSignaling(botId, type, payload) → boolean
 
 ---
 
-## 九、TODO（待后续讨论确认）
+## 十、TODO（待后续讨论确认）
 
 ### 初始化触发链路重建
 
@@ -588,7 +716,7 @@ sendSignaling(botId, type, payload) → boolean
 
 ---
 
-## 十、实施范围
+## 十一、实施范围
 
 ### Server 侧
 
@@ -617,7 +745,7 @@ sendSignaling(botId, type, payload) → boolean
 
 ---
 
-## 十一、风险与约束
+## 十二、风险与约束
 
 | 风险 | 缓解 |
 |------|------|
