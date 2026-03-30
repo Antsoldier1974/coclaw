@@ -40,6 +40,7 @@ import DesktopSidebar from '../components/DesktopSidebar.vue';
 import MobileBottomTabs from '../components/MobileBottomTabs.vue';
 import { useBotStatusSse } from '../composables/use-bot-status-sse.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
+import { useRemoteLog } from '../services/remote-log.js';
 import { usePullRefresh } from '../composables/use-pull-refresh.js';
 import { useAuthStore } from '../stores/auth.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
@@ -55,6 +56,7 @@ export default {
 		const botsStore = useBotsStore();
 		useBotStatusSse(botsStore);
 		useSignalingConnection().connect();
+		useRemoteLog();
 
 		const contentSection = ref(null);
 		const { pulling, pullDistance, pastThreshold } = usePullRefresh(contentSection);
