@@ -464,6 +464,11 @@ export async function botStatusStreamHandler(req, res, _next, {
 		return;
 	}
 
+	const remoteIp = req.headers?.['x-forwarded-for']?.split(',')[0]?.trim()
+		|| req.socket?.remoteAddress
+		|| 'unknown';
+	console.info('[coclaw/sse] stream request userId=%s ip=%s', req.user.id, remoteIp);
+
 	res.writeHead(200, {
 		'Content-Type': 'text/event-stream',
 		'Cache-Control': 'no-cache',

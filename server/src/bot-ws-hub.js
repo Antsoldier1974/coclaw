@@ -153,7 +153,8 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 	try {
 		rpcRes = await requestBotRpc(key, 'agent.identity.get', {}, timeoutMs);
 	}
-	catch {
+	catch (err) {
+		wsLogDebug(`refreshBotName rpc failed botId=${key}: ${err.message}`);
 		return undefined;
 	}
 	if (!rpcRes || rpcRes.ok !== true) {
@@ -167,7 +168,8 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 	try {
 		bot = await findBotById(BigInt(key));
 	}
-	catch {
+	catch (err) {
+		wsLogWarn(`refreshBotName findBot failed botId=${key}: ${err.message}`);
 		return latestName;
 	}
 	if (!bot) {
@@ -175,7 +177,9 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 	}
 	const currentName = bot.name ?? null;
 	if (currentName !== latestName) {
-		await updateBotName(bot.id, latestName).catch(() => {});
+		await updateBotName(bot.id, latestName).catch((err) => {
+			wsLogWarn(`updateBotName failed botId=${key}: ${err.message}`);
+		});
 		botStatusEmitter.emit('nameUpdated', { botId: key, name: latestName });
 	}
 	return latestName;
@@ -260,7 +264,9 @@ function broadcastToUi(botId, payload) {
 		try {
 			ws.send(text);
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`broadcastToUi send failed botId=${botId}: ${err.message}`);
+		}
 	}
 }
 
@@ -274,7 +280,9 @@ function forwardToBot(botId, payload) {
 		try {
 			ws.send(text);
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`forwardToBot send failed botId=${botId}: ${err.message}`);
+		}
 	}
 	return true;
 }
@@ -349,11 +357,14 @@ function onBotMessage(botId, ws, raw) {
 	}
 
 	if (payload.type === 'bot.unbound') {
+		wsLogInfo(`bot.unbound received botId=${botId}`);
 		broadcastToUi(botId, payload);
 		try {
 			ws.close(4001, 'bot_unbound');
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`bot.unbound ws.close failed botId=${botId}: ${err.message}`);
+		}
 	}
 }
 
@@ -589,7 +600,8 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 				});
 			});
 		}
-		catch {
+		catch (err) {
+			wsLogWarn(`ws upgrade error: ${err.message}`);
 			socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
 			socket.destroy();
 		}
@@ -628,6 +640,7 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 	if (pendingOffline.has(key)) {
 		clearTimeout(pendingOffline.get(key));
 		pendingOffline.delete(key);
+		wsLogInfo(`grace period cancelled by admin disconnect botId=${key}`);
 	}
 	const set = botSockets.get(key);
 	if (!set || set.size === 0) {
@@ -647,11 +660,15 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 		try {
 			ws.send(JSON.stringify(payload));
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`notifyAndDisconnectBot send failed botId=${key}: ${err.message}`);
+		}
 		try {
 			ws.close(closeCode, reason);
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`notifyAndDisconnectBot close failed botId=${key}: ${err.message}`);
+		}
 	}
 }
 

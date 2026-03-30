@@ -94,6 +94,7 @@ botStatusEmitter.on('status', async ({ botId, online }) => {
 	try {
 		const bot = await findBotById(BigInt(botId));
 		if (!bot) {
+			console.debug('[coclaw/sse] status event: bot not found botId=%s (may be deleted)', botId);
 			return;
 		}
 		sendToUser(String(bot.userId), {
@@ -114,6 +115,7 @@ botStatusEmitter.on('nameUpdated', async ({ botId, name }) => {
 	try {
 		const bot = await findBotById(BigInt(botId));
 		if (!bot) {
+			console.debug('[coclaw/sse] nameUpdated event: bot not found botId=%s (may be deleted)', botId);
 			return;
 		}
 		sendToUser(String(bot.userId), {

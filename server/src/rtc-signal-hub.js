@@ -154,8 +154,12 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		const route = lookup(connId);
 		if (route) {
 			payload.fromConnId = connId;
-			forwardToBotFn(route.botId, payload);
-			sigLogDebug(`rtc:closed forwarded bot=${route.botId} connId=${connId}`);
+			const sent = forwardToBotFn(route.botId, payload);
+			if (sent) {
+				sigLogDebug(`rtc:closed forwarded bot=${route.botId} connId=${connId}`);
+			} else {
+				sigLogDebug(`rtc:closed dropped, bot offline botId=${route.botId} connId=${connId}`);
+			}
 			remove(connId);
 		} else {
 			// connId 未注册：需验证 botId 归属后才转发
@@ -163,8 +167,12 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 				const owned = await validateBotOwnership(botId, userId, findBotByIdFn);
 				if (owned) {
 					payload.fromConnId = connId;
-					forwardToBotFn(botId, payload);
-					sigLogDebug(`rtc:closed forwarded (unregistered) bot=${botId} connId=${connId}`);
+					const sent = forwardToBotFn(botId, payload);
+					if (sent) {
+						sigLogDebug(`rtc:closed forwarded (unregistered) bot=${botId} connId=${connId}`);
+					} else {
+						sigLogDebug(`rtc:closed dropped (unregistered), bot offline botId=${botId} connId=${connId}`);
+					}
 				} else {
 					sigLogWarn(`rtc:closed denied: botId=${botId} not owned by userId=${userId}`);
 				}
@@ -174,7 +182,7 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		return;
 	}
 
-	sigLogDebug(`unknown message type: ${type}`);
+	sigLogWarn(`unknown message type: ${type} userId=${userId}`);
 }
 
 /**
@@ -214,6 +222,7 @@ export function attachRtcSignalHub(httpServer, { sessionMiddleware }) {
 
 			const userId = req.session?.passport?.user;
 			if (!userId) {
+				sigLogWarn('signal ws auth failed: no userId in session');
 				socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
 				socket.destroy();
 				return;
