@@ -238,7 +238,6 @@ export default {
 						this.$router.push('/bots');
 						return;
 					}
-					if (result.code === 'BINDING_TIMEOUT') return;
 				}
 				catch (err) {
 					if (this.waitCancelled || !this.waitLoopRunning) return;

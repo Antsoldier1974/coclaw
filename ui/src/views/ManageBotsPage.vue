@@ -54,8 +54,8 @@
 					</div>
 				</div>
 				<div v-if="bot.online && expandedDetails[bot.id] && getConnDetail(bot.id)" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted">
-					<p>{{ $t('bots.conn.localCandidate') }}：{{ getConnDetail(bot.id).localType }} · {{ getConnDetail(bot.id).localProtocol.toUpperCase() }}</p>
-					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ getConnDetail(bot.id).remoteType }} · {{ getConnDetail(bot.id).remoteProtocol.toUpperCase() }}</p>
+					<p>{{ $t('bots.conn.localCandidate') }}：{{ getConnDetail(bot.id).localType }} · {{ getConnDetail(bot.id).localProtocol?.toUpperCase() }}</p>
+					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ getConnDetail(bot.id).remoteType }} · {{ getConnDetail(bot.id).remoteProtocol?.toUpperCase() }}</p>
 					<p>{{ $t('bots.conn.relayProtocol') }}：{{ getConnDetail(bot.id).relayProtocol?.toUpperCase() ?? '—' }}</p>
 				</div>
 
@@ -189,6 +189,7 @@ export default {
 			});
 		},
 		async loadData() {
+			if (this.loading) return;
 			this.loading = true;
 			try {
 				// bot 列表由 SSE 快照维护；等待 fetched 后只加载 dashboard

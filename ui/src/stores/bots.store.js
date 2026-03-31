@@ -126,6 +126,7 @@ export const useBotsStore = defineStore('bots', {
 			bot.online = next;
 			if (!next) {
 				useAgentsStore().removeByBot(id);
+				useDashboardStore().clearDashboard(id);
 				// bot 离线 → 立即清除 DC 状态，避免 applySnapshot preserveOnline 误判
 				bot.dcReady = false;
 				bot.rtcPhase = 'idle';
@@ -142,10 +143,12 @@ export const useBotsStore = defineStore('bots', {
 					});
 				}
 			} else if (prev === false) {
-				// bot offline→online → 恢复 RTC + 刷新（外部事件，重置退避）
+				// bot offline→online → 恢复 RTC（外部事件，重置退避）
+				// RTC 就绪后刷新 dashboard（覆盖 DC 未断 + DC 重建两种场景）
 				this.__clearRetry(id);
-				useDashboardStore().loadDashboard(id).catch(() => {});
-				this.__ensureRtc(id).catch(() => {});
+				this.__ensureRtc(id)
+					.then(() => useDashboardStore().loadDashboard(id))
+					.catch(() => {});
 			}
 		},
 		removeBotById(botId) {
@@ -155,6 +158,7 @@ export const useBotsStore = defineStore('bots', {
 			useBotConnections().disconnect(id);
 			useSessionsStore().removeSessionsByBotId(id);
 			useAgentRunsStore().removeByBot(id);
+			useDashboardStore().clearDashboard(id);
 			this.__clearRetry(id);
 			_bridgedConns.delete(id);
 			delete this.byId[id];
@@ -189,6 +193,7 @@ export const useBotsStore = defineStore('bots', {
 					useAgentsStore().removeByBot(oldId);
 					useSessionsStore().removeSessionsByBotId(oldId);
 					useAgentRunsStore().removeByBot(oldId);
+					useDashboardStore().clearDashboard(oldId);
 					this.__clearRetry(oldId);
 					_bridgedConns.delete(oldId);
 				}

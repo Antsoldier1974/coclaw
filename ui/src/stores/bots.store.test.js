@@ -258,14 +258,17 @@ describe('removeBotById', () => {
 
 	test('cleans up all per-bot state in one operation', () => {
 		const store = useBotsStore();
+		const dashboardStore = useDashboardStore();
 		store.setBots([{ id: '5', name: 'Bot' }, { id: '6', name: 'Bot2' }]);
 		store.byId['5'].rtcPhase = 'ready';
 		store.byId['5'].rtcTransportInfo = { localType: 'host' };
+		dashboardStore.byBot['5'] = { loading: false, error: null, instance: { name: 'Bot' }, agents: [] };
 
 		store.removeBotById('5');
 
 		expect(store.byId['5']).toBeUndefined();
 		expect(store.byId['6']).toBeDefined();
+		expect(dashboardStore.byBot['5']).toBeUndefined();
 	});
 });
 
@@ -294,17 +297,20 @@ describe('updateBotOnline', () => {
 		expect(store.byId['1'].online).toBe(true);
 	});
 
-	test('bot 离线时清理 agents 缓存', () => {
+	test('bot 离线时清理 agents 和 dashboard 缓存', () => {
 		const store = useBotsStore();
+		const dashboardStore = useDashboardStore();
 		store.setBots([{ id: '1', online: true }]);
 
 		const agentsStore = useAgentsStore();
 		agentsStore.byBot['1'] = { agents: [{ id: 'main' }], defaultId: 'main', loading: false, fetched: true };
+		dashboardStore.byBot['1'] = { loading: false, error: null, instance: { name: 'Bot' }, agents: [] };
 
 		store.updateBotOnline('1', false);
 
 		expect(store.byId['1'].online).toBe(false);
 		expect(agentsStore.byBot['1']).toBeUndefined();
+		expect(dashboardStore.byBot['1']).toBeUndefined();
 	});
 
 	test('bot 离线时重置 dcReady 和 rtcPhase', () => {
@@ -379,6 +385,31 @@ describe('updateBotOnline', () => {
 			expect(mockInitRtc).toHaveBeenCalled();
 		});
 	});
+
+	test('bot offline→online + DC 仍 connected → __ensureRtc 快速返回后加载 dashboard', async () => {
+		const store = useBotsStore();
+		const dashboardStore = useDashboardStore();
+		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
+
+		// 模拟 RTC 仍处于 connected 状态
+		const fakeRtc = { state: 'connected', isReady: true };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(),
+			rtc: fakeRtc, clearRtc: vi.fn(),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '1', name: 'Bot', online: false });
+		store.byId['1'].initialized = true;
+
+		store.updateBotOnline('1', true);
+
+		// __ensureRtc 快速返回（RTC 已 connected），然后 .then() 触发 loadDashboard
+		await vi.waitFor(() => {
+			expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+		});
+		expect(store.byId['1'].dcReady).toBe(true);
+	});
 });
 
 describe('applySnapshot', () => {
@@ -439,9 +470,11 @@ describe('applySnapshot', () => {
 		const sessionsStore = useSessionsStore();
 		const agentsStore = useAgentsStore();
 		const agentRunsStore = useAgentRunsStore();
+		const dashboardStore = useDashboardStore();
 		const removeAgentsSpy = vi.spyOn(agentsStore, 'removeByBot');
 		const removeSessionsSpy = vi.spyOn(sessionsStore, 'removeSessionsByBotId');
 		const removeAgentRunsSpy = vi.spyOn(agentRunsStore, 'removeByBot');
+		const clearDashboardSpy = vi.spyOn(dashboardStore, 'clearDashboard');
 		mockManager.get.mockReturnValue(null);
 
 		store.byId['1'] = { id: '1', name: 'old' };
@@ -456,6 +489,7 @@ describe('applySnapshot', () => {
 		expect(removeAgentsSpy).toHaveBeenCalledWith('2');
 		expect(removeSessionsSpy).toHaveBeenCalledWith('2');
 		expect(removeAgentRunsSpy).toHaveBeenCalledWith('2');
+		expect(clearDashboardSpy).toHaveBeenCalledWith('2');
 	});
 
 	test('skips items with null/undefined id', () => {
