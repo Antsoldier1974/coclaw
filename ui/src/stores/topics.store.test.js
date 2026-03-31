@@ -22,13 +22,23 @@ vi.mock('../services/bots.api.js', () => ({
 
 import { useBotsStore } from './bots.store.js';
 
-function mockConn(topicsResponse, state = 'connected') {
+function mockConn(topicsResponse) {
 	return {
-		state,
 		request: vi.fn().mockResolvedValue(topicsResponse),
 		on: vi.fn(),
 		off: vi.fn(),
 	};
+}
+
+/** 注册 mock conn 并设置 botsStore 中 bot 的 dcReady */
+function setConn(botId, conn, { dcReady = true } = {}) {
+	mockConnections.set(String(botId), conn);
+	const botsStore = useBotsStore();
+	if (!botsStore.byId[String(botId)]) {
+		botsStore.byId[String(botId)] = { id: String(botId), dcReady };
+	} else {
+		botsStore.byId[String(botId)].dcReady = dcReady;
+	}
 }
 
 /** 辅助：将 topic 数组转为 byId 格式 */
@@ -74,7 +84,7 @@ describe('topics store', () => {
 				{ topicId: 't2', agentId: 'main', title: null, createdAt: 2000 },
 			],
 		});
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		await store.loadAllTopics();
@@ -97,8 +107,8 @@ describe('topics store', () => {
 
 		const conn1 = mockConn({ topics: [{ topicId: 't-main', agentId: 'main', title: 'Main topic', createdAt: 100 }] });
 		const conn2 = mockConn({ topics: [{ topicId: 't-b2', agentId: 'main', title: 'B2 topic', createdAt: 300 }] });
-		mockConnections.set('bot-1', conn1);
-		mockConnections.set('bot-2', conn2);
+		setConn('bot-1', conn1);
+		setConn('bot-2', conn2);
 
 		const store = useTopicsStore();
 		await store.loadAllTopics();
@@ -120,7 +130,7 @@ describe('topics store', () => {
 
 		// bot-1 已连接，bot-2 未连接
 		const conn1 = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'New', createdAt: 200 }] });
-		mockConnections.set('bot-1', conn1);
+		setConn('bot-1', conn1);
 		// bot-2 无连接
 
 		const store = useTopicsStore();
@@ -144,7 +154,7 @@ describe('topics store', () => {
 		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
 
 		const conn1 = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 }] });
-		mockConnections.set('bot-1', conn1);
+		setConn('bot-1', conn1);
 
 		const store = useTopicsStore();
 		// 预存已删除 bot 的 topics
@@ -169,12 +179,11 @@ describe('topics store', () => {
 
 		const connOk = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'OK', createdAt: 100 }] });
 		const connFail = {
-			state: 'connected',
 			request: vi.fn().mockRejectedValue(new Error('rpc error')),
 			on: vi.fn(), off: vi.fn(),
 		};
-		mockConnections.set('bot-ok', connOk);
-		mockConnections.set('bot-fail', connFail);
+		setConn('bot-ok', connOk);
+		setConn('bot-fail', connFail);
 
 		const store = useTopicsStore();
 		await store.loadAllTopics();
@@ -188,7 +197,7 @@ describe('topics store', () => {
 		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
 
 		const conn = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'T', createdAt: 100 }] });
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		await Promise.all([store.loadAllTopics(), store.loadAllTopics()]);
@@ -202,7 +211,7 @@ describe('topics store', () => {
 		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
 
 		const conn = mockConn({ topics: [] });
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		expect(store.loading).toBe(false);
@@ -218,11 +227,10 @@ describe('topics store', () => {
 
 	test('createTopic 成功创建并插入 byId', async () => {
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockResolvedValue({ topicId: 'new-uuid' }),
 			on: vi.fn(), off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		store.byId = toById([{ topicId: 'old', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }]);
@@ -243,7 +251,7 @@ describe('topics store', () => {
 	});
 
 	test('createTopic 连接状态非 connected 时抛出错误', async () => {
-		mockConnections.set('bot-1', { state: 'connecting', request: vi.fn(), on: vi.fn(), off: vi.fn() });
+		setConn('bot-1', { request: vi.fn(), on: vi.fn(), off: vi.fn() }, { dcReady: false });
 
 		const store = useTopicsStore();
 		await expect(store.createTopic('bot-1', 'main')).rejects.toThrow('Bot not connected');
@@ -253,11 +261,10 @@ describe('topics store', () => {
 
 	test('generateTitle 成功时更新本地 title', async () => {
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockResolvedValue({ title: '新标题' }),
 			on: vi.fn(), off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		store.byId = toById([{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-1' }]);
@@ -272,11 +279,10 @@ describe('topics store', () => {
 
 	test('generateTitle 失败时不影响本地数据', async () => {
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockRejectedValue(new Error('agent error')),
 			on: vi.fn(), off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		store.byId = toById([{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-1' }]);
@@ -299,11 +305,10 @@ describe('topics store', () => {
 
 	test('deleteTopic 成功删除并移除 byId 条目', async () => {
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockResolvedValue({ ok: true }),
 			on: vi.fn(), off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		store.byId = toById([
@@ -320,11 +325,10 @@ describe('topics store', () => {
 
 	test('deleteTopic topic 不存在时抛出错误', async () => {
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockResolvedValue({ ok: false }),
 			on: vi.fn(), off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		await expect(store.deleteTopic('bot-1', 'nonexistent')).rejects.toThrow('Topic not found');
@@ -339,11 +343,10 @@ describe('topics store', () => {
 
 	test('updateTopic 成功更新并同步本地缓存', async () => {
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockResolvedValue({ topic: { topicId: 't1', agentId: 'main', title: '新标题', createdAt: 100 } }),
 			on: vi.fn(), off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		store.byId = toById([{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }]);
@@ -356,11 +359,10 @@ describe('topics store', () => {
 
 	test('updateTopic 响应无 topic 时抛出错误', async () => {
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockResolvedValue({}),
 			on: vi.fn(), off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useTopicsStore();
 		store.byId = toById([{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }]);

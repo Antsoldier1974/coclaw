@@ -195,6 +195,7 @@ export default {
 				this.waitBindingLoop(data.code, data.waitToken, data.expiresAt);
 			}
 			catch (err) {
+				console.warn('[AddBotPage] startBinding failed:', err);
 				this.loadError = err?.response?.data?.message ?? err?.message ?? this.$t('bots.genFailed');
 				this.notify.error(this.loadError);
 			}
@@ -237,7 +238,6 @@ export default {
 						this.$router.push('/bots');
 						return;
 					}
-					if (result.code === 'BINDING_TIMEOUT') return;
 				}
 				catch (err) {
 					if (this.waitCancelled || !this.waitLoopRunning) return;

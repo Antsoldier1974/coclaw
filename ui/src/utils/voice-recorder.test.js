@@ -155,6 +155,44 @@ describe('VoiceRecorder', () => {
 		expect(statuses).toContain('FAILED');
 	});
 
+	test('start logs warning and triggers FAILED when WaveSurfer.create throws', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const err = new Error('device not found in system');
+		mockWsCreate.mockImplementationOnce(() => { throw err; });
+
+		const { VoiceRecorder } = await import('./voice-recorder.js');
+		const statuses = [];
+		const recorder = new VoiceRecorder({
+			container: document.createElement('div'),
+			onStatusChange: (s, d) => statuses.push({ s, d }),
+		});
+
+		await recorder.start();
+		expect(warnSpy).toHaveBeenCalledWith('[VoiceRecorder] start failed:', err);
+		expect(statuses.find(x => x.s === 'FAILED')).toBeTruthy();
+		warnSpy.mockRestore();
+	});
+
+	test('start logs warning on permission denied error from startRecording', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const err = new Error('permission denied by user dismissed');
+		mockStartRecording.mockRejectedValueOnce(err);
+
+		const { VoiceRecorder } = await import('./voice-recorder.js');
+		const statuses = [];
+		const recorder = new VoiceRecorder({
+			container: document.createElement('div'),
+			onStatusChange: (s, d) => statuses.push({ s, d }),
+		});
+
+		await recorder.start();
+		expect(warnSpy).toHaveBeenCalledWith('[VoiceRecorder] start failed:', err);
+		const failed = statuses.find(x => x.s === 'FAILED');
+		expect(failed).toBeTruthy();
+		expect(failed.d.errName).toBe('NotAllowedError');
+		warnSpy.mockRestore();
+	});
+
 	test('destroy cleans up wavesurfer and record', async () => {
 		const { VoiceRecorder } = await import('./voice-recorder.js');
 		const recorder = new VoiceRecorder({

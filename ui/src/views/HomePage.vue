@@ -17,6 +17,7 @@ export default {
 		return {
 			timer: null,
 			__resolved: false,
+			__unwatchFetched: null,
 		};
 	},
 	async mounted() {
@@ -25,7 +26,7 @@ export default {
 			this.$router.replace('/topics');
 			return;
 		}
-		// 桌面端：加载 bot 数据后决定跳转目标
+		// 桌面端：等待 bot 数据就绪后决定跳转目标
 		this.timer = setTimeout(() => this.fallback(), TIMEOUT_MS);
 		try {
 			await this.resolveDesktopRoute();
@@ -40,11 +41,15 @@ export default {
 			clearTimeout(this.timer);
 			this.timer = null;
 		}
+		if (this.__unwatchFetched) {
+			this.__unwatchFetched();
+			this.__unwatchFetched = null;
+		}
 	},
 	methods: {
 		async resolveDesktopRoute() {
 			const botsStore = useBotsStore();
-			await botsStore.loadBots();
+			await this.waitFetched(botsStore);
 			const bots = botsStore.items;
 
 			if (!bots.length) {
@@ -64,6 +69,23 @@ export default {
 			this.go({
 				name: 'chat',
 				params: { botId: String(onlineBot.id), agentId: defaultId },
+			});
+		},
+		/** 等待 SSE 快照到达（botsStore.fetched = true） */
+		waitFetched(botsStore) {
+			if (botsStore.fetched) return Promise.resolve();
+			return new Promise((resolve) => {
+				this.__unwatchFetched = this.$watch(
+					() => botsStore.fetched,
+					(val) => {
+						if (val) {
+							this.__unwatchFetched();
+							this.__unwatchFetched = null;
+							resolve();
+						}
+					},
+					{ immediate: true },
+				);
 			});
 		},
 		go(to) {

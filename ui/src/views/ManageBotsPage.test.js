@@ -11,16 +11,18 @@ vi.mock('../services/bots.api.js', () => ({
 	unbindBotByUser: vi.fn().mockResolvedValue({}),
 }));
 
+import { unbindBotByUser } from '../services/bots.api.js';
+
+const mockNotify = {
+	success: vi.fn(),
+	error: vi.fn(),
+	info: vi.fn(),
+	warning: vi.fn(),
+};
 vi.mock('../composables/use-notify.js', () => ({
-	useNotify: () => ({
-		success: vi.fn(),
-		error: vi.fn(),
-		info: vi.fn(),
-		warning: vi.fn(),
-	}),
+	useNotify: () => mockNotify,
 }));
 
-const mockLoadBots = vi.fn().mockResolvedValue(undefined);
 const mockLoadDashboard = vi.fn().mockResolvedValue(undefined);
 const mockGetDashboard = vi.fn().mockReturnValue(null);
 const mockClearDashboard = vi.fn();
@@ -30,10 +32,10 @@ vi.mock('../stores/bots.store.js', () => ({
 		get items() { return mockBots; },
 		get byId() {
 			const map = {};
-			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, transportMode: null, rtcState: null, rtcTransportInfo: null, connState: 'disconnected' };
+			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: 'idle', rtcTransportInfo: null };
 			return map;
 		},
-		loadBots: mockLoadBots,
+		fetched: true, // SSE 快照已到达
 	}),
 }));
 
@@ -109,7 +111,6 @@ describe('ManageBotsPage', () => {
 	beforeEach(() => {
 		mockBots = [];
 		mockGetDashboard.mockReturnValue(null);
-		mockLoadBots.mockResolvedValue(undefined);
 		mockLoadDashboard.mockResolvedValue(undefined);
 		vi.clearAllMocks();
 	});
@@ -158,12 +159,11 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.find('[data-testid="bot-99"]').exists()).toBe(true);
 	});
 
-	test('mounted 时调用 loadBots 和 loadDashboard', async () => {
+	test('mounted 时加载 dashboard', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		createWrapper();
 		await flushPromises();
 
-		expect(mockLoadBots).toHaveBeenCalledTimes(1);
 		expect(mockLoadDashboard).toHaveBeenCalledWith('1');
 	});
 
@@ -176,44 +176,44 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.text()).toContain('Preparing...');
 	});
 
-	test('app:foreground 时重新加载数据', async () => {
+	test('app:foreground 时重新加载 dashboard', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		mockLoadBots.mockClear();
+		mockLoadDashboard.mockClear();
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 		await flushPromises();
 
-		expect(mockLoadBots).toHaveBeenCalled();
+		expect(mockLoadDashboard).toHaveBeenCalled();
 		wrapper.unmount();
 	});
 
-	test('visibilitychange → visible 时重新加载数据', async () => {
+	test('visibilitychange → visible 时重新加载 dashboard', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		mockLoadBots.mockClear();
+		mockLoadDashboard.mockClear();
 		Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
 		document.dispatchEvent(new Event('visibilitychange'));
 		await flushPromises();
 
-		expect(mockLoadBots).toHaveBeenCalled();
+		expect(mockLoadDashboard).toHaveBeenCalled();
 		wrapper.unmount();
 	});
 
 	test('2s 内重复前台恢复应节流', async () => {
-		mockBots = [];
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		mockLoadBots.mockClear();
+		mockLoadDashboard.mockClear();
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 		await flushPromises();
 
-		expect(mockLoadBots).toHaveBeenCalledTimes(1);
+		expect(mockLoadDashboard).toHaveBeenCalledTimes(1);
 		wrapper.unmount();
 	});
 
@@ -223,11 +223,41 @@ describe('ManageBotsPage', () => {
 		await flushPromises();
 
 		wrapper.unmount();
-		mockLoadBots.mockClear();
+		mockLoadDashboard.mockClear();
 
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 		await flushPromises();
 
-		expect(mockLoadBots).not.toHaveBeenCalled();
+		expect(mockLoadDashboard).not.toHaveBeenCalled();
+	});
+
+	test('loadData 异常时 log warning 并 notify error', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		const err = new Error('dashboard boom');
+		mockLoadDashboard.mockImplementation(() => { throw err; });
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] loadData failed:', err);
+		expect(mockNotify.error).toHaveBeenCalledWith('dashboard boom');
+		warnSpy.mockRestore();
+	});
+
+	test('onUnbindByUser 异常时 log warning 并 notify error', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(null);
+		const err = new Error('unbind boom');
+		unbindBotByUser.mockRejectedValueOnce(err);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		await wrapper.vm.onUnbindByUser('1');
+
+		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] onUnbindByUser failed:', err);
+		expect(mockNotify.error).toHaveBeenCalled();
+		expect(wrapper.vm.unbindingId).toBe('');
+		warnSpy.mockRestore();
 	});
 });

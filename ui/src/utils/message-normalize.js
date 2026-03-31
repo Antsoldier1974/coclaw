@@ -12,7 +12,7 @@ function wrapOcMessages(flatMessages) {
 	if (!Array.isArray(flatMessages)) return [];
 	return flatMessages.map((msg, i) => ({
 		type: 'message',
-		id: `oc-${i}`,
+		id: msg.timestamp ? `oc-${msg.role}-${msg.timestamp}` : `oc-${i}`,
 		message: msg,
 	}));
 }

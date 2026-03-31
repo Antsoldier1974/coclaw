@@ -1,14 +1,35 @@
 import { mount } from '@vue/test-utils';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import TouchSpeakOverlay from './TouchSpeakOverlay.vue';
 
-vi.mock('../composables/use-notify.js', () => ({
-	useNotify: () => ({
+const {
+	mockNotify, mockWsDestroy, mockRecordDestroy, mockStartRecording, mockWsCreate,
+} = vi.hoisted(() => {
+	const mockWsDestroy = vi.fn();
+	const mockRecordDestroy = vi.fn();
+	const mockStartRecording = vi.fn().mockResolvedValue(undefined);
+	const mockWsCreate = vi.fn(() => ({
+		registerPlugin: vi.fn(() => ({
+			startRecording: mockStartRecording,
+			stopRecording: vi.fn(),
+			isRecording: vi.fn(() => false),
+			destroy: mockRecordDestroy,
+			once: vi.fn(),
+		})),
+		destroy: mockWsDestroy,
+	}));
+	const mockNotify = {
 		success: vi.fn(),
 		info: vi.fn(),
 		warning: vi.fn(),
 		error: vi.fn(),
-	}),
+	};
+	return { mockNotify, mockWsDestroy, mockRecordDestroy, mockStartRecording, mockWsCreate };
+});
+
+import TouchSpeakOverlay from './TouchSpeakOverlay.vue';
+
+vi.mock('../composables/use-notify.js', () => ({
+	useNotify: () => mockNotify,
 }));
 
 vi.mock('../utils/media-helper.js', () => ({
@@ -16,20 +37,8 @@ vi.mock('../utils/media-helper.js', () => ({
 	getPrefAudioType: vi.fn().mockReturnValue('audio/webm'),
 }));
 
-// mock wavesurfer 动态导入
 vi.mock('wavesurfer.js', () => ({
-	default: {
-		create: vi.fn(() => ({
-			registerPlugin: vi.fn(() => ({
-				startRecording: vi.fn().mockResolvedValue(undefined),
-				stopRecording: vi.fn(),
-				isRecording: vi.fn(() => false),
-				destroy: vi.fn(),
-				once: vi.fn(),
-			})),
-			destroy: vi.fn(),
-		})),
-	},
+	default: { create: mockWsCreate },
 }));
 
 vi.mock('wavesurfer.js/dist/plugins/record.esm.js', () => ({
@@ -150,5 +159,37 @@ describe('TouchSpeakOverlay', () => {
 		wrapper.vm.closeAborted();
 		expect(wrapper.emitted('close')[0][0]).toBeNull();
 		expect(wrapper.emitted('update:open')[0][0]).toBe(false);
+	});
+
+	test('startRecording 异常时 log warning 并 notify error', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const err = new Error('unknown audio error');
+		mockStartRecording.mockRejectedValueOnce(err);
+
+		const wrapper = createWrapper();
+		await wrapper.vm.$nextTick();
+		// 等待 startRecording 完成
+		await new Promise((r) => setTimeout(r, 10));
+		await wrapper.vm.$nextTick();
+
+		expect(warnSpy).toHaveBeenCalledWith('[TouchSpeakOverlay] startRecording failed:', err);
+		expect(mockNotify.error).toHaveBeenCalled();
+		warnSpy.mockRestore();
+	});
+
+	test('startRecording 异常且未录音时清理 wavesurfer 并 closeAborted', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const err = new Error('unknown audio error');
+		mockStartRecording.mockRejectedValueOnce(err);
+
+		const wrapper = createWrapper();
+		await wrapper.vm.$nextTick();
+		await new Promise((r) => setTimeout(r, 10));
+		await wrapper.vm.$nextTick();
+
+		// 不处于录音状态，应走 else 分支清理实例并 closeAborted
+		expect(wrapper.emitted('close')).toBeTruthy();
+		expect(mockWsDestroy).toHaveBeenCalled();
+		warnSpy.mockRestore();
 	});
 });

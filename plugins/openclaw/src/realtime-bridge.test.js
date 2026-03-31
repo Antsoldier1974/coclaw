@@ -8,6 +8,7 @@ import { RealtimeBridge, ensureAgentSession, gatewayAgentRpc, restartRealtimeBri
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
+import { remoteLog, __reset as resetRemoteLog, __buffer as remoteLogBuffer } from './remote-log.js';
 
 class FakeWebSocket {
 	static instances = [];
@@ -68,10 +69,33 @@ function noopLogger() {
 	return { warn() {}, info() {}, debug() {} };
 }
 
+/** 默认 preloadNdc mock：返回功能完整的 mock PeerConnection（WebRTC 可用但无 cleanup） */
+async function noopPreloadNdc() {
+	function MockPC() {
+		const pc = {
+			onicecandidate: null,
+			onconnectionstatechange: null,
+			ondatachannel: null,
+			connectionState: 'new',
+			setRemoteDescription: async (desc) => {
+				if (!desc?.sdp) throw new Error('Invalid SDP');
+			},
+			createAnswer: async () => ({ sdp: 'mock-sdp-answer' }),
+			setLocalDescription: async () => {},
+			addIceCandidate: async () => {},
+			close: async () => { pc.connectionState = 'closed'; },
+		};
+		return pc;
+	}
+	return { PeerConnection: MockPC, cleanup: null, impl: 'werift' };
+}
+
 function createBridge(overrides = {}) {
 	return new RealtimeBridge({
 		WebSocket: FakeWebSocket,
 		resolveGatewayAuthToken: () => '',
+		preloadNdc: noopPreloadNdc,
+		gatewayReadyTimeoutMs: 50,
 		...overrides,
 	});
 }
@@ -274,7 +298,7 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		// rpc.req when gateway offline -> GATEWAY_OFFLINE
 		gateway.readyState = 0;
 		server.emit('message', { data: JSON.stringify({ type: 'rpc.req', id: '3', method: 'm3' }) });
-		await new Promise((r) => setTimeout(r, 1600));
+		await new Promise((r) => setTimeout(r, 100));
 		assert.equal(server.sent.some((x) => String(x).includes('GATEWAY_OFFLINE')), true);
 
 		// bot.unbound branch (no botId in payload — clears config)
@@ -285,7 +309,7 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		const afterUnbound = await readConfig();
 		assert.equal(afterUnbound.token, undefined);
 
-		// close with 4003 should clear token
+		// close with 4003 should clear token and log auth-close
 		await writeConfig({ token: 't2' });
 		server.emit('close', { code: 4003, reason: 'revoked' });
 		for (let i = 0; i < 10; i += 1) {
@@ -293,10 +317,13 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		}
 		const afterClose = await readConfig();
 		assert.equal(afterClose.token, undefined);
+		assert.ok(logs.some((x) => String(x).includes('auth-close') && String(x).includes('4003')), 'should log auth-close event');
 
-		// gateway close/error handlers
-		gateway.emit('error', {});
-		gateway.emit('close', {});
+		// gateway close/error handlers — 应输出日志
+		gateway.emit('error', { message: 'gw-err' });
+		assert.ok(logs.some((x) => String(x).includes('gateway ws error')), 'should log gateway ws error');
+		gateway.emit('close', { code: 1006, reason: 'abnormal' });
+		assert.ok(logs.some((x) => String(x).includes('gateway ws closed')), 'should log gateway ws close');
 	}
 	finally {
 		await bridge.stop();
@@ -622,7 +649,7 @@ test('RealtimeBridge should handle gateway connect failure', async () => {
 	}
 });
 
-test('RealtimeBridge should handle gateway connect send failure', async () => {
+test('RealtimeBridge should handle gateway connect send failure and log warning', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
@@ -633,10 +660,12 @@ test('RealtimeBridge should handle gateway connect send failure', async () => {
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
 	const bridge = createBridge();
 
 	try {
-		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		await bridge.start({ logger, pluginConfig: {} });
 		const server = FakeWebSocket.instances[0];
 		server.readyState = 1;
 		server.emit('open', {});
@@ -648,6 +677,8 @@ test('RealtimeBridge should handle gateway connect send failure', async () => {
 		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge' }) });
 		// gatewayConnectReqId 应被清空
 		assert.equal(bridge.gatewayConnectReqId, null);
+		// 应输出 warn 日志
+		assert.ok(logs.some((x) => String(x).includes('gateway connect request failed')), 'should log connect request failure');
 		gateway.throwOnSend = false;
 	}
 	finally {
@@ -1410,12 +1441,14 @@ test('connect should gracefully handle device identity load failure', async () =
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
 	const bridge = createBridge({
 		loadDeviceIdentity: () => { throw new Error('identity load boom'); },
 	});
 
 	try {
-		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		await bridge.start({ logger, pluginConfig: {} });
 		const server = FakeWebSocket.instances[0];
 		server.readyState = 1;
 		server.emit('open', {});
@@ -1428,6 +1461,8 @@ test('connect should gracefully handle device identity load failure', async () =
 		assert.equal(gateway.sent.length, 0, 'no connect request should be sent');
 		// gatewayConnectReqId 被清空
 		assert.equal(bridge.gatewayConnectReqId, null, 'gatewayConnectReqId should be null after failure');
+		// 应输出 warn 日志
+		assert.ok(logs.some((x) => String(x).includes('gateway connect request failed') && String(x).includes('identity load boom')), 'should log connect request failure with cause');
 		// bridge 不崩溃，仍可正常 stop
 	}
 	finally {
@@ -2084,8 +2119,8 @@ test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequest
 		const reqPayload = { type: 'req', id: 'ui-dc-1', method: 'agent', params: { text: 'hi' } };
 		bridge.webrtcPeer.__onRequest(reqPayload, 'c_req1');
 
-		// 等待 __waitGatewayReady 超时 + 处理完成
-		await new Promise((r) => setTimeout(r, 2000));
+		// 等待 __waitGatewayReady 超时（已注入 50ms）+ 处理完成
+		await new Promise((r) => setTimeout(r, 100));
 
 		// gateway 未连接，应产生 GATEWAY_OFFLINE 错误响应 → __forwardToServer
 		const offlineMsg = server.sent.find((s) => {
@@ -2308,5 +2343,258 @@ test('RealtimeBridge cleanup should reset __webrtcPeerReady', async () => {
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);
+	}
+});
+
+// --- remote-log sender 集成测试 ---
+
+test('RealtimeBridge should wire remote-log sender on open and flush buffered logs', async () => {
+	const prevHome = saveHomedir();
+	FakeWebSocket.instances = [];
+	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
+	const bridge = createBridge();
+	try {
+		resetRemoteLog();
+		// 在连接前缓冲日志
+		remoteLog('before-connect');
+
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		// flush 是异步的
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 应通过 server WS 发送缓冲的日志
+		const logMsg = server.sent.find((s) => {
+			try { return JSON.parse(s).type === 'log'; } catch { return false; }
+		});
+		assert.ok(logMsg, 'should have sent a log message via server WS');
+		const parsed = JSON.parse(logMsg);
+		assert.ok(parsed.logs.some((l) => l.text === 'before-connect'));
+		assert.equal(remoteLogBuffer.length, 0, 'buffer should be drained after flush');
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should clear remote-log sender on close', async () => {
+	const prevHome = saveHomedir();
+	FakeWebSocket.instances = [];
+	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
+	const bridge = createBridge();
+	try {
+		resetRemoteLog();
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		await new Promise((r) => setTimeout(r, 10));
+
+		// 断开连接
+		server.emit('close', { code: 1006, reason: 'abnormal' });
+		await new Promise((r) => setTimeout(r, 10));
+
+		// 断开后缓冲的日志不应被发送
+		// close 事件触发 ws.disconnected + ws.reconnecting 两条 remoteLog（sender 已清除，留在 buffer）
+		const bufferedBeforeManual = remoteLogBuffer.length;
+		const sentBefore = server.sent.length;
+		remoteLog('after-close');
+		await new Promise((r) => setTimeout(r, 10));
+		assert.equal(server.sent.length, sentBefore, 'should not send after close');
+		assert.equal(remoteLogBuffer.length, bufferedBeforeManual + 1, 'manual log should remain in buffer');
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should clear remote-log sender on stop', async () => {
+	const prevHome = saveHomedir();
+	FakeWebSocket.instances = [];
+	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
+	const bridge = createBridge();
+	try {
+		resetRemoteLog();
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		await new Promise((r) => setTimeout(r, 10));
+
+		await bridge.stop();
+
+		// stop 触发 gateway ws close 等事件，产生的 remoteLog 留在 buffer（sender 已清除）
+		const bufferedBeforeManual = remoteLogBuffer.length;
+		const sentBefore = server.sent.length;
+		remoteLog('after-stop');
+		await new Promise((r) => setTimeout(r, 10));
+		assert.equal(server.sent.length, sentBefore, 'should not send after stop');
+		assert.equal(remoteLogBuffer.length, bufferedBeforeManual + 1, 'manual log should remain in buffer');
+	} finally {
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+// --- ndc preloader 集成测试 ---
+
+test('RealtimeBridge start() should await ndc preload before connecting', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	let preloadCalled = false;
+	const bridge = createBridge({
+		preloadNdc: async () => {
+			preloadCalled = true;
+			return { PeerConnection: class NdcPC {}, cleanup: () => {}, impl: 'ndc' };
+		},
+	});
+
+	try {
+		await bridge.start({ logger: noopLogger() });
+		assert.ok(preloadCalled, 'preloadNdc should be called during start');
+		// start() 完成后结果已就绪（不再是 promise）
+		assert.ok(bridge.__ndcPreloadResult);
+		assert.equal(bridge.__ndcPreloadResult.impl, 'ndc');
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge stop() should call ndc cleanup when loaded', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	let cleanupCalled = false;
+	const bridge = createBridge({
+		preloadNdc: async () => ({
+			PeerConnection: class NdcPC {},
+			cleanup: () => { cleanupCalled = true; },
+			impl: 'ndc',
+		}),
+	});
+
+	try {
+		await bridge.start({ logger: noopLogger() });
+		// start() 已 await preload 并缓存 cleanup
+		await bridge.stop();
+		assert.ok(cleanupCalled, 'cleanup should be called on stop');
+		assert.equal(bridge.__ndcCleanup, null);
+		assert.equal(bridge.__ndcPreloadResult, null);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge stop() should not crash when cleanup throws', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	const bridge = createBridge({
+		preloadNdc: async () => ({
+			PeerConnection: class NdcPC {},
+			cleanup: () => { throw new Error('cleanup boom'); },
+			impl: 'ndc',
+		}),
+	});
+
+	try {
+		await bridge.start({ logger: noopLogger() });
+		// stop 不应抛出（cleanup 异常被内部 catch）
+		await bridge.stop();
+		assert.equal(bridge.__ndcCleanup, null);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge stop() should skip cleanup when werift fallback (no cleanup)', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	const bridge = createBridge({
+		preloadNdc: async () => ({
+			PeerConnection: class WeriftPC {},
+			cleanup: null,
+			impl: 'werift',
+		}),
+	});
+
+	try {
+		await bridge.start({ logger: noopLogger() });
+		// cleanup 为 null，stop 不应有问题
+		await bridge.stop();
+		assert.equal(bridge.__ndcCleanup, null);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge start() should handle preloadNdc rejection gracefully', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	const warnings = [];
+	const logger = {
+		...noopLogger(),
+		warn: (msg) => warnings.push(msg),
+	};
+	const bridge = createBridge({
+		preloadNdc: async () => { throw new Error('preload boom'); },
+	});
+
+	try {
+		await bridge.start({ logger });
+		// preload 失败被 catch 兜底，bridge 仍启动但 WebRTC 不可用
+		assert.equal(bridge.__ndcPreloadResult.impl, 'none');
+		assert.equal(bridge.__ndcPreloadResult.PeerConnection, null);
+		assert.ok(warnings.some((w) => w.includes('preload boom')));
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge start() awaits slow preload before connecting', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	let preloadResolved = false;
+	const bridge = createBridge({
+		preloadNdc: async () => {
+			await new Promise((r) => setTimeout(r, 50));
+			preloadResolved = true;
+			return { PeerConnection: class NdcPC {}, cleanup: () => {}, impl: 'ndc' };
+		},
+	});
+
+	try {
+		// start() 完成时 preload 一定已经完成（因为 await）
+		await bridge.start({ logger: noopLogger() });
+		assert.ok(preloadResolved, 'preload should complete before start returns');
+		assert.equal(bridge.__ndcPreloadResult.impl, 'ndc');
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge start() aborts if stop() called during preload (race protection)', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	let cleanupCalled = false;
+	let resolvePreload;
+	const bridge = createBridge({
+		preloadNdc: () => new Promise((resolve) => { resolvePreload = resolve; }),
+	});
+
+	try {
+		const startPromise = bridge.start({ logger: noopLogger() });
+		// preload 仍在进行中，此时调用 stop
+		bridge.started = false; // 模拟 stop 已执行
+		// resolve preload
+		resolvePreload({
+			PeerConnection: class NdcPC {},
+			cleanup: () => { cleanupCalled = true; },
+			impl: 'ndc',
+		});
+		await startPromise;
+		// start 应检测到 started=false，立即返回并释放 cleanup
+		assert.ok(cleanupCalled, 'cleanup should be called when start detects stopped state');
+		assert.equal(bridge.__ndcPreloadResult, null, 'should not assign result after stop');
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
 	}
 });

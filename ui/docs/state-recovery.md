@@ -19,8 +19,7 @@
 ┌─────────────────────────────────────────────────┐
 │ 连接层                                            │
 │  BotConnection (WS + RTC)                        │
-│  SSE (bot 状态推送)                               │
-│  Polling (SSE 降级方案)                            │
+│  SSE (bot 快照 + 状态推送 + 心跳超时检测)           │
 └──────────┬──────────────────────────────────────┘
            │ 连接状态变化 → 触发数据恢复
            ▼
@@ -83,7 +82,7 @@
 - **行为**：
   - ICE restart（最多 2 次）→ `createOffer({ iceRestart: true })`
   - Full rebuild（最多 3 次）→ 销毁旧 PeerConnection，重新协商
-  - 全部用尽 → `state = 'failed'`，永久降级到 WS
+  - 全部用尽 → `state = 'failed'`，`clearRtc()` reject 所有挂起请求（`RTC_LOST`），等下次 WS 重连重试
 - **场景**：Web + Capacitor
 
 ### 2.5 RTC 大 payload 处理（DataChannel 分片）
@@ -91,7 +90,7 @@
 - **文件**：`services/webrtc-connection.js`、`services/dc-chunking.js`
 - **机制**：DataChannel 通过分片（chunking）传输大 payload，无需 fallback 到 WS
 - **流控**：发送端 high water mark 1MB / low water mark 256KB，超限时暂停发送，`bufferedamountlow` 恢复
-- **降级**：当 `transportMode === 'rtc'` 但 DataChannel 不可用（`isReady=false`）时，`request()` 整体降级到 WS（永久切换 `__transportMode`）
+- **DC 不可用**：`request()` 直接 reject `DC_NOT_READY`，无 WS fallback
 - **场景**：Web + Capacitor
 
 ### 2.6 SSE 恢复
@@ -99,25 +98,16 @@
 - **文件**：`composables/use-bot-status-sse.js`
 - **恢复路径**：
   - **浏览器原生重连**：`EventSource` 断开后自动重连
-  - **前台恢复强制重建**：`app:foreground` → `stop()` + `start()`，销毁旧 EventSource 并新建
-  - 两种路径的 `onopen` 都会调用 `botsStore.loadBots()` 全量同步
+  - **前台恢复强制重建**：`app:foreground` / `network:online` → `restart()`，销毁旧 EventSource 并新建
+  - 两种路径的 `onopen` 后 server 推送 `bot.snapshot` 全量快照，UI 通过 `applySnapshot()` 同步
+- **SSE 重建不重置 botsStore**：`restart()` 仅销毁/重建 EventSource，不清空 `botsStore.byId`。旧数据保留直到新快照到达后被 `applySnapshot()` 全量替换。这避免了列表闪烁（清空→重填），也不影响正确性——新快照会修复所有不一致
 - **场景**：Web + Capacitor
 
-### 2.7 SSE 服务端心跳
+### 2.7 SSE 心跳与超时检测
 
-- **文件**：`server/src/routes/bot.route.js`
-- **行为**：服务端每 30s 发送 `:heartbeat\n\n` 注释帧，保持 TCP 连接穿越 NAT，防止静默断开
-- **说明**：`EventSource` 静默消费注释帧，UI 无需处理
-- **场景**：Web + Capacitor（Server 侧）
-
-### 2.8 Polling 恢复
-
-- **文件**：`composables/use-bot-status-poll.js`
-- **角色**：SSE 降级方案，当 SSE 未连通时每 30s 轮询 `loadBots()`
-- **恢复路径**：
-  - `visibilitychange`（visible）→ `resume()`
-  - `app:foreground` → `resume()`
-  - `resume()` 若 SSE 未连通则立即 `loadBots()`，然后恢复定时轮询
+- **文件**：`server/src/routes/bot.route.js`（Server）、`composables/use-bot-status-sse.js`（UI）
+- **Server**：每 30s 发送 `data: {"event":"heartbeat"}\n\n` 应用层心跳
+- **UI**：收到任何 SSE 消息（含心跳）重置 65s 超时计时器；超时未收到数据则自动 `restart()`
 - **场景**：Web + Capacitor
 
 ---
@@ -128,7 +118,7 @@
 
 - **文件**：`stores/bots.store.js`（`__onBotConnected`）
 - **触发**：bot WS 重连成功且已初始化过（非首次），且断连时长 ≥ 5s（`BRIEF_DISCONNECT_MS`）
-- **行为**：重新 `loadAgents()`、`loadAllSessions()`、`loadAllTopics()`
+- **行为**：重新 `loadAgents()`、`loadAllSessions()`、`loadAllTopics()`（bot 列表由 SSE 快照维护）
 - **短暂抖动（< 5s）**：跳过刷新，避免无意义开销
 - **场景**：Web + Capacitor
 
@@ -159,18 +149,21 @@
 - **意义**：覆盖"WS 未断连的短暂后台"场景（connReady 无状态转换，watcher 不触发）
 - **场景**：Web + Capacitor
 
-### 3.5 SSE onopen 全量同步
+### 3.5 SSE 快照全量同步
 
-- **文件**：`composables/use-bot-status-sse.js`
-- **触发**：SSE 连接/重连成功（`onopen`）
-- **行为**：`botsStore.loadBots()` 全量同步 bot 列表（在线状态、名称等）
+- **文件**：`composables/use-bot-status-sse.js`、`stores/bots.store.js`（`applySnapshot`）
+- **触发**：SSE 连接/重连成功后，server 主动推送 `bot.snapshot` 事件
+- **行为**：`botsStore.applySnapshot(items)` 全量更新 bot 列表（同步连接、清理已移除 bot 的 RTC/sessions/agentRuns）
+- **SSE 是 bot 列表的唯一数据源**：无 HTTP 回退路径。SSE 与 HTTP 端点请求同一台 server、同一数据库，独立 HTTP 回退无额外容错价值
+- **`fetched` 状态语义**：`applySnapshot` 设置 `fetched = true`，标记"bot 列表数据就绪"。在单次登录会话内 `fetched` 一旦为 `true` 不会再变回 `false`（SSE 重建只会触发新的 `applySnapshot` 覆盖数据，不会重置 `fetched`）。仅 logout 时 `botsStore.$reset()` 恢复初始状态
+- **竞态保护**：server 端先 `await sendSnapshot()` 再 `registerSseClient()`，确保增量事件不会在快照之前到达客户端
 - **场景**：Web + Capacitor
 
 ### 3.6 Dashboard / ManageBots 前台恢复
 
 - **文件**：`views/AdminDashboardPage.vue`、`views/ManageBotsPage.vue`
 - **触发**：`visibilitychange`（visible）或 `app:foreground`，2s 节流去重
-- **行为**：重新调用 `loadData()`，刷新 dashboard 统计数据和 bot 管理页面
+- **行为**：重新调用 `loadData()`，刷新 dashboard 统计数据
 - **意义**：Dashboard 数据不像 ChatPage 那样有 connReady watcher 驱动，需要显式前台恢复
 - **场景**：Web + Capacitor
 
@@ -326,7 +319,7 @@
 
 - **文件**：`utils/capacitor-app.js`（`setupAppStateChange`）
 - **行为**：将 Capacitor 原生 `appStateChange({ isActive })` 转义为标准 DOM 自定义事件 `app:foreground` / `app:background`
-- **消费者**：BotConnection、SSE、Polling、ChatPage、AdminDashboardPage、ManageBotsPage、DraftStore、Router、AuthedLayout
+- **消费者**：BotConnection、SSE、ChatPage、AdminDashboardPage、ManageBotsPage、DraftStore、Router、AuthedLayout
 - 消费者无需依赖 Capacitor SDK，只需监听标准 DOM 事件
 
 ### 7.x 网络变化桥接（network:online）
@@ -335,7 +328,7 @@
 - **机制**：
   - **Capacitor**：`@capacitor/network` 的 `networkStatusChange` → 当 `connected === true` 时派发 `network:online` DOM 事件
   - **Web**：浏览器原生 `online` 事件 → 同样桥接为 `network:online` DOM 事件
-- **消费者**：BotConnection（即时 probe/重连）、SSE（restart）、Polling（resume）
+- **消费者**：BotConnection（即时 probe/重连）、SSE（restart）
 - **效果**：WiFi↔蜂窝切换或断网恢复后，无需等待心跳超时（~90s），可立即检测并恢复连接
 - **去重**：BotConnection 的 `__handleForegroundResume` 已有 500ms 节流，`network:online` + `app:foreground` 同时到达时自动去重
 
@@ -370,7 +363,7 @@
 |----|------|------|---------|------|
 | UI → Server WS | `{ type: "ping" }` | 25s | 2 × 45s miss → close | `bot-connection.js` |
 | UI → Server WS | 前台 probe | 即时 | 2.5s 无响应 → forceReconnect | `bot-connection.js` |
-| Server → UI SSE | `:heartbeat\n\n` | 30s | N/A（仅保活 NAT） | `bot.route.js` |
+| Server → UI SSE | `data: {"event":"heartbeat"}` | 30s | UI 65s 无数据 → restart | `bot.route.js` / `use-bot-status-sse.js` |
 | Plugin → Server WS | `{ type: "ping" }` | 25s | 4 × 45s miss → close | `realtime-bridge.js` |
 | Server → Bot WS | `ws.ping()` 协议级 | 45s | 4 miss → terminate | `bot-ws-hub.js` |
 

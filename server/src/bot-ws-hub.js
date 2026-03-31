@@ -4,6 +4,7 @@ import { WebSocketServer } from 'ws';
 
 import { findBotById, findBotByTokenHash, updateBotName } from './repos/bot.repo.js';
 import { genTurnCreds } from './routes/turn.route.js';
+import { routeToUi, removeByBotId } from './rtc-signal-router.js';
 
 const botSockets = new Map();
 const uiSockets = new Map();
@@ -19,6 +20,17 @@ let botRpcSeq = 1;
 export const botStatusEmitter = new EventEmitter();
 
 const WS_VERBOSE = process.env.COCLAW_WS_DEBUG === '1';
+
+/** 毫秒时间戳 → 本地时区 HH:mm:ss.SSS */
+function fmtLocalTime(ts) {
+	const d = new Date(ts);
+	if (Number.isNaN(d.getTime())) return '??:??:??.???';
+	const hh = String(d.getHours()).padStart(2, '0');
+	const mm = String(d.getMinutes()).padStart(2, '0');
+	const ss = String(d.getSeconds()).padStart(2, '0');
+	const ms = String(d.getMilliseconds()).padStart(3, '0');
+	return `${hh}:${mm}:${ss}.${ms}`;
+}
 
 function wsLogInfo(message) {
 	console.info(`[coclaw/ws] ${message}`);
@@ -152,7 +164,8 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 	try {
 		rpcRes = await requestBotRpc(key, 'agent.identity.get', {}, timeoutMs);
 	}
-	catch {
+	catch (err) {
+		wsLogDebug(`refreshBotName rpc failed botId=${key}: ${err.message}`);
 		return undefined;
 	}
 	if (!rpcRes || rpcRes.ok !== true) {
@@ -166,7 +179,8 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 	try {
 		bot = await findBotById(BigInt(key));
 	}
-	catch {
+	catch (err) {
+		wsLogWarn(`refreshBotName findBot failed botId=${key}: ${err.message}`);
 		return latestName;
 	}
 	if (!bot) {
@@ -174,7 +188,9 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 	}
 	const currentName = bot.name ?? null;
 	if (currentName !== latestName) {
-		await updateBotName(bot.id, latestName).catch(() => {});
+		await updateBotName(bot.id, latestName).catch((err) => {
+			wsLogWarn(`updateBotName failed botId=${key}: ${err.message}`);
+		});
 		botStatusEmitter.emit('nameUpdated', { botId: key, name: latestName });
 	}
 	return latestName;
@@ -259,7 +275,9 @@ function broadcastToUi(botId, payload) {
 		try {
 			ws.send(text);
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`broadcastToUi send failed botId=${botId}: ${err.message}`);
+		}
 	}
 }
 
@@ -273,7 +291,9 @@ function forwardToBot(botId, payload) {
 		try {
 			ws.send(text);
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`forwardToBot send failed botId=${botId}: ${err.message}`);
+		}
 	}
 	return true;
 }
@@ -305,8 +325,28 @@ function onBotMessage(botId, ws, raw) {
 		return;
 	}
 
+	// 远程日志：plugin 推送诊断信息，透传输出
+	if (payload.type === 'log') {
+		const logs = payload.logs;
+		if (Array.isArray(logs)) {
+			for (const entry of logs) {
+				if (entry && typeof entry === 'object' && typeof entry.text === 'string') {
+					const time = typeof entry.ts === 'number' ? fmtLocalTime(entry.ts) : '??:??:??.???';
+					console.info(`[remote][plugin][bot:${botId}] ${time} | ${entry.text}`);
+				}
+			}
+		}
+		return;
+	}
+
 	// WebRTC 信令：Plugin → 定向投递到指定 UI socket
 	if (payload.type === 'rtc:answer' || payload.type === 'rtc:ice' || payload.type === 'rtc:closed') {
+		// 优先通过新信令路由表投递
+		if (routeToUi(payload.toConnId, payload)) {
+			rtcLogDebug(`${payload.type} routed via signal-router connId=${payload.toConnId}`);
+			return;
+		}
+		// 旧 per-bot WS fallback
 		const target = findUiSocketByConnId(botId, payload.toConnId);
 		if (target) {
 			try { target.send(JSON.stringify(payload)); } catch {}
@@ -342,11 +382,14 @@ function onBotMessage(botId, ws, raw) {
 	}
 
 	if (payload.type === 'bot.unbound') {
+		wsLogInfo(`bot.unbound received botId=${botId}`);
 		broadcastToUi(botId, payload);
 		try {
 			ws.close(4001, 'bot_unbound');
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`bot.unbound ws.close failed botId=${botId}: ${err.message}`);
+		}
 	}
 }
 
@@ -582,7 +625,8 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 				});
 			});
 		}
-		catch {
+		catch (err) {
+			wsLogWarn(`ws upgrade error: ${err.message}`);
 			socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
 			socket.destroy();
 		}
@@ -615,10 +659,13 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 		return;
 	}
 	const key = String(botId);
+	// 清理信令路由表中该 bot 的所有 connId
+	removeByBotId(key);
 	// 清理可能残留的 grace period timer（网络断开后管理员解绑的场景）
 	if (pendingOffline.has(key)) {
 		clearTimeout(pendingOffline.get(key));
 		pendingOffline.delete(key);
+		wsLogInfo(`grace period cancelled by admin disconnect botId=${key}`);
 	}
 	const set = botSockets.get(key);
 	if (!set || set.size === 0) {
@@ -638,13 +685,19 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 		try {
 			ws.send(JSON.stringify(payload));
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`notifyAndDisconnectBot send failed botId=${key}: ${err.message}`);
+		}
 		try {
 			ws.close(closeCode, reason);
 		}
-		catch {}
+		catch (err) {
+			wsLogDebug(`notifyAndDisconnectBot close failed botId=${key}: ${err.message}`);
+		}
 	}
 }
+
+export { forwardToBot, fmtLocalTime };
 
 // 测试辅助导出（仅用于单元测试访问内部状态）
 export const __test = { uiSockets, botSockets, pendingOffline, BOT_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId };

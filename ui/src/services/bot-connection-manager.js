@@ -1,8 +1,10 @@
 /**
  * BotConnection 实例管理器（全局单例）
- * 管理所有 per-bot 持久 WS 连接的生命周期
+ * 管理所有 per-bot DC 连接实例的生命周期。
+ * WS 信令已迁移至 SignalingConnection（per-tab 单例）。
  */
 import { BotConnection } from './bot-connection.js';
+import { useSignalingConnection } from './signaling-connection.js';
 
 let instance = null;
 
@@ -13,19 +15,17 @@ class BotConnectionManager {
 	}
 
 	/**
-	 * 为指定 bot 建立连接（幂等：已存在则返回现有实例）
+	 * 为指定 bot 创建连接实例（幂等：已存在则返回现有实例）
 	 * @param {string} botId
-	 * @param {object} [options] - 传递给 BotConnection 构造函数
 	 * @returns {BotConnection}
 	 */
-	connect(botId, options) {
+	connect(botId) {
 		const key = String(botId);
 		const existing = this.__connections.get(key);
 		if (existing) return existing;
 		console.debug('[BotConnMgr] connect botId=%s', key);
-		const conn = new BotConnection(key, options);
+		const conn = new BotConnection(key);
 		this.__connections.set(key, conn);
-		conn.connect();
 		return conn;
 	}
 
@@ -81,13 +81,14 @@ class BotConnectionManager {
 	}
 
 	/**
-	 * 获取所有连接的状态
+	 * 获取所有连接的状态（统一返回信令 WS 的全局状态）
 	 * @returns {Object<string, string>}
 	 */
 	getStates() {
+		const sigState = useSignalingConnection().state;
 		const states = {};
-		for (const [key, conn] of this.__connections) {
-			states[key] = conn.state;
+		for (const key of this.__connections.keys()) {
+			states[key] = sigState;
 		}
 		return states;
 	}

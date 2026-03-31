@@ -247,7 +247,7 @@ export default {
 		agentId() { return this.$route.params.agentId; },
 		connReady() {
 			const bot = this.botsStore.byId[this.botId];
-			return bot?.connState === 'connected';
+			return !!bot?.dcReady;
 		},
 		pageTitle() {
 			const display = this.agentsStore.getAgentDisplay(this.botId, this.agentId);
@@ -306,6 +306,7 @@ export default {
 		},
 
 		async loadDir() {
+			if (this.loading) return;
 			const botConn = useBotConnections().get(this.botId);
 			if (!botConn) return; // connReady watcher 会在连接就绪后重新触发
 			const gen = ++this.__loadGen;

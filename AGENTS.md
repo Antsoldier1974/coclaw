@@ -118,7 +118,7 @@ General Instructions
 - 每次任务先明确影响范围（`server/ui/plugin`）再动手
 - 遵循最小变更原则：非需求要求下，不进行大范围重构/重命名/目录搬迁
 - 涉及跨模块改动（`ui <-> server <-> plugin`）时，先更新 `docs` 中的接口/协议说明，再改实现
-- 代码改动后必须先通过静态检查，再进行测试与覆盖率检查：`pnpm check` → `pnpm test` → `pnpm coverage`（或直接 `pnpm verify`）
+- 代码改动后必须通过验证：`pnpm check` → `pnpm test`
 - 改动应同步文档（尤其 `docs/` 下的计划、决策、接口说明）
 - 不在本阶段推进 `admin` 实质开发，除非明确指令
 
@@ -156,8 +156,7 @@ General Instructions
 - 仅在以下条件同时满足时允许 commit：
   1) 变更范围清晰且可回滚
   2) `pnpm check` 通过
-  3) `pnpm test` 通过
-  4) 涉及测试覆盖范围的改动需通过 `pnpm coverage`（或在变更说明记录例外原因）
+  3) `pnpm test` 通过（含覆盖率检查；若暂无法达标需在变更说明记录例外原因）
 - 每次 commit 保持单一主题，避免将无关改动混在一起
 - commit message 使用祈使句并包含范围（建议：`feat(server): ...` / `fix(ui): ...` / `refactor(tunnel): ...` / `test(...): ...` / `docs(...): ...`）
 - 禁止提交：临时调试代码、无关格式化噪音、敏感信息、无意义大文件
@@ -174,10 +173,8 @@ General Instructions
 
 ```bash
 pnpm install
-pnpm check
-pnpm test
-pnpm coverage
-pnpm verify
+pnpm check              # 静态检查（lint + typecheck）
+pnpm test               # 测试 + 覆盖率
 pnpm changeset          # 声明变更
 pnpm changeset:status   # 查看待发布变更
 pnpm changeset:version  # 消费 changeset，bump 版本

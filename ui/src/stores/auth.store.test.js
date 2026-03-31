@@ -34,6 +34,11 @@ vi.mock('../services/bot-connection-manager.js', () => ({
 	__resetBotConnections: vi.fn(),
 }));
 
+const mockSigDisconnect = vi.fn();
+vi.mock('../services/signaling-connection.js', () => ({
+	useSignalingConnection: () => ({ disconnect: mockSigDisconnect, state: 'connected' }),
+}));
+
 vi.mock('../services/bots.api.js', () => ({
 	listBots: vi.fn(() => Promise.resolve([])),
 }));
@@ -51,6 +56,8 @@ import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
+import { useAgentsStore } from './agents.store.js';
+import { useTopicsStore } from './topics.store.js';
 
 describe('auth store', () => {
 	beforeEach(() => {
@@ -266,7 +273,7 @@ describe('auth store', () => {
 		expect(syncThemeModeFromSettings).toHaveBeenCalledWith(null);
 	});
 
-	test('logout should reset sessions and bots stores', async () => {
+	test('logout should reset all business stores', async () => {
 		logout.mockResolvedValue();
 		const store = useAuthStore();
 		store.user = { id: '3' };
@@ -274,16 +281,22 @@ describe('auth store', () => {
 		// 预填充业务 store
 		const sessionsStore = useSessionsStore();
 		const botsStore = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const topicsStore = useTopicsStore();
 		sessionsStore.items = [{ sessionId: 's1' }];
 		botsStore.items = [{ id: 'b1' }];
+		agentsStore.byBot = { b1: { agents: [{ id: 'a1' }], defaultId: 'main', loading: false, fetched: true } };
+		topicsStore.byId = { t1: { topicId: 't1', agentId: 'main', title: 'test', createdAt: 1, botId: 'b1' } };
 
 		await store.logout();
 
 		expect(sessionsStore.items).toEqual([]);
 		expect(botsStore.items).toEqual([]);
+		expect(agentsStore.byBot).toEqual({});
+		expect(topicsStore.byId).toEqual({});
 	});
 
-	test('logout should disconnect all bot connections', async () => {
+	test('logout should disconnect all bot connections and signaling WS', async () => {
 		logout.mockResolvedValue();
 		const store = useAuthStore();
 		store.user = { id: '3' };
@@ -291,6 +304,7 @@ describe('auth store', () => {
 		await store.logout();
 
 		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
 	});
 
 	test('login 成功后调用 draftStore.onUserChanged', async () => {
@@ -389,7 +403,8 @@ describe('auth store', () => {
 		expect(store.user).toEqual({});
 	});
 
-	test('updateProfile should expose error message on failure', async () => {
+	test('updateProfile should expose error message on failure and log warning', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		patchCurrentUserProfile.mockRejectedValue({
 			response: {
 				data: {
@@ -404,6 +419,8 @@ describe('auth store', () => {
 		});
 
 		expect(store.errorMessage).toBe('failed-profile');
+		expect(warnSpy).toHaveBeenCalledWith('[auth] updateProfile failed:', 'failed-profile');
+		warnSpy.mockRestore();
 	});
 
 	test('updateProfile should fallback to default message when error is empty', async () => {
@@ -434,7 +451,8 @@ describe('auth store', () => {
 		});
 	});
 
-	test('changePassword should return false and set error on failure', async () => {
+	test('changePassword should return false and set error on failure and log warning', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		changePassword.mockRejectedValue({
 			response: {
 				data: {
@@ -451,6 +469,8 @@ describe('auth store', () => {
 
 		expect(ok).toBe(false);
 		expect(store.errorMessage).toBe('Invalid credentials');
+		expect(warnSpy).toHaveBeenCalledWith('[auth] changePassword failed:', 'Invalid credentials');
+		warnSpy.mockRestore();
 	});
 
 	test('updateSettings should merge settings fields', async () => {
@@ -493,7 +513,8 @@ describe('auth store', () => {
 		});
 	});
 
-	test('updateSettings should expose error message on failure', async () => {
+	test('updateSettings should expose error message on failure and log warning', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		patchCurrentUserSettings.mockRejectedValue({
 			response: {
 				data: {
@@ -508,6 +529,8 @@ describe('auth store', () => {
 		});
 
 		expect(store.errorMessage).toBe('failed-settings');
+		expect(warnSpy).toHaveBeenCalledWith('[auth] updateSettings failed:', 'failed-settings');
+		warnSpy.mockRestore();
 	});
 
 	test('updateSettings should fallback to err.message when response message is missing', async () => {

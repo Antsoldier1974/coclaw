@@ -1,17 +1,22 @@
 /**
  * WebRTC DataChannel 连接管理（UI 侧）
- * Phase 2：业务 RPC 通信切换到 DataChannel，WS 作为兜底
+ * DataChannel 是唯一的业务 RPC 通道，WS 仅用于信令和保活哨兵。
  *
- * 连接恢复策略（§7.2）：
- * - disconnected → 等待 ICE 自动恢复（短暂网络抖动自愈）
- * - failed → ICE restart（iceRestart: true），不重建 PeerConnection
- * - ICE restart 也失败 → 关闭 PeerConnection，全新重建
+ * 连接恢复策略：
+ * - disconnected → 等待 ICE 自动恢复（短暂网络抖动自愈），10s 超时后升级
+ * - failed → 上报 failed 状态，由外层 bots.store 退避重试（每次重新获取 TURN 凭证）
+ * - 前台恢复 / 网络切换 → DC probe 探测存活性，超时则 rebuild
+ *
+ * 注：ICE restart 已移除 — werift 的实现不完整且可能产生僵尸连接
+ * 详见 docs/study/webrtc-connection-research.md
  */
 import { httpClient } from './http.js';
 import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
+import { useSignalingConnection } from './signaling-connection.js';
+import { remoteLog } from './remote-log.js';
 
-const MAX_ICE_RESTARTS = 5;
-const MAX_FULL_REBUILDS = 3;
+/** disconnected 状态超时：超过此时间仍未恢复则升级到 failed 恢复链 */
+const DISCONNECTED_TIMEOUT_MS = 10_000;
 
 /** 发送流控：高水位（暂停发送），远低于浏览器 16MB 上限 */
 const DC_HIGH_WATER_MARK = 1024 * 1024;
@@ -24,40 +29,23 @@ const rtcInstances = new Map();
 const RTC_TRANSPORT_TIMEOUT_MS = 15_000;
 
 /**
- * 为指定 bot 初始化 RTC 并执行传输选择
+ * 为指定 bot 初始化 RTC 连接
  * WS 每次连通时调用；内含防重入守卫
- * 返回的 Promise 在传输模式确定后（'rtc' 或 'ws'）resolve
  * @param {string} botId
  * @param {import('./bot-connection.js').BotConnection} botConn
  * @param {object} [callbacks]
- * @param {(mode: 'rtc'|'ws') => void} [callbacks.onTransportMode] - 传输模式变更
  * @param {(state: string, transportInfo: object|null) => void} [callbacks.onRtcStateChange] - RTC 状态变更
- * @returns {Promise<void>}
+ * @returns {Promise<'rtc'|'failed'>}
  */
-/**
- * @param {string} botId
- * @param {import('./bot-connection.js').BotConnection} botConn
- * @param {object} [callbacks]
- * @param {(mode: 'rtc'|'ws') => void} [callbacks.onTransportMode]
- * @param {(state: string, transportInfo: object|null) => void} [callbacks.onRtcStateChange]
- * @param {object} [opts]
- * @param {boolean} [opts.skipWsFallback] - 超时时不设置 transportMode='ws'，由调用方控制
- * @returns {Promise<'rtc'|'ws'>} 本次尝试的结果
- */
-export function initRtcAndSelectTransport(botId, botConn, callbacks = {}, opts = {}) {
+export function initRtc(botId, botConn, callbacks = {}) {
 	const existing = rtcInstances.get(botId);
 	if (existing && existing.state !== 'closed' && existing.state !== 'failed') {
-		return Promise.resolve(botConn.transportMode === 'rtc' ? 'rtc' : 'ws');
+		return Promise.resolve(existing.isReady ? 'rtc' : 'pending');
 	}
 	if (existing) existing.close();
 
 	const rtc = new WebRtcConnection(botId, botConn);
 	rtcInstances.set(botId, rtc);
-
-	function setTransportMode(mode) {
-		botConn.setTransportMode(mode);
-		callbacks.onTransportMode?.(mode);
-	}
 
 	return new Promise((resolveTransport) => {
 		let settled = false;
@@ -68,52 +56,50 @@ export function initRtcAndSelectTransport(botId, botConn, callbacks = {}, opts =
 			return true;
 		}
 
-		// 传输选择：15 秒内 DataChannel open → RTC，否则 → WS
+		// 15 秒内 DataChannel open → 'rtc'，否则 → 'failed'
 		const fallbackTimer = setTimeout(() => {
-			if (!settle('ws')) return;
+			if (!settle('failed')) return;
 			console.warn('[rtc] RTC 建连超时 botId=%s', botId);
 			rtc.close();
 			rtcInstances.delete(botId);
 			botConn.clearRtc();
-			if (!opts.skipWsFallback) setTransportMode('ws');
 		}, RTC_TRANSPORT_TIMEOUT_MS);
 
 		rtc.onReady = () => {
 			if (!settle('rtc')) return;
 			clearTimeout(fallbackTimer);
 			botConn.setRtc(rtc);
-			setTransportMode('rtc');
 		};
 
-		// 状态变更 → 通知调用方 + 不可恢复时降级
+		// 状态变更 → 通知调用方
 		rtc.onStateChange = () => {
 			callbacks.onRtcStateChange?.(rtc.state, rtc.transportInfo);
 
 			// state === 'failed' 仅在所有恢复尝试耗尽后才被设置
 			if (rtc.state === 'failed') {
+				clearTimeout(fallbackTimer);
 				botConn.clearRtc();
-				setTransportMode('ws');
+				settle('failed');
 			}
 		};
 
 		httpClient.get('/api/v1/turn/creds')
 			.then((resp) => rtc.connect(resp.data))
 			.catch((err) => {
-				if (!settle('ws')) return;
+				if (!settle('failed')) return;
 				clearTimeout(fallbackTimer);
 				console.warn('[rtc] init failed botId=%s: %s', botId, err?.message);
 				rtc.close();
 				rtcInstances.delete(botId);
 				botConn.clearRtc();
-				if (!opts.skipWsFallback) setTransportMode('ws');
 			});
 	});
 }
 
-/**
- * @deprecated 使用 initRtcAndSelectTransport 代替
- */
-export const initRtcForBot = initRtcAndSelectTransport;
+/** @deprecated 使用 initRtc 代替 */
+export const initRtcAndSelectTransport = initRtc;
+/** @deprecated 使用 initRtc 代替 */
+export const initRtcForBot = initRtc;
 
 /** 关闭指定 bot 的 WebRTC 连接 */
 export function closeRtcForBot(botId) {
@@ -138,7 +124,7 @@ export function __getRtcInstance(botId) {
 export class WebRtcConnection {
 	/**
 	 * @param {string} botId
-	 * @param {import('./bot-connection.js').BotConnection} botConn - 关联的 WS 连接
+	 * @param {import('./bot-connection.js').BotConnection} botConn - 关联的 DC 连接
 	 * @param {object} [opts]
 	 * @param {function} [opts.PeerConnection] - 可替换的 RTCPeerConnection 构造函数（测试用）
 	 */
@@ -153,9 +139,6 @@ export class WebRtcConnection {
 		/** @type {{ localType: string, localProtocol: string, remoteType: string, remoteProtocol: string, relayProtocol: string|null }|null} */
 		this.__transportInfo = null;
 		this.__onRtcMsg = null;
-		this.__turnCreds = null;
-		this.__iceRestartCount = 0;
-		this.__rebuildCount = 0;
 		/** @type {{ data: string, resolve: Function, reject: Function }[]} */
 		this.__sendQueue = [];
 		/** @type {object[]} answer 到达前暂存的远端 ICE candidates */
@@ -165,8 +148,12 @@ export class WebRtcConnection {
 		this.__nextMsgId = 1;
 		/** @type {{ feed: Function, reset: Function }|null} */
 		this.__reassembler = null;
-		/** 外部接管恢复时为 true，抑制 __onIceFailed 内部级联 */
-		this.__externalRecovery = false;
+		/** DC probe 状态 */
+		this.__probeResolve = null;
+		this.__probeTimer = null;
+		this.__probePromise = null;
+		/** disconnected 状态超时定时器 */
+		this.__disconnectedTimer = null;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
@@ -181,18 +168,17 @@ export class WebRtcConnection {
 	/** 发起 WebRTC 连接 */
 	async connect(turnCreds) {
 		if (this.__state !== 'idle' && this.__state !== 'closed' && this.__state !== 'failed') return;
-		this.__turnCreds = turnCreds;
-		this.__iceRestartCount = 0;
-		this.__rebuildCount = 0;
-		await this.__buildPeerConnection(turnCreds, false);
+		await this.__buildPeerConnection(turnCreds);
 	}
 
 	/** 关闭连接（主动关闭，不再自动恢复） */
 	close() {
+		this.__clearDisconnectedTimer();
+		this.__settleProbe(false);
 		this.__removeRtcListener();
 		this.__rejectSendQueue('connection closed');
 		if (this.__pc) {
-			this.__botConn.sendRaw({ type: 'rtc:closed' });
+			useSignalingConnection().sendSignaling(this.botId, 'rtc:closed');
 			this.__pc.close();
 			this.__pc = null;
 		}
@@ -302,71 +288,43 @@ export class WebRtcConnection {
 	}
 
 	/**
-	 * 前台恢复时主动 ICE restart（仅在 PC 处于 disconnected 时触发）
-	 * ICE restart 是安全的：旧连接保持可用直到新路径建立
-	 * @returns {boolean} 是否触发了 restart
+	 * 通过 DC 发送探测消息验证连接是否存活
+	 * @param {number} [timeoutMs=3000] - 超时毫秒数
+	 * @returns {Promise<boolean>} true=连接存活
 	 */
-	tryIceRestart() {
-		const pc = this.__pc;
-		if (!pc || pc.connectionState !== 'disconnected') return false;
-		this.__log('info', 'proactive ICE restart on foreground resume');
-		// 不递增 __iceRestartCount：前台恢复是外部触发，不消耗自动恢复预算
-		this.__doIceRestart();
-		return true;
+	probe(timeoutMs = 3000) {
+		// 已有 probe 进行中 → 复用其 promise
+		if (this.__probePromise) return this.__probePromise;
+		const dc = this.__rpcChannel;
+		if (!dc || dc.readyState !== 'open') return Promise.resolve(false);
+		this.__probePromise = new Promise((resolve) => {
+			this.__probeResolve = resolve;
+			this.__probeTimer = setTimeout(() => this.__settleProbe(false), timeoutMs);
+			try {
+				dc.send(JSON.stringify({ type: 'probe' }));
+			} catch {
+				this.__settleProbe(false);
+			}
+		});
+		return this.__probePromise;
 	}
 
-	/**
-	 * 外部调用的一次性 ICE restart 尝试（供 __ensureRtc 使用）。
-	 * 抑制内部 __onIceFailed 级联，由调用方决定后续动作。
-	 * @param {number} [timeoutMs=5000] - 等待恢复的超时
-	 * @returns {Promise<boolean>} true = connected, false = 失败或超时
-	 */
-	attemptIceRestart(timeoutMs = 5000) {
-		const pc = this.__pc;
-		if (!pc || this.__state === 'closed') return Promise.resolve(false);
-		// PC 已 connected → 无需 restart，直接视为成功
-		if (pc.connectionState === 'connected') return Promise.resolve(true);
-
-		this.__externalRecovery = true;
-		this.__log('info', 'external ICE restart attempt');
-
-		return new Promise((resolve) => {
-			let timer = null;
-			let cleaned = false;
-			const origHandler = pc.onconnectionstatechange;
-
-			const cleanup = (result) => {
-				if (cleaned) return;
-				cleaned = true;
-				if (timer) clearTimeout(timer);
-				pc.onconnectionstatechange = origHandler;
-				this.__externalRecovery = false;
-				resolve(result);
-			};
-
-			pc.onconnectionstatechange = () => {
-				if (this.__pc !== pc) { cleanup(false); return; }
-				const s = pc.connectionState;
-				this.__log('info', `connectionState: ${s} (external ICE restart)`);
-				if (s === 'connected') {
-					this.__setState('connected');
-					this.__resolveCandidateType(pc);
-					cleanup(true);
-				} else if (s === 'failed') {
-					cleanup(false);
-				}
-				// disconnected/connecting → 继续等待
-			};
-
-			timer = setTimeout(() => { timer = null; cleanup(false); }, timeoutMs);
-			this.__doIceRestart().catch(() => cleanup(false));
-		});
+	/** @private 结算 probe（统一出口：超时/ack/send 失败/close） */
+	__settleProbe(result) {
+		if (this.__probeTimer) {
+			clearTimeout(this.__probeTimer);
+			this.__probeTimer = null;
+		}
+		const resolve = this.__probeResolve;
+		this.__probeResolve = null;
+		this.__probePromise = null;
+		resolve?.(result);
 	}
 
 	// --- 内部：建连 ---
 
 	/** @private */
-	async __buildPeerConnection(turnCreds, isRebuild) {
+	async __buildPeerConnection(turnCreds) {
 		// 清理旧 PC（rebuild 场景）
 		if (this.__pc) {
 			this.__pc.onicecandidate = null;
@@ -375,6 +333,9 @@ export class WebRtcConnection {
 			this.__pc = null;
 			this.__rpcChannel = null;
 		}
+
+		// 确保信令 WS 可用（rebuild 场景下 WS 可能已断开）
+		await useSignalingConnection().ensureConnected({ verify: true });
 
 		this.__remoteDescSet = false;
 		this.__pendingCandidates = [];
@@ -397,11 +358,8 @@ export class WebRtcConnection {
 		// 创建并发送 offer
 		const offer = await pc.createOffer();
 		await pc.setLocalDescription(offer);
-		this.__botConn.sendRaw({
-			type: 'rtc:offer',
-			payload: { sdp: offer.sdp },
-		});
-		this.__log('info', `offer sent for bot ${this.botId}${isRebuild ? ' (rebuild)' : ''}`);
+		useSignalingConnection().sendSignaling(this.botId, 'rtc:offer', { sdp: offer.sdp });
+		this.__log('info', `offer sent for bot ${this.botId}`);
 	}
 
 	/** @private */
@@ -422,13 +380,10 @@ export class WebRtcConnection {
 
 	/** @private */
 	__setupPcEvents(pc) {
-		// ICE candidate → 通过 WS 发给 Plugin
+		// ICE candidate → 通过信令 WS 发给 Plugin
 		pc.onicecandidate = (event) => {
 			if (!event.candidate) return;
-			this.__botConn.sendRaw({
-				type: 'rtc:ice',
-				payload: event.candidate.toJSON(),
-			});
+			useSignalingConnection().sendSignaling(this.botId, 'rtc:ice', event.candidate.toJSON());
 		};
 
 		// 连接状态变更
@@ -438,15 +393,18 @@ export class WebRtcConnection {
 			this.__log('info', `connectionState: ${s}`);
 
 			if (s === 'connected') {
-				this.__iceRestartCount = 0; // 连接成功，重置 ICE restart 计数
+				this.__clearDisconnectedTimer();
 				this.__setState('connected');
 				this.__resolveCandidateType(pc);
 			} else if (s === 'disconnected') {
-				// 短暂网络抖动，等待 ICE 自动恢复，仅日志
+				// 短暂网络抖动，等待 ICE 自动恢复；设超时兜底防止永远卡住
 				this.__log('info', 'ICE disconnected, waiting for auto-recovery...');
+				this.__startDisconnectedTimer();
 			} else if (s === 'failed') {
+				this.__clearDisconnectedTimer();
 				this.__onIceFailed();
 			} else if (s === 'closed') {
+				this.__clearDisconnectedTimer();
 				this.__setState('closed');
 			}
 		};
@@ -463,6 +421,10 @@ export class WebRtcConnection {
 		this.__reassembler = createReassembler((jsonStr) => {
 			try {
 				const payload = JSON.parse(jsonStr);
+				if (payload.type === 'probe-ack') {
+					this.__settleProbe(true);
+					return;
+				}
 				this.__botConn.__onRtcMessage(payload);
 			} catch (err) {
 				console.warn('[rtc] DataChannel 消息解析失败:', err);
@@ -471,7 +433,7 @@ export class WebRtcConnection {
 
 		dc.onopen = () => {
 			this.__log('info', 'DataChannel "rpc" opened');
-			this.__botConn.sendRaw({ type: 'rtc:ready' });
+			useSignalingConnection().sendSignaling(this.botId, 'rtc:ready');
 			this.onReady?.();
 		};
 		dc.onclose = () => {
@@ -480,6 +442,8 @@ export class WebRtcConnection {
 			if (this.__rpcChannel === dc) {
 				this.__rpcChannel = null;
 				this.__rejectSendQueue('DataChannel closed');
+				// 已发出的 pending RPC 永远收不到响应，立即 reject
+				this.__botConn.__rejectAllPending('DataChannel closed', 'DC_CLOSED');
 			}
 		};
 		dc.onmessage = (event) => {
@@ -519,6 +483,26 @@ export class WebRtcConnection {
 		const queue = this.__sendQueue.splice(0);
 		for (const { reject } of queue) {
 			reject(new Error(msg));
+		}
+	}
+
+	/** @private 启动 disconnected 状态超时定时器 */
+	__startDisconnectedTimer() {
+		this.__clearDisconnectedTimer();
+		this.__disconnectedTimer = setTimeout(() => {
+			this.__disconnectedTimer = null;
+			if (this.__pc?.connectionState === 'disconnected') {
+				this.__log('warn', 'ICE disconnected timeout (%dms), escalating to recovery', DISCONNECTED_TIMEOUT_MS);
+				this.__onIceFailed();
+			}
+		}, DISCONNECTED_TIMEOUT_MS);
+	}
+
+	/** @private 清除 disconnected 超时定时器 */
+	__clearDisconnectedTimer() {
+		if (this.__disconnectedTimer) {
+			clearTimeout(this.__disconnectedTimer);
+			this.__disconnectedTimer = null;
 		}
 	}
 
@@ -565,57 +549,10 @@ export class WebRtcConnection {
 
 	// --- 内部：恢复 ---
 
-	/** @private ICE failed 时的恢复策略 */
+	/** @private ICE failed → 上报 failed，由外层退避重试（每次获取 fresh TURN 凭证） */
 	__onIceFailed() {
-		if (this.__externalRecovery) return; // 外部接管恢复，跳过内部级联
-		if (this.__iceRestartCount < MAX_ICE_RESTARTS) {
-			this.__iceRestartCount++;
-			this.__log('info', `ICE failed, attempting ICE restart (${this.__iceRestartCount}/${MAX_ICE_RESTARTS})`);
-			this.__doIceRestart();
-		} else if (this.__rebuildCount < MAX_FULL_REBUILDS) {
-			this.__rebuildCount++;
-			this.__log('info', `ICE restart exhausted, full rebuild (${this.__rebuildCount}/${MAX_FULL_REBUILDS})`);
-			this.__doFullRebuild();
-		} else {
-			this.__log('warn', 'all recovery attempts exhausted, giving up');
-			this.__setState('failed');
-		}
-	}
-
-	/** @private ICE restart：不重建 PeerConnection，仅重新协商路径 */
-	async __doIceRestart() {
-		const pc = this.__pc;
-		if (!pc) return;
-		try {
-			const offer = await pc.createOffer({ iceRestart: true });
-			await pc.setLocalDescription(offer);
-			this.__botConn.sendRaw({
-				type: 'rtc:offer',
-				payload: { sdp: offer.sdp, iceRestart: true },
-			});
-			this.__log('info', 'ICE restart offer sent');
-		}
-		catch (err) {
-			this.__log('warn', `ICE restart offer failed: ${err?.message}`);
-			// ICE restart 失败，尝试 full rebuild
-			if (this.__rebuildCount < MAX_FULL_REBUILDS) {
-				this.__rebuildCount++;
-				this.__doFullRebuild();
-			} else {
-				this.__setState('failed');
-			}
-		}
-	}
-
-	/** @private 全新重建 PeerConnection */
-	async __doFullRebuild() {
-		try {
-			await this.__buildPeerConnection(this.__turnCreds, true);
-		}
-		catch (err) {
-			this.__log('warn', `full rebuild failed: ${err?.message}`);
-			this.__setState('failed');
-		}
+		this.__log('warn', 'ICE failed, delegating recovery to outer backoff');
+		this.__setState('failed');
 	}
 
 	// --- 内部：信令 ---
@@ -648,14 +585,17 @@ export class WebRtcConnection {
 	/** @private 确保 rtc 事件监听已注册（幂等） */
 	__ensureRtcListener() {
 		if (this.__onRtcMsg) return;
-		this.__onRtcMsg = (msg) => this.__onSignaling(msg);
-		this.__botConn.on('rtc', this.__onRtcMsg);
+		this.__onRtcMsg = ({ botId, type, payload }) => {
+			if (botId !== this.botId) return; // 按 botId 过滤
+			this.__onSignaling({ type, payload });
+		};
+		useSignalingConnection().on('rtc', this.__onRtcMsg);
 	}
 
 	/** @private 移除 rtc 事件监听 */
 	__removeRtcListener() {
 		if (this.__onRtcMsg) {
-			this.__botConn.off('rtc', this.__onRtcMsg);
+			useSignalingConnection().off('rtc', this.__onRtcMsg);
 			this.__onRtcMsg = null;
 		}
 	}
@@ -672,5 +612,9 @@ export class WebRtcConnection {
 	/** @private */
 	__log(level, msg) {
 		console[level]?.(`[WebRTC] ${msg}`);
+		// 仅推送 warn + 关键 info（连接状态变更、DC 开关、offer）
+		if (level === 'warn' || level === 'info') {
+			remoteLog(`rtc.${level} bot=${this.botId} ${msg}`);
+		}
 	}
 }

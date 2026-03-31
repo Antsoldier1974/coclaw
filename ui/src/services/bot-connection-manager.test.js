@@ -5,15 +5,18 @@ vi.mock('./bot-connection.js', () => {
 	class MockBotConnection {
 		constructor(botId) {
 			this.botId = botId;
-			this.state = 'disconnected';
+			this.disconnected = false;
 		}
-		connect() { this.state = 'connecting'; }
-		disconnect() { this.state = 'disconnected'; }
+		disconnect() { this.disconnected = true; }
 		on() {}
 		off() {}
 	}
-	return { BotConnection: MockBotConnection };
+	return { BotConnection: MockBotConnection, BRIEF_DISCONNECT_MS: 5000 };
 });
+
+vi.mock('./signaling-connection.js', () => ({
+	useSignalingConnection: () => ({ state: 'connected' }),
+}));
 
 beforeEach(() => {
 	__resetBotConnections();
@@ -42,9 +45,8 @@ describe('__resetBotConnections()', () => {
 	test('重置时断开所有现有连接', () => {
 		const mgr = useBotConnections();
 		const conn = mgr.connect('bot-1');
-		expect(conn.state).toBe('connecting');
 		__resetBotConnections();
-		expect(conn.state).toBe('disconnected');
+		expect(conn.disconnected).toBe(true);
 	});
 
 	test('重置空单例不报错', () => {
@@ -54,12 +56,11 @@ describe('__resetBotConnections()', () => {
 });
 
 describe('connect(botId)', () => {
-	test('创建连接并调用 connect()', () => {
+	test('创建连接实例', () => {
 		const mgr = useBotConnections();
 		const conn = mgr.connect('bot-1');
 		expect(conn).toBeDefined();
 		expect(conn.botId).toBe('bot-1');
-		expect(conn.state).toBe('connecting');
 	});
 
 	test('幂等：第二次 connect 返回同一实例', () => {
@@ -90,7 +91,7 @@ describe('disconnect(botId)', () => {
 		const mgr = useBotConnections();
 		const conn = mgr.connect('bot-1');
 		mgr.disconnect('bot-1');
-		expect(conn.state).toBe('disconnected');
+		expect(conn.disconnected).toBe(true);
 		expect(mgr.get('bot-1')).toBeUndefined();
 	});
 
@@ -144,7 +145,7 @@ describe('syncConnections(botIds)', () => {
 		mgr.syncConnections(['bot-1']);
 		expect(mgr.get('bot-1')).toBeDefined();
 		expect(mgr.get('bot-2')).toBeUndefined();
-		expect(old.state).toBe('disconnected');
+		expect(old.disconnected).toBe(true);
 	});
 
 	test('不重复连接已存在的 bot', () => {
@@ -176,8 +177,8 @@ describe('disconnectAll()', () => {
 		const c1 = mgr.connect('bot-1');
 		const c2 = mgr.connect('bot-2');
 		mgr.disconnectAll();
-		expect(c1.state).toBe('disconnected');
-		expect(c2.state).toBe('disconnected');
+		expect(c1.disconnected).toBe(true);
+		expect(c2.disconnected).toBe(true);
 		expect(mgr.size).toBe(0);
 	});
 
@@ -188,12 +189,12 @@ describe('disconnectAll()', () => {
 });
 
 describe('getStates()', () => {
-	test('返回所有连接的 botId → state 映射', () => {
+	test('返回所有连接的 botId → signaling WS state 映射', () => {
 		const mgr = useBotConnections();
 		mgr.connect('bot-1');
 		mgr.connect('bot-2');
 		const states = mgr.getStates();
-		expect(states).toEqual({ 'bot-1': 'connecting', 'bot-2': 'connecting' });
+		expect(states).toEqual({ 'bot-1': 'connected', 'bot-2': 'connected' });
 	});
 
 	test('无连接时返回空对象', () => {
@@ -206,7 +207,7 @@ describe('getStates()', () => {
 		mgr.connect('bot-1');
 		mgr.connect('bot-2');
 		mgr.disconnect('bot-1');
-		expect(mgr.getStates()).toEqual({ 'bot-2': 'connecting' });
+		expect(mgr.getStates()).toEqual({ 'bot-2': 'connected' });
 	});
 });
 

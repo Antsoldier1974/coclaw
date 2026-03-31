@@ -22,7 +22,6 @@
 ## 测试
 
 ```bash
+pnpm check
 pnpm test
-pnpm coverage
-pnpm verify
 ```

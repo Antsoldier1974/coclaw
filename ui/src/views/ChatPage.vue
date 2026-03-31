@@ -56,11 +56,8 @@
 		<!-- flex-1 + min-h-0：让 main 填充剩余空间并内部滚动；移除 min-h-0 会导致撑开父容器 -->
 		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll" @wheel="onWheel">
 			<div class="mx-auto w-full max-w-3xl" :style="!__scrollReady && chatMessages.length ? { visibility: 'hidden' } : undefined">
-				<div v-if="isBotOffline" class="mx-4 mt-4 rounded-lg bg-warning/10 px-4 py-2 text-center text-sm text-warning">
-					{{ $t('chat.botOffline') }}
-				</div>
-				<div v-else-if="awaitingAgent" class="px-4 py-8 text-center text-sm text-muted">
-					{{ $t('chat.connecting') }}
+				<div v-if="connStatusText" class="mx-4 mt-4 rounded-lg px-4 py-2 text-center text-sm" :class="connStatusSeverity === 'warn' ? 'bg-warning/10 text-warning' : 'bg-accented text-muted'">
+					{{ connStatusText }}
 				</div>
 				<!-- 消息分页加载状态提示 -->
 				<div v-if="chatStore?.messagesLoading" class="px-4 py-3 text-center text-xs text-muted">
@@ -107,12 +104,12 @@
 		</main>
 
 		<ChatInput
-			v-if="isTopicRoute || isNewTopic || agentVerified"
+			v-if="isTopicRoute || isNewTopic || !!routeBotId"
 			ref="chatInput"
 			v-model="inputText"
 			:sending="chatStore?.isSending ?? false"
 			:upload-progress="chatStore?.uploadProgress ?? null"
-			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || isLoadingChat) : (!routeBotId || isBotOffline || isLoadingChat)))"
+			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isLoadingChat) : (!routeBotId || isLoadingChat)))"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		>
@@ -238,7 +235,7 @@ export default {
 			if (!this.isNewTopic) return false;
 			if (!this.newTopicBotId) return false;
 			const bot = this.botsStore.byId[this.newTopicBotId];
-			return bot?.connState === 'connected';
+			return !!bot?.dcReady;
 		},
 		/** 当前上下文的 agentId */
 		currentAgentId() {
@@ -274,6 +271,33 @@ export default {
 			if (!botId) return false;
 			const bot = this.botsStore.byId[botId];
 			return bot ? !bot.online : true;
+		},
+		/**
+		 * 连接状态文案（inline banner）
+		 * 仅在连接不可用时显示，基于 rtcPhase 给出精确状态
+		 */
+		connStatusText() {
+			if (this.isNewTopic) return '';
+			const botId = this.currentBotId;
+			if (!botId) return '';
+			const bot = this.botsStore.byId[botId];
+			if (!bot) return this.$t('chat.botNotFound');
+			if (!bot.online) return this.$t('chat.botOffline');
+			// bot 在线但 DC 未就绪 → 根据 rtcPhase 细化
+			if (bot.dcReady) return '';
+			const phase = bot.rtcPhase;
+			if (phase === 'building') return this.$t('chat.connBuilding');
+			if (phase === 'recovering') return this.$t('chat.connRecovering');
+			if (phase === 'failed') return this.$t('chat.connFailed');
+			// idle 或其它 → 通用连接中
+			return this.$t('chat.connecting');
+		},
+		/** 连接状态 banner 的视觉层级：offline/failed 用 warn 色调 */
+		connStatusSeverity() {
+			if (this.isBotOffline) return 'warn';
+			const bot = this.botsStore.byId[this.currentBotId];
+			if (bot?.rtcPhase === 'failed') return 'warn';
+			return 'info';
 		},
 		chatTitle() {
 			if (this.isNewTopic) return this.$t('topic.newTopic');
@@ -322,14 +346,14 @@ export default {
 			return !entry?.fetched;
 		},
 		/**
-		 * 连接就绪：bot 在线 + connState === 'connected' + (topic 或 agent 已验证)
+		 * 连接就绪：bot 在线 + DC 可用 + (topic 或 agent 已验证)
 		 * 驱动首次/重连消息加载，消除时序依赖
 		 */
 		connReady() {
 			if (this.isNewTopic || !this.chatStore) return false;
 			const bot = this.botsStore.byId[this.currentBotId];
 			if (!bot || !bot.online) return false;
-			if (bot.connState !== 'connected') return false;
+			if (!bot.dcReady) return false;
 			if (this.isTopicRoute) return true;
 			return this.agentVerified;
 		},
@@ -424,7 +448,12 @@ export default {
 		connReady: {
 			immediate: true,
 			handler(ready) {
-				if (!ready || !this.chatStore) return;
+				if (!ready) {
+					// 断连时清除 guard，确保重连后可再次触发
+					this.__connReadyStore = null;
+					return;
+				}
+				if (!this.chatStore) return;
 				this.__onConnReady();
 			},
 		},
@@ -620,6 +649,7 @@ export default {
 				}
 			}
 			catch (err) {
+				console.warn('[ChatPage] onSlashCommand failed:', err);
 				this.notify.error(err?.message || this.$t('slashCmd.error'));
 			}
 		},
@@ -634,6 +664,9 @@ export default {
 		 */
 		async __onConnReady() {
 			if (!this.chatStore) return;
+			// 同一 store 实例去重：chatStore watcher 和 connReady watcher 可能在同一 tick 各触发一次
+			if (this.__connReadyStore === this.chatStore) return;
+			this.__connReadyStore = this.chatStore;
 			// 与 __handleForegroundResume 去重
 			this.__lastResumeAt = Date.now();
 			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）

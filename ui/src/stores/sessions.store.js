@@ -1,8 +1,7 @@
 import { defineStore } from 'pinia';
 
-import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useAgentsStore } from './agents.store.js';
-import { useBotsStore } from './bots.store.js';
+import { useBotsStore, getReadyConn } from './bots.store.js';
 
 // 模块级变量，避免被 Pinia reactive 代理包裹
 let _loadingPromise = null;
@@ -34,12 +33,7 @@ export const useSessionsStore = defineStore('sessions', {
 				this.items = [];
 				return;
 			}
-			// 筛选有已连接 WS 的 bot
-			const manager = useBotConnections();
-			const connectedBots = bots.filter((b) => {
-				const conn = manager.get(b.id);
-				return conn && conn.state === 'connected';
-			});
+			const connectedBots = bots.filter((b) => getReadyConn(b.id));
 			if (!connectedBots.length) {
 				console.debug('[sessions] loadAll: skipped (no connected bots, total=%d)', bots.length);
 				return;
@@ -95,8 +89,8 @@ export const useSessionsStore = defineStore('sessions', {
 			console.debug('[sessions] loadAll: merged %d session(s) (queried %d bot(s))', merged.length, queriedBotIds.size);
 		},
 		async __fetchSessionsForBot(botId) {
-			const conn = useBotConnections().get(String(botId));
-			if (!conn || conn.state !== 'connected') return [];
+			const conn = getReadyConn(botId);
+			if (!conn) return [];
 
 			const agentsStore = useAgentsStore();
 			const agents = agentsStore.getAgentsByBot(botId);

@@ -5,7 +5,7 @@ import test from 'node:test';
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { botPingTick, createUiWsTicket, listOnlineBotIds, pruneUiTickets, botStatusEmitter, __test } from './bot-ws-hub.js';
+import { botPingTick, createUiWsTicket, listOnlineBotIds, pruneUiTickets, botStatusEmitter, fmtLocalTime, __test } from './bot-ws-hub.js';
 
 const { uiSockets, botSockets, pendingOffline, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId } = __test;
 
@@ -524,4 +524,178 @@ test('getWebSocketCloseCode: token_revoked/bot_unbound → 4001, bot_blocked →
 	assert.equal(getWebSocketCloseCode('bot_unbound'), 4001);
 	assert.equal(getWebSocketCloseCode('bot_blocked'), 4003);
 	assert.equal(getWebSocketCloseCode('other'), 4000);
+});
+
+// --- catch 块日志覆盖测试 ---
+
+test('broadcastToUi: ws.send 抛异常时不中断其他 socket 的发送', () => {
+	const badWs = createMockWs({ connId: 'c_bad' });
+	badWs.send = () => { throw new Error('ws closed'); };
+	const goodWs = createMockWs({ connId: 'c_good' });
+	setupSockets('bot1', { ui: [badWs, goodWs] });
+
+	// 通过 onBotMessage 触发 broadcastToUi（type=res 走 broadcastToUi 路径）
+	onBotMessage('bot1', createMockWs(), JSON.stringify({
+		type: 'res',
+		id: 'test-1',
+		ok: true,
+		payload: {},
+	}));
+
+	// badWs 发送失败但 goodWs 应收到
+	assert.equal(goodWs.sent.length, 1);
+	assert.equal(goodWs.sent[0].type, 'res');
+	cleanupSockets('bot1');
+});
+
+test('forwardToBot: ws.send 抛异常时不中断且仍返回 true', () => {
+	const badBotWs = {
+		readyState: 1,
+		send() { throw new Error('ws write error'); },
+	};
+	setupSockets('bot1', { bot: [badBotWs] });
+
+	const uiWs = createMockWs({ connId: 'c_ui1' });
+	// 通过 onUiMessage 触发 forwardToBot（type=req）
+	onUiMessage('bot1', uiWs, JSON.stringify({
+		type: 'req',
+		id: 'rpc-1',
+		method: 'test',
+		params: {},
+	}));
+
+	// forwardToBot 的 send 抛异常但不应崩溃
+	// 且不会给 UI 回 BOT_OFFLINE 错误（因为 forwardToBot 返回 true）
+	assert.equal(uiWs.sent.length, 0);
+	cleanupSockets('bot1');
+});
+
+// --- fmtLocalTime ---
+
+test('fmtLocalTime: 有效时间戳返回 HH:mm:ss.SSS 格式', () => {
+	const result = fmtLocalTime(new Date('2026-03-30T14:01:58.450Z').getTime());
+	assert.match(result, /^\d{2}:\d{2}:\d{2}\.\d{3}$/);
+});
+
+test('fmtLocalTime: 无效值返回占位符', () => {
+	assert.equal(fmtLocalTime(NaN), '??:??:??.???');
+	assert.equal(fmtLocalTime(undefined), '??:??:??.???');
+});
+
+// --- onBotMessage: type=log 远程日志 ---
+
+test('onBotMessage: type=log 逐条输出到 console.info', () => {
+	const botWs = createMockWs();
+	setupSockets('bot1', { bot: [botWs] });
+
+	const now = Date.now();
+	const logged = [];
+	const origInfo = console.info;
+	console.info = (msg) => logged.push(msg);
+	try {
+		onBotMessage('bot1', botWs, JSON.stringify({
+			type: 'log',
+			logs: [
+				{ ts: now, text: 'ws.connected peer=server' },
+				{ ts: now + 650, text: 'session.restored id=abc' },
+			],
+		}));
+		assert.equal(logged.length, 2);
+		assert.match(logged[0], /\[remote\]\[plugin\]\[bot:bot1\]/);
+		assert.match(logged[0], /ws\.connected/);
+		// ts 被转换为本地时间格式
+		assert.match(logged[0], /\d{2}:\d{2}:\d{2}\.\d{3}/);
+		assert.match(logged[1], /session\.restored/);
+	} finally {
+		console.info = origInfo;
+		cleanupSockets('bot1');
+	}
+});
+
+test('onBotMessage: type=log 忽略非 {ts,text} 条目', () => {
+	const botWs = createMockWs();
+	setupSockets('bot1', { bot: [botWs] });
+
+	const logged = [];
+	const origInfo = console.info;
+	console.info = (msg) => logged.push(msg);
+	try {
+		onBotMessage('bot1', botWs, JSON.stringify({
+			type: 'log',
+			logs: [
+				{ ts: Date.now(), text: 'valid' },
+				'bare string',
+				123,
+				null,
+				{ ts: Date.now() },          // 缺 text
+				{ text: 'no ts' },            // 缺 ts → 仍输出，时间显示为 ??
+				{ ts: Date.now(), text: 'also valid' },
+			],
+		}));
+		assert.equal(logged.length, 3);
+		assert.match(logged[0], /valid/);
+		assert.match(logged[1], /\?\?:\?\?:\?\?\.\?\?\?/); // 缺 ts 的 fallback
+		assert.match(logged[1], /no ts/);
+		assert.match(logged[2], /also valid/);
+	} finally {
+		console.info = origInfo;
+		cleanupSockets('bot1');
+	}
+});
+
+test('onBotMessage: type=log logs 不是数组时静默忽略', () => {
+	const botWs = createMockWs();
+	setupSockets('bot1', { bot: [botWs] });
+
+	const logged = [];
+	const origInfo = console.info;
+	console.info = (msg) => logged.push(msg);
+	try {
+		onBotMessage('bot1', botWs, JSON.stringify({
+			type: 'log',
+			logs: 'not-an-array',
+		}));
+		assert.equal(logged.length, 0);
+	} finally {
+		console.info = origInfo;
+		cleanupSockets('bot1');
+	}
+});
+
+test('onBotMessage: type=log 不转发给 UI', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_ui_log' });
+	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+
+	const origInfo = console.info;
+	console.info = () => {};
+	try {
+		onBotMessage('bot1', botWs, JSON.stringify({
+			type: 'log',
+			logs: [{ ts: Date.now(), text: 'some log line' }],
+		}));
+		assert.equal(uiWs.sent.length, 0, 'log should not be forwarded to UI');
+	} finally {
+		console.info = origInfo;
+		cleanupSockets('bot1');
+	}
+});
+
+test('onBotMessage: bot.unbound 中 ws.close 抛异常时不崩溃', () => {
+	const botWs = createMockWs();
+	botWs.close = () => { throw new Error('close failed'); };
+	const uiWs = createMockWs({ connId: 'c_ui' });
+	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+
+	// 不应抛异常
+	onBotMessage('bot1', botWs, JSON.stringify({
+		type: 'bot.unbound',
+		reason: 'token_revoked',
+		botId: 'bot1',
+	}));
+
+	// UI 应收到 bot.unbound
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'bot.unbound');
+	cleanupSockets('bot1');
 });

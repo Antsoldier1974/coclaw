@@ -1,5 +1,17 @@
 # @coclaw/openclaw-coclaw
 
+## 0.10.0
+
+### Minor Changes
+
+- Integrate node-datachannel as primary WebRTC implementation with werift fallback
+
+  - Add ndc-preloader module with vendor prebuild deployment, timeout protection, and graceful fallback
+  - Unify PeerConnection resolution: preloader provides implementation, webrtc-peer requires it
+  - Await preload before WS connection to eliminate RTC timing gap
+  - Add self-explanatory diagnostic logging for WebRTC implementation selection
+  - Include precompiled binaries for linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64
+
 ## 0.9.2
 
 ### Patch Changes

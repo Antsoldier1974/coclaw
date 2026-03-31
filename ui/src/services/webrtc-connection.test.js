@@ -1,12 +1,46 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// mock remote-log（webrtc-connection 内部 import）
+vi.mock('./remote-log.js', () => ({ remoteLog: vi.fn() }));
+
+// mock signaling-connection 单例
+const mockSendSignaling = vi.fn().mockReturnValue(true);
+const mockEnsureConnected = vi.fn().mockResolvedValue(undefined);
+const sigListeners = {};
+vi.mock('./signaling-connection.js', () => ({
+	useSignalingConnection: () => ({
+		sendSignaling: mockSendSignaling,
+		ensureConnected: mockEnsureConnected,
+		on(event, cb) { (sigListeners[event] ??= []).push(cb); },
+		off(event, cb) {
+			if (sigListeners[event]) sigListeners[event] = sigListeners[event].filter(c => c !== cb);
+		},
+	}),
+}));
+
+/** 触发 signaling 'rtc' 事件（模拟入站信令） */
+function fireRtcSignal(data) {
+	for (const cb of sigListeners['rtc'] ?? []) cb(data);
+}
+
 import {
 	WebRtcConnection,
+	initRtc,
 	initRtcForBot,
 	initRtcAndSelectTransport,
 	closeRtcForBot,
 	__resetRtcInstances,
 	__getRtcInstance,
 } from './webrtc-connection.js';
+
+// 全局重置 mock 状态
+beforeEach(() => {
+	mockSendSignaling.mockClear();
+	mockSendSignaling.mockReturnValue(true);
+	mockEnsureConnected.mockReset();
+	mockEnsureConnected.mockResolvedValue(undefined);
+	for (const key of Object.keys(sigListeners)) delete sigListeners[key];
+});
 
 // --- Mock RTCPeerConnection ---
 
@@ -84,21 +118,10 @@ class MockRTCPeerConnection {
 // --- Mock BotConnection ---
 
 function createMockBotConn() {
-	const listeners = {};
 	return {
-		sendRaw: vi.fn().mockReturnValue(true),
-		on(event, cb) { (listeners[event] ??= []).push(cb); },
-		off(event, cb) {
-			if (listeners[event]) listeners[event] = listeners[event].filter((c) => c !== cb);
-		},
-		__fire(event, data) {
-			for (const cb of listeners[event] ?? []) cb(data);
-		},
-		__listeners: listeners,
-		// Phase 2 传输模式相关
 		setRtc: vi.fn(),
 		clearRtc: vi.fn(),
-		setTransportMode: vi.fn(),
+		__rejectAllPending: vi.fn(),
 		__onRtcMessage: vi.fn(),
 	};
 }
@@ -131,14 +154,12 @@ describe('WebRtcConnection — 基础建连', () => {
 	test('connect 发送 offer 并创建 rpc DataChannel', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		mockSendSignaling.mockClear();
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		expect(rtc.state).toBe('connecting');
-		expect(botConn.sendRaw).toHaveBeenCalledWith({
-			type: 'rtc:offer',
-			payload: { sdp: 'mock-sdp-offer' },
-		});
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:offer', { sdp: 'mock-sdp-offer' });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		expect(pc.__channels.length).toBe(1);
@@ -205,13 +226,12 @@ describe('WebRtcConnection — 基础建连', () => {
 		rtc.close();
 	});
 
-	test('connect 缓存 turnCreds 供后续 rebuild 使用', async () => {
+	test('connect 不缓存 turnCreds（内部不做 rebuild，由外层退避重试）', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
-		// 内部应缓存 turnCreds
-		expect(rtc.__turnCreds).toBe(MOCK_TURN_CREDS);
+		expect(rtc.__turnCreds).toBeUndefined();
 
 		rtc.close();
 	});
@@ -223,14 +243,13 @@ describe('WebRtcConnection — 状态变更', () => {
 		pcInstances.length = 0;
 	});
 
-	test('onconnectionstatechange → connected 更新状态并重置 ICE restart 计数', async () => {
+	test('onconnectionstatechange → connected 更新状态', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 		const stateChanges = [];
 		rtc.onStateChange = (s) => stateChanges.push(s);
 
 		await rtc.connect(MOCK_TURN_CREDS);
-		rtc.__iceRestartCount = 1; // 模拟之前有过 ICE restart
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		pc.connectionState = 'connected';
@@ -238,7 +257,6 @@ describe('WebRtcConnection — 状态变更', () => {
 
 		expect(rtc.state).toBe('connected');
 		expect(stateChanges).toContain('connected');
-		expect(rtc.__iceRestartCount).toBe(0); // 连接成功后重置
 
 		rtc.close();
 	});
@@ -260,6 +278,65 @@ describe('WebRtcConnection — 状态变更', () => {
 		expect(rtc.state).toBe('connected'); // 仍是 connected
 
 		rtc.close();
+	});
+
+	test('disconnected 超时后升级到 __onIceFailed 恢复链', async () => {
+		vi.useFakeTimers();
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+
+		const failedSpy = vi.spyOn(rtc, '__onIceFailed');
+
+		// 进入 disconnected
+		pc.connectionState = 'disconnected';
+		pc.onconnectionstatechange();
+
+		// 未超时前不触发
+		vi.advanceTimersByTime(9_999);
+		expect(failedSpy).not.toHaveBeenCalled();
+
+		// 超时后触发恢复
+		vi.advanceTimersByTime(1);
+		expect(failedSpy).toHaveBeenCalledTimes(1);
+
+		rtc.close();
+		vi.useRealTimers();
+	});
+
+	test('disconnected 后自动恢复到 connected 时清除超时定时器', async () => {
+		vi.useFakeTimers();
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+
+		const failedSpy = vi.spyOn(rtc, '__onIceFailed');
+
+		// 进入 disconnected → 启动定时器
+		pc.connectionState = 'disconnected';
+		pc.onconnectionstatechange();
+
+		// 5s 后恢复 connected → 清除定时器
+		vi.advanceTimersByTime(5_000);
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+
+		// 超时点过后不应触发
+		vi.advanceTimersByTime(10_000);
+		expect(failedSpy).not.toHaveBeenCalled();
+
+		rtc.close();
+		vi.useRealTimers();
 	});
 
 	test('onconnectionstatechange → closed 更新状态', async () => {
@@ -392,10 +469,9 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		};
 		pc.onicecandidate({ candidate: mockCandidate });
 
-		expect(botConn.sendRaw).toHaveBeenCalledWith({
-			type: 'rtc:ice',
-			payload: { candidate: 'candidate:123', sdpMid: '0', sdpMLineIndex: 0 },
-		});
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:ice', { candidate: 'candidate:123', sdpMid: '0', sdpMLineIndex: 0 },
+		);
 
 		rtc.close();
 	});
@@ -405,12 +481,12 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
-		botConn.sendRaw.mockClear();
+		mockSendSignaling.mockClear();
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		pc.onicecandidate({ candidate: null });
 
-		expect(botConn.sendRaw).not.toHaveBeenCalled();
+		expect(mockSendSignaling).not.toHaveBeenCalled();
 
 		rtc.close();
 	});
@@ -420,7 +496,7 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
-		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		expect(pc.__remoteDesc).toEqual({ type: 'answer', sdp: 'mock-answer-sdp' });
@@ -434,13 +510,13 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		// 先设置 answer，等 setRemoteDescription 完成
-		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
 		await vi.waitFor(() => {
 			expect(MockRTCPeerConnection.lastInstance.__remoteDesc).toBeTruthy();
 		});
 
 		const icePayload = { candidate: 'candidate:456', sdpMid: '0', sdpMLineIndex: 0 };
-		botConn.__fire('rtc', { type: 'rtc:ice', payload: icePayload });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:ice', payload: icePayload });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		expect(pc.__candidates).toContainEqual(icePayload);
@@ -457,15 +533,15 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		// answer 到达前先发 ICE candidates
 		const ice1 = { candidate: 'candidate:111', sdpMid: '0', sdpMLineIndex: 0 };
 		const ice2 = { candidate: 'candidate:222', sdpMid: '0', sdpMLineIndex: 0 };
-		botConn.__fire('rtc', { type: 'rtc:ice', payload: ice1 });
-		botConn.__fire('rtc', { type: 'rtc:ice', payload: ice2 });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:ice', payload: ice1 });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:ice', payload: ice2 });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		// answer 前不应添加
 		expect(pc.__candidates).toHaveLength(0);
 
 		// answer 到达后触发排空
-		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
 		await vi.waitFor(() => {
 			expect(pc.__candidates).toHaveLength(2);
 		});
@@ -484,7 +560,7 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		const pc = MockRTCPeerConnection.lastInstance;
 		pc.__channels[0].onopen();
 
-		expect(botConn.sendRaw).toHaveBeenCalledWith({ type: 'rtc:ready' });
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:ready');
 
 		rtc.close();
 	});
@@ -517,10 +593,10 @@ describe('WebRtcConnection — close', () => {
 		const pc = MockRTCPeerConnection.lastInstance;
 		rtc.close();
 
-		expect(botConn.sendRaw).toHaveBeenCalledWith({ type: 'rtc:closed' });
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:closed');
 		expect(pc.__closed).toBe(true);
 		expect(rtc.state).toBe('closed');
-		expect(botConn.__listeners['rtc']?.length ?? 0).toBe(0);
+		expect(sigListeners['rtc']?.length ?? 0).toBe(0);
 	});
 
 	test('close 后再 close 不重复发送 rtc:closed', async () => {
@@ -529,121 +605,23 @@ describe('WebRtcConnection — close', () => {
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		rtc.close();
-		botConn.sendRaw.mockClear();
+		mockSendSignaling.mockClear();
 		rtc.close();
 
-		const closedCalls = botConn.sendRaw.mock.calls.filter(
-			([msg]) => msg.type === 'rtc:closed',
+		const closedCalls = mockSendSignaling.mock.calls.filter(
+			([_botId, type]) => type === 'rtc:closed',
 		);
 		expect(closedCalls.length).toBe(0);
 	});
 });
 
-describe('WebRtcConnection — ICE restart 恢复', () => {
+describe('WebRtcConnection — __onIceFailed', () => {
 	beforeEach(() => {
 		MockRTCPeerConnection.lastInstance = null;
 		pcInstances.length = 0;
 	});
 
-	test('failed 时发起 ICE restart（不重建 PeerConnection）', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
-		const pc = MockRTCPeerConnection.lastInstance;
-
-		// 模拟 ICE failed（__doIceRestart 是异步的）
-		pc.connectionState = 'failed';
-		pc.onconnectionstatechange();
-
-		// 等待异步 ICE restart 完成
-		await vi.waitFor(() => {
-			expect(botConn.sendRaw).toHaveBeenCalledWith({
-				type: 'rtc:offer',
-				payload: { sdp: 'mock-sdp-ice-restart', iceRestart: true },
-			});
-		});
-
-		// 应发起 ICE restart，不重建 PeerConnection
-		expect(pcInstances.length).toBe(1);
-		expect(pc.__createOfferOpts).toContainEqual({ iceRestart: true });
-
-		rtc.close();
-	});
-
-	test('ICE restart 成功后重置 iceRestartCount', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
-		const pc = MockRTCPeerConnection.lastInstance;
-
-		// 模拟第一次 failed → ICE restart
-		pc.connectionState = 'failed';
-		pc.onconnectionstatechange();
-		await vi.waitFor(() => expect(rtc.__iceRestartCount).toBe(1));
-
-		// 模拟 ICE restart 成功 → connected
-		pc.connectionState = 'connected';
-		pc.onconnectionstatechange();
-		expect(rtc.state).toBe('connected');
-		expect(rtc.__iceRestartCount).toBe(0);
-
-		rtc.close();
-	});
-
-	test('ICE restart 达到上限（5次）后执行 full rebuild', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
-		const firstPc = MockRTCPeerConnection.lastInstance;
-
-		// 消耗 5 次 ICE restart
-		for (let i = 1; i <= 5; i++) {
-			firstPc.connectionState = 'failed';
-			firstPc.onconnectionstatechange();
-			await vi.waitFor(() => expect(rtc.__iceRestartCount).toBe(i));
-		}
-
-		// 第 6 次 failed → 超过 ICE restart 上限，应 full rebuild
-		firstPc.connectionState = 'failed';
-		firstPc.onconnectionstatechange();
-
-		await vi.waitFor(() => {
-			// 应创建了新的 PeerConnection
-			expect(pcInstances.length).toBe(2);
-		});
-		expect(MockRTCPeerConnection.lastInstance).not.toBe(firstPc);
-		expect(firstPc.__closed).toBe(true);
-
-		rtc.close();
-	});
-
-	test('full rebuild 使用缓存的 turnCreds', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
-		const firstPc = MockRTCPeerConnection.lastInstance;
-
-		// 强制进入 rebuild
-		rtc.__iceRestartCount = 5;
-		firstPc.connectionState = 'failed';
-		firstPc.onconnectionstatechange();
-
-		await vi.waitFor(() => expect(pcInstances.length).toBe(2));
-
-		// 新 PC 应使用相同的 iceServers
-		const newPc = MockRTCPeerConnection.lastInstance;
-		expect(newPc).not.toBe(firstPc);
-		expect(newPc.config.iceServers).toHaveLength(3);
-		expect(newPc.config.iceServers[0]).toEqual({ urls: 'stun:coclaw.net:3478' });
-
-		rtc.close();
-	});
-
-	test('所有恢复手段耗尽后状态变为 failed', async () => {
+	test('ICE failed 直接上报 failed 状态（不做内部 rebuild）', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 		const stateChanges = [];
@@ -651,165 +629,145 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
-		// 耗尽 ICE restart (5次) + full rebuild (3次)
-		// 每次 rebuild 创建新 PC，新 PC 也可能 fail
-		for (let i = 0; i < 20; i++) {
-			const pc = MockRTCPeerConnection.lastInstance;
-			if (pc.__closed) break;
-			pc.connectionState = 'failed';
-			pc.onconnectionstatechange();
-			// 等待异步恢复操作完成
-			await new Promise((r) => setTimeout(r, 0));
-		}
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
 
+		await new Promise((r) => setTimeout(r, 0));
+
+		// 不创建新 PeerConnection（无内部 rebuild）
+		expect(pcInstances.length).toBe(1);
 		expect(rtc.state).toBe('failed');
 		expect(stateChanges).toContain('failed');
 
 		rtc.close();
 	});
-
-	test('旧 PeerConnection 的回调不影响新 PC', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
-		const oldPc = MockRTCPeerConnection.lastInstance;
-
-		// 强制 rebuild
-		rtc.__iceRestartCount = 5;
-		oldPc.connectionState = 'failed';
-		oldPc.onconnectionstatechange();
-
-		await vi.waitFor(() => expect(pcInstances.length).toBe(2));
-
-		const newPc = MockRTCPeerConnection.lastInstance;
-		expect(newPc).not.toBe(oldPc);
-
-		// rebuild 清理旧 PC 时已清空事件回调
-		expect(oldPc.onconnectionstatechange).toBeNull();
-
-		rtc.close();
-	});
-
-	test('rebuild 后 rtc listener 保持（不重复注册）', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
-
-		// 强制 rebuild
-		rtc.__iceRestartCount = 5;
-		const pc = MockRTCPeerConnection.lastInstance;
-		pc.connectionState = 'failed';
-		pc.onconnectionstatechange();
-
-		await vi.waitFor(() => expect(pcInstances.length).toBe(2));
-
-		// rtc 监听器应仍只有 1 个
-		expect(botConn.__listeners['rtc']?.length).toBe(1);
-
-		// 信令仍可正常工作
-		const newPc = MockRTCPeerConnection.lastInstance;
-		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'new-answer' } });
-		expect(newPc.__remoteDesc).toEqual({ type: 'answer', sdp: 'new-answer' });
-
-		rtc.close();
-	});
 });
 
-describe('WebRtcConnection — tryIceRestart（前台恢复主动 ICE restart）', () => {
+describe('WebRtcConnection — DC probe', () => {
 	beforeEach(() => {
 		MockRTCPeerConnection.lastInstance = null;
 		pcInstances.length = 0;
 	});
 
-	test('PC 处于 disconnected 时触发 ICE restart 并返回 true', async () => {
+	test('DC open + probe-ack → 返回 true', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
 		await rtc.connect(MOCK_TURN_CREDS);
+		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
+		dc.readyState = 'open';
+		dc.onopen();
 
-		const pc = MockRTCPeerConnection.lastInstance;
-		pc.connectionState = 'disconnected';
-
-		const result = rtc.tryIceRestart();
-		expect(result).toBe(true);
-
-		await vi.waitFor(() => {
-			expect(botConn.sendRaw).toHaveBeenCalledWith({
-				type: 'rtc:offer',
-				payload: { sdp: 'mock-sdp-ice-restart', iceRestart: true },
-			});
-		});
-
-		// 不重建 PeerConnection
-		expect(pcInstances.length).toBe(1);
-		rtc.close();
-	});
-
-	test('PC 处于 connected 时不触发 ICE restart 并返回 false', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-		await rtc.connect(MOCK_TURN_CREDS);
-
-		const pc = MockRTCPeerConnection.lastInstance;
-		pc.connectionState = 'connected';
-
-		const result = rtc.tryIceRestart();
-		expect(result).toBe(false);
+		// 启动 probe 后模拟收到 probe-ack
+		const p = rtc.probe(1000);
+		// 通过 reassembler 模拟入站消息
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		expect(await p).toBe(true);
 
 		rtc.close();
 	});
 
-	test('PC 处于 failed 时不触发（由 __onIceFailed 处理）', async () => {
+	test('DC open 但超时（无 ack）→ 返回 false', async () => {
+		vi.useFakeTimers();
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
 		await rtc.connect(MOCK_TURN_CREDS);
+		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
+		dc.readyState = 'open';
+		dc.onopen();
 
-		const pc = MockRTCPeerConnection.lastInstance;
-		pc.connectionState = 'failed';
+		const p = rtc.probe(3000);
+		vi.advanceTimersByTime(3000);
+		expect(await p).toBe(false);
 
-		const result = rtc.tryIceRestart();
-		expect(result).toBe(false);
+		rtc.close();
+		vi.useRealTimers();
+	});
+
+	test('DC 未就绪 → 返回 false', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+		// DC 仍是 connecting，未 open
+		expect(await rtc.probe(100)).toBe(false);
 
 		rtc.close();
 	});
 
-	test('无 PC 时返回 false', () => {
+	test('无 DC → 返回 false', () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		const result = rtc.tryIceRestart();
-		expect(result).toBe(false);
+		// 未 connect，无 DC
+		expect(rtc.probe(100)).resolves.toBe(false);
 	});
 
-	test('tryIceRestart 不递增 __iceRestartCount（不消耗自动恢复预算）', async () => {
+	test('DC send 抛异常 → 返回 false', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-		await rtc.connect(MOCK_TURN_CREDS);
 
-		const pc = MockRTCPeerConnection.lastInstance;
-		pc.connectionState = 'disconnected';
-		rtc.tryIceRestart();
-		expect(rtc.__iceRestartCount).toBe(0);
+		await rtc.connect(MOCK_TURN_CREDS);
+		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
+		dc.readyState = 'open';
+		dc.onopen();
+		dc.send = () => { throw new Error('send failed'); };
+
+		expect(await rtc.probe(100)).toBe(false);
 
 		rtc.close();
 	});
 
-	test('多次前台恢复 tryIceRestart 不影响 __onIceFailed 的恢复预算', async () => {
+	test('close() 期间活跃 probe → resolve false（不挂起）', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
 		await rtc.connect(MOCK_TURN_CREDS);
+		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
+		dc.readyState = 'open';
+		dc.onopen();
 
-		const pc = MockRTCPeerConnection.lastInstance;
-		pc.connectionState = 'disconnected';
+		const p = rtc.probe(5000);
+		// close 在 probe 进行中
+		rtc.close();
+		// probe 应 resolve false，不挂起
+		expect(await p).toBe(false);
+	});
 
-		// 模拟多次前台恢复
-		rtc.tryIceRestart();
-		rtc.tryIceRestart();
-		rtc.tryIceRestart();
+	test('并发 probe() 复用同一 promise', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
-		// 计数器应始终为 0
-		expect(rtc.__iceRestartCount).toBe(0);
+		await rtc.connect(MOCK_TURN_CREDS);
+		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
+		dc.readyState = 'open';
+		dc.onopen();
+
+		const p1 = rtc.probe(1000);
+		const p2 = rtc.probe(1000);
+		expect(p1).toBe(p2);
+
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		expect(await p1).toBe(true);
+		expect(await p2).toBe(true);
+
+		rtc.close();
+	});
+
+	test('probe-ack 不传递给 BotConnection.__onRtcMessage', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
+		dc.readyState = 'open';
+		dc.onopen();
+
+		rtc.probe(1000);
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+
+		expect(botConn.__onRtcMessage).not.toHaveBeenCalled();
 
 		rtc.close();
 	});
@@ -896,7 +854,6 @@ describe('initRtcForBot / closeRtcForBot', () => {
 			await vi.advanceTimersByTimeAsync(0);
 			await p;
 			expect(__getRtcInstance('bot1')).toBeUndefined();
-			expect(botConn.setTransportMode).toHaveBeenCalledWith('ws');
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;
@@ -989,7 +946,7 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 		dc.onopen();
 
 		expect(readyFn).toHaveBeenCalledTimes(1);
-		expect(botConn.sendRaw).toHaveBeenCalledWith({ type: 'rtc:ready' });
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:ready');
 	});
 
 	test('dc.onmessage 回调 botConn.__onRtcMessage', async () => {
@@ -1138,8 +1095,8 @@ describe('WebRtcConnection — send 流控', () => {
 		rtc.close();
 	});
 
-	test('DC close 时 reject 队列中所有消息', async () => {
-		const { rtc, dc } = await makeReady();
+	test('DC close 时 reject 队列中所有消息并 reject pending RPC', async () => {
+		const { rtc, dc, botConn } = await makeReady();
 		dc.bufferedAmount = HIGH;
 
 		const p1 = rtc.send({ seq: 1 });
@@ -1150,6 +1107,7 @@ describe('WebRtcConnection — send 流控', () => {
 
 		await expect(p1).rejects.toThrow('DataChannel closed');
 		await expect(p2).rejects.toThrow('DataChannel closed');
+		expect(botConn.__rejectAllPending).toHaveBeenCalledWith('DataChannel closed', 'DC_CLOSED');
 	});
 
 	test('close() 时 reject 队列中所有消息', async () => {
@@ -1197,7 +1155,7 @@ describe('WebRtcConnection — send 流控', () => {
 	});
 });
 
-describe('initRtcAndSelectTransport — 传输选择', () => {
+describe('initRtc — RTC 建连', () => {
 	beforeEach(() => {
 		pcInstances.length = 0;
 		MockRTCPeerConnection.lastInstance = null;
@@ -1209,7 +1167,7 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		vi.useRealTimers();
 	});
 
-	test('DataChannel 在超时内 open → 设置 transportMode=rtc', async () => {
+	test('DataChannel 在超时内 open → resolve rtc', async () => {
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 		const { httpClient } = await import('./http.js');
@@ -1218,17 +1176,16 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		const botConn = createMockBotConn();
 
 		try {
-			const p = initRtcAndSelectTransport('bot1', botConn);
-			await vi.advanceTimersByTimeAsync(0); // flush connect promise
+			const p = initRtc('bot1', botConn);
+			await vi.advanceTimersByTimeAsync(0);
 
-			// 模拟 DataChannel open → onReady → Promise resolve
 			const dc = MockRTCPeerConnection.lastInstance.__channels[0];
 			dc.readyState = 'open';
 			dc.onopen();
-			await p;
+			const result = await p;
 
+			expect(result).toBe('rtc');
 			expect(botConn.setRtc).toHaveBeenCalled();
-			expect(botConn.setTransportMode).toHaveBeenCalledWith('rtc');
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;
@@ -1236,7 +1193,7 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		}
 	});
 
-	test('超时后降级到 WS', async () => {
+	test('超时后 resolve failed', async () => {
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 		const { httpClient } = await import('./http.js');
@@ -1245,15 +1202,14 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		const botConn = createMockBotConn();
 
 		try {
-			const p = initRtcAndSelectTransport('bot2', botConn);
-			await vi.advanceTimersByTimeAsync(0); // flush connect promise
+			const p = initRtc('bot2', botConn);
+			await vi.advanceTimersByTimeAsync(0);
 
-			// 不模拟 DataChannel open，推进到 15s 超时
 			await vi.advanceTimersByTimeAsync(15_000);
-			await p;
+			const result = await p;
 
+			expect(result).toBe('failed');
 			expect(botConn.clearRtc).toHaveBeenCalled();
-			expect(botConn.setTransportMode).toHaveBeenCalledWith('ws');
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;
@@ -1261,7 +1217,7 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		}
 	});
 
-	test('TURN 请求失败时降级到 WS', async () => {
+	test('TURN 请求失败时 resolve failed', async () => {
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 		const { httpClient } = await import('./http.js');
@@ -1270,12 +1226,12 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		const botConn = createMockBotConn();
 
 		try {
-			const p = initRtcAndSelectTransport('bot3', botConn);
-			await vi.advanceTimersByTimeAsync(0); // flush rejected promise
-			await p;
+			const p = initRtc('bot3', botConn);
+			await vi.advanceTimersByTimeAsync(0);
+			const result = await p;
 
+			expect(result).toBe('failed');
 			expect(botConn.clearRtc).toHaveBeenCalled();
-			expect(botConn.setTransportMode).toHaveBeenCalledWith('ws');
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;

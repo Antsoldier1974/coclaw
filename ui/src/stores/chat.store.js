@@ -13,23 +13,14 @@ import { fileToBase64, chatFilesDir, topicFilesDir, buildAttachmentBlock } from 
 import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { waitForConnected } from '../utils/wait-connected.js';
-import { useBotsStore } from './bots.store.js';
+import { useBotsStore, getReadyConn } from './bots.store.js';
 
 const MSG_PAGE_SIZE = 50;
 
-/**
- * 比较两条消息的 content 是否相同（兼容字符串和 block 数组）
- * @param {string|object[]} a
- * @param {string|object[]} b
- * @returns {boolean}
- */
-function __contentEqual(a, b) {
-	if (a === b) return true;
-	if (typeof a === 'string' || typeof b === 'string') return false;
-	// block 数组：序列化比较
-	try { return JSON.stringify(a) === JSON.stringify(b); }
-	catch { return false; }
-}
+/** DC/WS 断连相关的错误码 */
+const DISCONNECT_CODES = new Set(['WS_CLOSED', 'DC_NOT_READY', 'DC_CLOSED', 'RTC_SEND_FAILED']);
+function isDisconnectError(err) { return DISCONNECT_CODES.has(err?.code); }
+
 
 /**
  * 创建 ChatStore 实例
@@ -106,6 +97,7 @@ export function createChatStore(storeKey, opts = {}) {
 			__slashCommandReject: null,
 			__silentLoadPromise: null,
 			__loadPromise: null,
+			__historyListPromise: null,
 		}),
 		getters: {
 			currentSessionKey() {
@@ -119,23 +111,12 @@ export function createChatStore(storeKey, opts = {}) {
 			runKey() {
 				return this.topicMode ? this.sessionId : this.chatSessionKey;
 			},
-			/** 合并服务端消息 + 活跃 run 的流式消息（去重乐观消息） */
+			/** 合并服务端消息 + 活跃 run 的流式消息 */
 			allMessages() {
 				const runsStore = useAgentRunsStore();
 				const run = runsStore.getActiveRun(this.runKey);
 				if (run && run.streamingMsgs.length) {
-					// 去重：loadOlderMessages 可能拉回服务端已收录的 user 消息，
-					// 而 streamingMsgs 中仍持有同一条的乐观版本，需跳过以防重复
-					const deduped = run.streamingMsgs.filter((sm) => {
-						if (!sm._local || sm.message?.role !== 'user') return true;
-						// 检查 this.messages 中是否已有服务端版本（非 _local、同 role 且内容相同）
-						return !this.messages.some((m) =>
-							!m._local
-							&& m.message?.role === 'user'
-							&& __contentEqual(m.message.content, sm.message.content),
-						);
-					});
-					if (deduped.length) return [...this.messages, ...deduped];
+					return [...this.messages, ...run.streamingMsgs];
 				}
 				return this.messages;
 			},
@@ -156,8 +137,8 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__initialized = true;
 					if (!this.botId || skipLoad) return;
 
-					const conn = this.__getConnection();
-					if (!conn || conn.state !== 'connected') {
+					const conn = getReadyConn(this.botId);
+					if (!conn) {
 						console.debug('[chat] activate: connection not ready, waiting for connReady');
 						this.loading = true;
 						return;
@@ -211,16 +192,9 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__messagesLoaded = true;
 					return false;
 				}
-				const conn = this.__getConnection();
+				const conn = getReadyConn(this.botId);
 				if (!conn) {
-					console.debug('[chat] loadMessages: no connection for botId=%s', this.botId);
-					if (!silent) this.errorText = 'Bot not connected';
-					this.loading = false;
-					return false;
-				}
-				// 连接存在但尚未就绪 → 保持 loading，等待 retry
-				if (conn.state !== 'connected') {
-					console.debug('[chat] loadMessages: connection not ready state=%s botId=%s', conn.state, this.botId);
+					console.debug('[chat] loadMessages: connection not ready botId=%s', this.botId);
 					if (!silent) this.loading = true;
 					return false;
 				}
@@ -293,8 +267,8 @@ export function createChatStore(storeKey, opts = {}) {
 				if (!this.hasMoreMessages || this.messagesLoading) return false;
 				if (this.topicMode || !this.chatSessionKey) return false;
 
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') return false;
+				const conn = getReadyConn(this.botId);
+				if (!conn) return false;
 
 				this.messagesLoading = true;
 				try {
@@ -341,13 +315,8 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__messagesLoaded = true;
 					return false;
 				}
-				const conn = this.__getConnection();
+				const conn = getReadyConn(this.botId);
 				if (!conn) {
-					if (!silent) this.errorText = 'Bot not connected';
-					this.loading = false;
-					return false;
-				}
-				if (conn.state !== 'connected') {
 					if (!silent) this.loading = true;
 					return false;
 				}
@@ -399,8 +368,8 @@ export function createChatStore(storeKey, opts = {}) {
 				if (!this.topicMode && !this.chatSessionKey) return { accepted: false };
 				if (this.topicMode && !this.sessionId) return { accepted: false };
 
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') {
+				const conn = getReadyConn(this.botId);
+				if (!conn) {
 					throw new Error('Bot not connected');
 				}
 
@@ -411,12 +380,10 @@ export function createChatStore(storeKey, opts = {}) {
 				this.__accepted = false;
 
 				const hasFiles = files?.length > 0;
-				// 用 transportMode 判断 RTC 可用性：transportMode='rtc' 表示 RTC 已建连，
-				// 比 isReady（仅检查 rpc DC 状态）更可靠——文件传输使用独立 DC
-				const rtcAvailable = hasFiles && conn.transportMode === 'rtc' && !!conn.rtc;
+				const rtcAvailable = hasFiles && !!conn.rtc?.isReady;
 				if (hasFiles) {
-					console.debug('[chat] rtcAvailable=%s transportMode=%s rtc=%s isReady=%s',
-						rtcAvailable, conn.transportMode, !!conn.rtc, conn.rtc?.isReady);
+					console.debug('[chat] rtcAvailable=%s rtc=%s isReady=%s',
+						rtcAvailable, !!conn.rtc, conn.rtc?.isReady);
 				}
 
 				// 构建乐观消息：图片仍生成 base64 用于即时预览
@@ -583,7 +550,7 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 				catch (err) {
 					// lifecycle:end 已完成清理，WS 关闭尾巴错误忽略
-					if (this.__agentSettled && err?.code === 'WS_CLOSED') {
+					if (this.__agentSettled && isDisconnectError(err)) {
 						return { accepted: this.__accepted };
 					}
 					// 文件上传被取消（cancelSend 在上传阶段触发）：视同用户取消
@@ -608,7 +575,7 @@ export function createChatStore(storeKey, opts = {}) {
 						return { accepted: this.__accepted };
 					}
 					// 已 accepted 但 agent 尚未完成时 WS 断连：等重连后 reconcile
-					if (err?.code === 'WS_CLOSED' && this.__accepted && !this.__agentSettled) {
+					if (isDisconnectError(err) && this.__accepted && !this.__agentSettled) {
 						console.debug('[chat] ws closed after accepted, waiting for reconnect to reconcile');
 						if (this.__streamingTimer) {
 							clearTimeout(this.__streamingTimer);
@@ -620,11 +587,11 @@ export function createChatStore(storeKey, opts = {}) {
 							console.debug('[chat] reconnected after accepted, reconciling messages');
 							// settle 交给 reconcileAfterLoad 的双条件判定，避免 agent 仍在执行时过早清除 streaming 消息
 							await this.__reconcileMessages();
-						} catch {}
+						} catch (e) { console.debug('[chat] reconnect-after-accepted failed:', e?.message); }
 						return { accepted: true };
 					}
 					// 断连且尚未 accepted：等待重连后自动重试一次
-					if (err?.code === 'WS_CLOSED' && !this.__accepted && !this.__retried) {
+					if (isDisconnectError(err) && !this.__accepted && !this.__retried) {
 						console.debug('[chat] ws closed before accepted, waiting for reconnect to retry');
 						this.__cleanupStreaming();
 						this.sending = false;
@@ -637,7 +604,7 @@ export function createChatStore(storeKey, opts = {}) {
 							} finally {
 								this.__retried = false;
 							}
-						} catch {}
+						} catch (e) { console.debug('[chat] retry-after-reconnect failed:', e?.message); }
 					}
 					if (this.__accepted) {
 						// 已被服务端接受，保留消息并从服务端拉取真实状态
@@ -663,8 +630,8 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @returns {Promise<string | null>} 新 sessionId，失败返回 null
 			 */
 			async resetChat() {
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') {
+				const conn = getReadyConn(this.botId);
+				if (!conn) {
 					throw new Error('Bot not connected');
 				}
 				this.resetting = true;
@@ -721,8 +688,8 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @param {string} command - 如 '/compact'、'/new'、'/help'
 			 */
 			async sendSlashCommand(command) {
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected' || this.sending) return;
+				const conn = getReadyConn(this.botId);
+				if (!conn || this.sending) return;
 
 				this.sending = true;
 
@@ -904,25 +871,33 @@ export function createChatStore(storeKey, opts = {}) {
 			 */
 			async __loadChatHistory() {
 				if (this.topicMode || !this.chatSessionKey) return;
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') return;
-				try {
-					const agentId = this.__resolveAgentId();
-					const result = await conn.request('coclaw.chatHistory.list', {
-						agentId,
-						sessionKey: this.chatSessionKey,
-					});
-					this.historySessionIds = Array.isArray(result?.history) ? result.history : [];
-					this.historyExhausted = this.historySessionIds.length === 0;
-					this.__historyLoadedCount = 0;
-					console.debug('[chat] loadChatHistory: %d orphan sessions, exhausted=%s',
-						this.historySessionIds.length, this.historyExhausted);
-				}
-				catch (err) {
-					console.warn('[chat] loadChatHistory failed:', err?.message);
-					this.historySessionIds = [];
-					this.historyExhausted = true;
-				}
+				if (this.__historyListPromise) return this.__historyListPromise;
+				const conn = getReadyConn(this.botId);
+				if (!conn) return;
+				const p = (async () => {
+					try {
+						const agentId = this.__resolveAgentId();
+						const result = await conn.request('coclaw.chatHistory.list', {
+							agentId,
+							sessionKey: this.chatSessionKey,
+						});
+						this.historySessionIds = Array.isArray(result?.history) ? result.history : [];
+						this.historyExhausted = this.historySessionIds.length === 0;
+						this.__historyLoadedCount = 0;
+						console.debug('[chat] loadChatHistory: %d orphan sessions, exhausted=%s',
+							this.historySessionIds.length, this.historyExhausted);
+					}
+					catch (err) {
+						console.warn('[chat] loadChatHistory failed:', err?.message);
+						this.historySessionIds = [];
+						this.historyExhausted = true;
+					}
+					finally {
+						this.__historyListPromise = null;
+					}
+				})();
+				this.__historyListPromise = p;
+				return p;
 			},
 
 			/**
@@ -957,8 +932,8 @@ export function createChatStore(storeKey, opts = {}) {
 					const entry = this.historySessionIds[this.__historyLoadedCount];
 					console.debug('[chat] loadNextHistory: loading session %d/%d id=%s',
 						this.__historyLoadedCount + 1, this.historySessionIds.length, entry.sessionId);
-					const conn = this.__getConnection();
-					if (!conn || conn.state !== 'connected') return false;
+					const conn = getReadyConn(this.botId);
+					if (!conn) return false;
 
 					const agentId = this.__resolveAgentId();
 					const result = await conn.request('coclaw.sessions.getById', {
@@ -1077,8 +1052,8 @@ export function createChatStore(storeKey, opts = {}) {
 			},
 
 			async __reconcileMessages() {
-				const conn = this.__getConnection();
-				if (!conn || conn.state !== 'connected') return false;
+				const conn = getReadyConn(this.botId);
+				if (!conn) return false;
 
 				try {
 					await this.loadMessages({ silent: true });
@@ -1098,6 +1073,10 @@ export function createChatStore(storeKey, opts = {}) {
 				const runsStore = useAgentRunsStore();
 				// 完成 settling 过渡（lifecycle:end 已到达，等待 loadMessages 替换数据）
 				runsStore.completeSettle(this.runKey);
+				// 去除乐观 user 消息——run 已 accepted，loadMessages 后服务端版本已在 this.messages 中
+				runsStore.stripLocalUserMsgs(this.runKey);
+				// 正在发送中时跳过僵尸检测——避免过早 settle 活跃 run
+				if (this.sending) return;
 				// 检查僵尸 run（断连期间完成，lifecycle:end 丢失）
 				runsStore.reconcileAfterLoad(this.runKey, serverMessages);
 			},

@@ -7,14 +7,21 @@
  */
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { hasOpenDialog, closeCurrentDialog } from './dialog-history.js';
+import { remoteLog } from '../services/remote-log.js';
 
 /** 是否运行在 Capacitor 原生壳中 */
 export const isNative = Capacitor.isNativePlatform();
 
 // Web 端：桥接浏览器原生 online 事件为统一的 network:online
+// 追踪是否经历过 offline，防止无前置 offline 的 spurious online 事件
 if (!isNative && typeof window !== 'undefined') {
+	let wasOffline = !navigator.onLine;
+	window.addEventListener('offline', () => { wasOffline = true; });
 	window.addEventListener('online', () => {
+		if (!wasOffline) return;
+		wasOffline = false;
 		console.log('[network] browser online → dispatch network:online');
+		remoteLog('app.network connected=true source=browser');
 		window.dispatchEvent(new CustomEvent('network:online'));
 	});
 }
@@ -157,6 +164,7 @@ function setupAppStateChange() {
 	import('@capacitor/app').then(({ App }) => {
 		App.addListener('appStateChange', ({ isActive }) => {
 			console.log('[capacitor] appStateChange: isActive=%s', isActive);
+			remoteLog(`app.stateChange active=${isActive}`);
 			if (isActive) {
 				// 通知各模块进行前台恢复（BotConnection/SSE/Polling/ChatPage）
 				window.dispatchEvent(new CustomEvent('app:foreground'));
@@ -173,6 +181,7 @@ function setupNetworkListener() {
 	import('@capacitor/network').then(({ Network }) => {
 		Network.addListener('networkStatusChange', ({ connected }) => {
 			console.log('[capacitor] networkStatusChange: connected=%s', connected);
+			remoteLog(`app.network connected=${connected}`);
 			if (connected) {
 				window.dispatchEvent(new CustomEvent('network:online'));
 			}

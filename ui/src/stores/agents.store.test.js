@@ -22,9 +22,8 @@ vi.mock('../services/bots.api.js', () => ({
 
 import { useBotsStore } from './bots.store.js';
 
-function mockConn(agents = [], state = 'connected', identityMap = {}) {
+function mockConn(agents = [], _state = 'connected', identityMap = {}) {
 	return {
-		state,
 		request: vi.fn().mockImplementation((method, params) => {
 			if (method === 'agents.list') {
 				return Promise.resolve({ defaultId: 'main', agents });
@@ -38,6 +37,17 @@ function mockConn(agents = [], state = 'connected', identityMap = {}) {
 		on: vi.fn(),
 		off: vi.fn(),
 	};
+}
+
+/** 注册 mock conn 并设置 botsStore 中 bot 的 dcReady */
+function setConn(botId, conn, { dcReady = true } = {}) {
+	mockConnections.set(String(botId), conn);
+	const botsStore = useBotsStore();
+	if (!botsStore.byId[String(botId)]) {
+		botsStore.byId[String(botId)] = { id: String(botId), dcReady };
+	} else {
+		botsStore.byId[String(botId)].dcReady = dcReady;
+	}
 }
 
 describe('agents store', () => {
@@ -57,7 +67,7 @@ describe('agents store', () => {
 			ops: { agentId: 'ops', name: 'Ops Bot', emoji: '⚙️' },
 		};
 		const conn = mockConn(agents, 'connected', identityMap);
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
@@ -80,8 +90,8 @@ describe('agents store', () => {
 	});
 
 	test('loadAgents 连接未就绪时应跳过', async () => {
-		const conn = mockConn([], 'connecting');
-		mockConnections.set('bot-1', conn);
+		const conn = mockConn([]);
+		setConn('bot-1', conn, { dcReady: false });
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
@@ -91,12 +101,11 @@ describe('agents store', () => {
 
 	test('loadAgents agents.list 失败时不抛错', async () => {
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockRejectedValue(new Error('rpc failed')),
 			on: vi.fn(),
 			off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
@@ -107,7 +116,6 @@ describe('agents store', () => {
 	test('identity.get 失败时 resolvedIdentity 为 null', async () => {
 		const agents = [{ id: 'main', name: 'main' }];
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockImplementation((method) => {
 				if (method === 'agents.list') return Promise.resolve({ defaultId: 'main', agents });
 				return Promise.reject(new Error('identity failed'));
@@ -115,7 +123,7 @@ describe('agents store', () => {
 			on: vi.fn(),
 			off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
@@ -126,7 +134,6 @@ describe('agents store', () => {
 		let reqCount = 0;
 		let resolveReq;
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockImplementation((method) => {
 				if (method === 'agents.list') {
 					reqCount++;
@@ -138,7 +145,7 @@ describe('agents store', () => {
 			on: vi.fn(),
 			off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		const p1 = store.loadAgents('bot-1');
@@ -166,7 +173,7 @@ describe('agents store', () => {
 	test('getAgentsByBot 应返回指定 bot 的 agents', async () => {
 		const agents = [{ id: 'main', name: 'Main' }];
 		const conn = mockConn(agents);
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
@@ -183,7 +190,7 @@ describe('agents store', () => {
 			{ id: 'ops', name: 'Ops' },
 		];
 		const conn = mockConn(agents);
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
@@ -205,7 +212,7 @@ describe('agents store', () => {
 			{ id: 'ops', name: 'Ops' },
 		];
 		const conn = mockConn(agents);
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
@@ -237,8 +244,8 @@ describe('agents store', () => {
 
 		const conn1 = mockConn([{ id: 'main' }]);
 		const conn2 = mockConn([{ id: 'main' }, { id: 'test' }]);
-		mockConnections.set('bot-1', conn1);
-		mockConnections.set('bot-2', conn2);
+		setConn('bot-1', conn1);
+		setConn('bot-2', conn2);
 
 		const store = useAgentsStore();
 		await store.loadAllAgents();
@@ -250,7 +257,7 @@ describe('agents store', () => {
 
 	test('removeByBot 应移除指定 bot 的数据', async () => {
 		const conn = mockConn([{ id: 'main' }]);
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
@@ -274,7 +281,7 @@ describe('agents store', () => {
 				main: { agentId: 'main', name: '小点', emoji: '🦞' },
 			};
 			const conn = mockConn(agents, 'connected', identityMap);
-			mockConnections.set('bot-1', conn);
+			setConn('bot-1', conn);
 
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
@@ -292,7 +299,6 @@ describe('agents store', () => {
 			const agents = [{ id: 'main', name: 'main' }];
 			// identity.get 失败 → resolvedIdentity 为 null
 			const conn = {
-				state: 'connected',
 				request: vi.fn().mockImplementation((method) => {
 					if (method === 'agents.list') return Promise.resolve({ defaultId: 'main', agents });
 					return Promise.reject(new Error('no identity'));
@@ -300,7 +306,7 @@ describe('agents store', () => {
 				on: vi.fn(),
 				off: vi.fn(),
 			};
-			mockConnections.set('bot-1', conn);
+			setConn('bot-1', conn);
 
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
@@ -315,7 +321,6 @@ describe('agents store', () => {
 
 			const agents = [{ id: 'main', name: 'main' }, { id: 'tester', name: 'tester' }];
 			const conn = {
-				state: 'connected',
 				request: vi.fn().mockImplementation((method) => {
 					if (method === 'agents.list') return Promise.resolve({ defaultId: 'main', agents });
 					return Promise.reject(new Error('no identity'));
@@ -323,7 +328,7 @@ describe('agents store', () => {
 				on: vi.fn(),
 				off: vi.fn(),
 			};
-			mockConnections.set('bot-1', conn);
+			setConn('bot-1', conn);
 
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
@@ -341,7 +346,7 @@ describe('agents store', () => {
 				main: { agentId: 'main', name: 'Assistant' },
 			};
 			const conn = mockConn(agents, 'connected', identityMap);
-			mockConnections.set('bot-1', conn);
+			setConn('bot-1', conn);
 
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
@@ -366,7 +371,7 @@ describe('agents store', () => {
 				'writing-assistant': { agentId: 'writing-assistant', name: 'Assistant' },
 			};
 			const conn = mockConn(agents, 'connected', identityMap);
-			mockConnections.set('bot-1', conn);
+			setConn('bot-1', conn);
 
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
@@ -385,7 +390,7 @@ describe('agents store', () => {
 				main: { agentId: 'main', name: 'Assistant' },
 			};
 			const conn = mockConn(agents, 'connected', identityMap);
-			mockConnections.set('bot-1', conn);
+			setConn('bot-1', conn);
 
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
@@ -406,7 +411,7 @@ describe('agents store', () => {
 				main: { agentId: 'main', name: 'Assistant' },
 			};
 			const conn = mockConn(agents, 'connected', identityMap);
-			mockConnections.set('bot-1', conn);
+			setConn('bot-1', conn);
 
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
@@ -435,7 +440,7 @@ describe('agents store', () => {
 				identity: { avatarUrl: 'avatars/bot.png' },
 			}];
 			const conn = mockConn(agents, 'connected', {});
-			mockConnections.set('bot-1', conn);
+			setConn('bot-1', conn);
 
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
@@ -454,7 +459,7 @@ describe('agents store', () => {
 				identity: { avatarUrl: 'data:image/png;base64,abc' },
 			}];
 			const conn = mockConn(agents, 'connected', {});
-			mockConnections.set('bot-1', conn);
+			setConn('bot-1', conn);
 
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
@@ -486,7 +491,7 @@ describe('agents store', () => {
 
 	test('loadAgents 应将 botId 归一化为 string 作为 byBot key', async () => {
 		const conn = mockConn([{ id: 'main' }]);
-		mockConnections.set('42', conn);
+		setConn('42', conn);
 
 		const store = useAgentsStore();
 		// 传入 numeric botId
@@ -498,7 +503,6 @@ describe('agents store', () => {
 	test('identity.get 失败时应输出 debug 日志', async () => {
 		const agents = [{ id: 'fail-agent', name: 'fail' }];
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockImplementation((method) => {
 				if (method === 'agents.list') return Promise.resolve({ defaultId: 'main', agents });
 				return Promise.reject(new Error('identity rpc error'));
@@ -506,7 +510,7 @@ describe('agents store', () => {
 			on: vi.fn(),
 			off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
 		const store = useAgentsStore();
@@ -522,7 +526,6 @@ describe('agents store', () => {
 
 	test('loadAgents 应处理 defaultId 非 main 的情况', async () => {
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockResolvedValue({
 				defaultId: 'custom',
 				agents: [{ id: 'custom' }],
@@ -530,7 +533,7 @@ describe('agents store', () => {
 			on: vi.fn(),
 			off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');

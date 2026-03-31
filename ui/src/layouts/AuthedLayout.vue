@@ -38,8 +38,9 @@
 import { ref } from 'vue';
 import DesktopSidebar from '../components/DesktopSidebar.vue';
 import MobileBottomTabs from '../components/MobileBottomTabs.vue';
-import { useBotStatusPoll } from '../composables/use-bot-status-poll.js';
 import { useBotStatusSse } from '../composables/use-bot-status-sse.js';
+import { useSignalingConnection } from '../services/signaling-connection.js';
+import { useRemoteLog } from '../services/remote-log.js';
 import { usePullRefresh } from '../composables/use-pull-refresh.js';
 import { useAuthStore } from '../stores/auth.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
@@ -53,8 +54,9 @@ export default {
 	},
 	setup() {
 		const botsStore = useBotsStore();
-		const { connected: sseConnected } = useBotStatusSse(botsStore);
-		useBotStatusPoll(botsStore, { sseConnected });
+		useBotStatusSse(botsStore);
+		useSignalingConnection().connect();
+		useRemoteLog();
 
 		const contentSection = ref(null);
 		const { pulling, pullDistance, pastThreshold } = usePullRefresh(contentSection);
@@ -105,7 +107,7 @@ export default {
 		},
 	},
 	async mounted() {
-		// 认证过期统一监听（来源：HTTP 401 拦截 / WS session-expired）
+		// 认证过期统一监听（来源：HTTP 401 拦截）
 		// 必须在 refreshSession() 之前注册，避免 await 期间事件丢失
 		this.__onSessionExpired = async () => {
 			if (!this.authStore.user) return; // 未登录或已在登出流程中

@@ -15,9 +15,17 @@
   - CLI（`openclaw coclaw bind/unbind/enroll`）
 - 绑定信息存储在 `~/.openclaw/coclaw/bindings.json`（独立于 `openclaw.json`）。
 - 升级状态存储在 `~/.openclaw/coclaw/upgrade-state.json`，升级日志在 `upgrade-log.jsonl`。
-- 测试门禁：`pnpm verify` 通过，覆盖率 lines/statements/functions 100%，branches ≥ 95%。
+- 测试门禁：`pnpm check` + `pnpm test` 通过，覆盖率 lines/statements/functions 100%，branches ≥ 95%。
 
 ## 关键里程碑
+
+### node-datachannel 集成（2026-03-31）
+- **WebRTC 双实现**：新增 node-datachannel（基于 libdatachannel）作为首选 WebRTC 实现，加载失败时回退到 werift。
+- **预加载机制**：`ndc-preloader.js` 在 bridge `start()` 时后台预加载 node-datachannel，`__initWebrtcPeer()` 等待结果并注入 `PeerConnection`。
+- **vendor 预编译包**：因 OpenClaw 的 `--ignore-scripts` 策略，node-datachannel 的 native binary 通过 vendor 预编译包部署（5 平台：linux-x64/arm64、darwin-x64/arm64、win32-x64）。
+- **remoteLog 诊断**：预加载全程通过 remoteLog 上报（`ndc.preload` / `ndc.loaded` / `ndc.fallback` / `ndc.using-werift`），用于远程判断用户环境的 WebRTC 实际使用情况。
+- **cleanup 生命周期**：node-datachannel 的 `cleanup()` 在 bridge `stop()` 中调用，防止 native threads 阻止进程退出。
+- 详见方案文档：`plugins/openclaw/docs/node-datachannel-integration-plan.md`。
 
 ### 文件管理协议升级（2026-03-28）
 - **RPC 方法重命名**：`coclaw.file.*` → `coclaw.files.*`（复数形式，与设计文档对齐）。
@@ -154,4 +162,4 @@
 ## 风险控制提醒
 
 - 插件运行在 gateway 进程内，接入前必须先完成离线验证与全量单测。
-- `pnpm verify` 未通过时，禁止安装到 OpenClaw gateway。
+- `pnpm check` + `pnpm test` 未通过时，禁止安装到 OpenClaw gateway。

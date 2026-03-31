@@ -231,9 +231,8 @@ describe('dashboard store helpers', () => {
  * @param {Object<string, *>} rpcMap - method → 响应数据
  * @param {string} [state='connected']
  */
-function mockConn(rpcMap = {}, state = 'connected') {
+function mockConn(rpcMap = {}) {
 	return {
-		state,
 		request: vi.fn().mockImplementation((method, params) => {
 			if (method in rpcMap) {
 				const val = rpcMap[method];
@@ -249,9 +248,8 @@ function mockConn(rpcMap = {}, state = 'connected') {
 }
 
 /** 标准的 agents.list 和 agent.identity.get mock conn */
-function mockAgentConn(agents, identityMap = {}, state = 'connected') {
+function mockAgentConn(agents, identityMap = {}) {
 	return {
-		state,
 		request: vi.fn().mockImplementation((method, params) => {
 			if (method === 'agents.list') {
 				return Promise.resolve({ defaultId: 'main', agents });
@@ -264,6 +262,17 @@ function mockAgentConn(agents, identityMap = {}, state = 'connected') {
 		on: vi.fn(),
 		off: vi.fn(),
 	};
+}
+
+/** 注册 mock conn 并设置 botsStore 中 bot 的 dcReady */
+function setConn(botId, conn, { dcReady = true } = {}) {
+	mockConnections.set(String(botId), conn);
+	const botsStore = useBotsStore();
+	if (!botsStore.byId[String(botId)]) {
+		botsStore.byId[String(botId)] = { id: String(botId), dcReady };
+	} else {
+		botsStore.byId[String(botId)].dcReady = dcReady;
+	}
 }
 
 describe('dashboard store', () => {
@@ -288,7 +297,7 @@ describe('dashboard store', () => {
 			[{ id: 'main', name: 'Main', identity: { theme: 'blue' } }],
 			{ main: { agentId: 'main', name: '小点', emoji: '🦞' } },
 		);
-		mockConnections.set('bot-1', agentConn);
+		setConn('bot-1', agentConn);
 
 		// 预加载 agents
 		const agentsStore = useAgentsStore();
@@ -316,7 +325,7 @@ describe('dashboard store', () => {
 				groups: [{ tools: [{ id: 'web_search' }, { id: 'read' }] }],
 			},
 		});
-		mockConnections.set('bot-1', dashConn);
+		setConn('bot-1', dashConn);
 
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
@@ -360,7 +369,7 @@ describe('dashboard store', () => {
 
 		// 预加载 agents
 		const agentConn = mockAgentConn([{ id: 'main', name: 'Main' }]);
-		mockConnections.set('bot-1', agentConn);
+		setConn('bot-1', agentConn);
 		const agentsStore = useAgentsStore();
 		await agentsStore.loadAgents('bot-1');
 
@@ -374,7 +383,7 @@ describe('dashboard store', () => {
 			'channels.status': new Error('failed'),
 			'tools.catalog': new Error('catalog error'),
 		});
-		mockConnections.set('bot-1', dashConn);
+		setConn('bot-1', dashConn);
 
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
@@ -401,8 +410,8 @@ describe('dashboard store', () => {
 	});
 
 	test('loadDashboard conn 状态非 connected 时直接返回', async () => {
-		const conn = mockConn({}, 'connecting');
-		mockConnections.set('bot-1', conn);
+		const conn = mockConn({});
+		setConn('bot-1', conn, { dcReady: false });
 
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
@@ -416,18 +425,17 @@ describe('dashboard store', () => {
 
 		// 预加载 agents 避免 loadAgents 内部吞错
 		const agentConn = mockAgentConn([{ id: 'main' }]);
-		mockConnections.set('bot-1', agentConn);
+		setConn('bot-1', agentConn);
 		const agentsStore = useAgentsStore();
 		await agentsStore.loadAgents('bot-1');
 
 		// conn.request 同步抛出（非 rejected promise），触发 catch
 		const badConn = {
-			state: 'connected',
 			request: vi.fn().mockImplementation(() => { throw new Error('total failure'); }),
 			on: vi.fn(),
 			off: vi.fn(),
 		};
-		mockConnections.set('bot-1', badConn);
+		setConn('bot-1', badConn);
 
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const store = useDashboardStore();
@@ -458,7 +466,7 @@ describe('dashboard store', () => {
 		botsStore.setBots([{ id: '42', name: 'Bot42', online: true }]);
 
 		const agentConn = mockAgentConn([{ id: 'main' }]);
-		mockConnections.set('42', agentConn);
+		setConn('42', agentConn);
 		const agentsStore = useAgentsStore();
 		await agentsStore.loadAgents('42');
 
@@ -471,7 +479,7 @@ describe('dashboard store', () => {
 			'channels.status': {},
 			'tools.catalog': { groups: [] },
 		});
-		mockConnections.set('42', dashConn);
+		setConn('42', dashConn);
 
 		const store = useDashboardStore();
 		await store.loadDashboard(42);
@@ -484,7 +492,7 @@ describe('dashboard store', () => {
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
 
 		const agentConn = mockAgentConn([{ id: 'main' }]);
-		mockConnections.set('bot-1', agentConn);
+		setConn('bot-1', agentConn);
 		const agentsStore = useAgentsStore();
 		await agentsStore.loadAgents('bot-1');
 		expect(agentsStore.byBot['bot-1'].fetched).toBe(true);
@@ -501,7 +509,7 @@ describe('dashboard store', () => {
 			'channels.status': {},
 			'tools.catalog': { groups: [] },
 		});
-		mockConnections.set('bot-1', dashConn);
+		setConn('bot-1', dashConn);
 
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');

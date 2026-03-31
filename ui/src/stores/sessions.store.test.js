@@ -28,9 +28,8 @@ import { useBotsStore } from './bots.store.js';
  * @param {Record<string, string>} sessionKeyToId - sessionKey -> sessionId 映射
  * @param {string} [state] - 连接状态
  */
-function mockConn(sessionKeyToId = {}, state = 'connected') {
+function mockConn(sessionKeyToId = {}) {
 	return {
-		state,
 		request: vi.fn().mockImplementation((_method, params) => {
 			const sessionId = sessionKeyToId[params?.sessionKey];
 			if (sessionId) {
@@ -41,6 +40,17 @@ function mockConn(sessionKeyToId = {}, state = 'connected') {
 		on: vi.fn(),
 		off: vi.fn(),
 	};
+}
+
+/** 注册 mock conn 并设置 botsStore 中 bot 的 dcReady */
+function setConn(botId, conn, { dcReady = true } = {}) {
+	mockConnections.set(String(botId), conn);
+	const botsStore = useBotsStore();
+	if (!botsStore.byId[String(botId)]) {
+		botsStore.byId[String(botId)] = { id: String(botId), dcReady };
+	} else {
+		botsStore.byId[String(botId)].dcReady = dcReady;
+	}
 }
 
 describe('sessions store', () => {
@@ -78,8 +88,8 @@ describe('sessions store', () => {
 		// agentsStore 未加载 -> fallback 到 ['main']，sessionKey = 'agent:main:main'
 		const conn1 = mockConn({ 'agent:main:main': 'sid-1' });
 		const conn2 = mockConn({ 'agent:main:main': 'sid-2' });
-		mockConnections.set('bot-1', conn1);
-		mockConnections.set('bot-2', conn2);
+		setConn('bot-1', conn1);
+		setConn('bot-2', conn2);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -110,7 +120,7 @@ describe('sessions store', () => {
 			'agent:main:main': 'sid-main',
 			'agent:alias:main': 'sid-alias',
 		});
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -126,7 +136,7 @@ describe('sessions store', () => {
 		]);
 
 		const connOn = mockConn({ 'agent:main:main': 'sid-on' });
-		mockConnections.set('bot-on', connOn);
+		setConn('bot-on', connOn);
 		// bot-off 没有连接
 
 		const store = useSessionsStore();
@@ -147,13 +157,12 @@ describe('sessions store', () => {
 
 		const connOk = mockConn({ 'agent:main:main': 'sid-ok' });
 		const connFail = {
-			state: 'connected',
 			request: vi.fn().mockRejectedValue(new Error('connection failed')),
 			on: vi.fn(),
 			off: vi.fn(),
 		};
-		mockConnections.set('bot-ok', connOk);
-		mockConnections.set('bot-fail', connFail);
+		setConn('bot-ok', connOk);
+		setConn('bot-fail', connFail);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -177,7 +186,7 @@ describe('sessions store', () => {
 		botsStore.setBots([{ id: 'bot-1', name: 'B', online: true }]);
 
 		const conn = mockConn({ 'agent:main:main': 'sid-1' });
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useSessionsStore();
 		// 并发发起两次
@@ -197,7 +206,7 @@ describe('sessions store', () => {
 		botsStore.setBots([{ id: 'bot-1', name: 'B', online: true }]);
 
 		const conn = mockConn({});
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useSessionsStore();
 		expect(store.loading).toBe(false);
@@ -263,7 +272,7 @@ describe('sessions store', () => {
 			'agent:main:main': 'sid-main',
 			'agent:ops:main': 'sid-ops',
 		});
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -284,7 +293,7 @@ describe('sessions store', () => {
 		// 不设置 agentsStore 数据 -> getAgentsByBot 返回 []
 
 		const conn = mockConn({ 'agent:main:main': 'sid-1' });
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -304,7 +313,7 @@ describe('sessions store', () => {
 		botsStore.setBots([{ id: 42, name: 'B1', online: true }]);
 
 		const conn = mockConn({ 'agent:main:main': 'sid-1' });
-		mockConnections.set('42', conn);
+		setConn('42', conn);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -327,7 +336,6 @@ describe('sessions store', () => {
 		};
 
 		const conn = {
-			state: 'connected',
 			request: vi.fn().mockImplementation((_method, params) => {
 				if (params?.sessionKey === 'agent:main:main') {
 					return Promise.resolve({ sessionId: 'sid-main' });
@@ -337,7 +345,7 @@ describe('sessions store', () => {
 			on: vi.fn(),
 			off: vi.fn(),
 		};
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -357,15 +365,15 @@ describe('sessions store', () => {
 		// 两个 bot 都连接，先全量加载
 		const conn1 = mockConn({ 'agent:main:main': 'sid-1' });
 		const conn2 = mockConn({ 'agent:main:main': 'sid-2' });
-		mockConnections.set('bot-1', conn1);
-		mockConnections.set('bot-2', conn2);
+		setConn('bot-1', conn1);
+		setConn('bot-2', conn2);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
 		expect(store.items).toHaveLength(2);
 
 		// bot-2 断连，仅 bot-1 在线
-		conn2.state = 'disconnected';
+		botsStore.byId['bot-2'].dcReady = false;
 		await store.loadAllSessions();
 
 		// bot-2 的 sessions 应保留
@@ -382,8 +390,8 @@ describe('sessions store', () => {
 
 		const conn1 = mockConn({ 'agent:main:main': 'sid-1' });
 		const conn2 = mockConn({ 'agent:main:main': 'sid-2' });
-		mockConnections.set('bot-1', conn1);
-		mockConnections.set('bot-2', conn2);
+		setConn('bot-1', conn1);
+		setConn('bot-2', conn2);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -391,7 +399,6 @@ describe('sessions store', () => {
 
 		// bot-2 被服务端移除：从 store 移除 + 断连
 		delete botsStore.byId['bot-2'];
-		conn2.state = 'disconnected';
 		mockConnections.delete('bot-2');
 
 		// 重新加载（仅 bot-1 连接中）
@@ -411,8 +418,8 @@ describe('sessions store', () => {
 
 		const conn1 = mockConn({ 'agent:main:main': 'sid-1' });
 		const conn2 = mockConn({ 'agent:main:main': 'sid-2' });
-		mockConnections.set('bot-1', conn1);
-		mockConnections.set('bot-2', conn2);
+		setConn('bot-1', conn1);
+		setConn('bot-2', conn2);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -439,14 +446,14 @@ describe('sessions store', () => {
 		]);
 
 		const conn1 = mockConn({ 'agent:main:main': 'sid-1' });
-		mockConnections.set('bot-1', conn1);
+		setConn('bot-1', conn1);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
 		expect(store.items).toHaveLength(1);
 
 		// bot-1 断连
-		conn1.state = 'disconnected';
+		botsStore.byId['bot-1'].dcReady = false;
 		await store.loadAllSessions();
 
 		// 已有 sessions 不应被清空
@@ -467,7 +474,7 @@ describe('sessions store', () => {
 
 		// 'agent:main:main' 有有效 sessionId；'agent:empty:main' 返回空
 		const conn = mockConn({ 'agent:main:main': 'sid-main' });
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -489,7 +496,7 @@ describe('sessions store', () => {
 		};
 
 		const conn = mockConn({ 'agent:assistant:main': 'sid-asst' });
-		mockConnections.set('bot-1', conn);
+		setConn('bot-1', conn);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();

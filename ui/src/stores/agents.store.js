@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia';
 
-import { useBotConnections } from '../services/bot-connection-manager.js';
-import { useBotsStore } from './bots.store.js';
+import { useBotsStore, getReadyConn } from './bots.store.js';
 
 /** per-bot 飞行中请求合并，防止重连路径 + MainList watcher 同时触发时重复请求 */
 const _loadingByBot = new Map();
@@ -110,9 +109,9 @@ export const useAgentsStore = defineStore('agents', {
 				return _loadingByBot.get(id);
 			}
 
-			const conn = useBotConnections().get(id);
-			if (!conn || conn.state !== 'connected') {
-				console.debug('[agents] loadAgents skipped: no connected WS for botId=%s', id);
+			const conn = getReadyConn(id);
+			if (!conn) {
+				console.debug('[agents] loadAgents skipped: DC not ready for botId=%s', id);
 				return;
 			}
 
@@ -163,11 +162,9 @@ export const useAgentsStore = defineStore('agents', {
 		 */
 		async loadAllAgents() {
 			const botsStore = useBotsStore();
-			const manager = useBotConnections();
 			const promises = [];
 			for (const bot of botsStore.items) {
-				const conn = manager.get(String(bot.id));
-				if (conn && conn.state === 'connected') {
+				if (getReadyConn(bot.id)) {
 					promises.push(this.loadAgents(String(bot.id)));
 				}
 			}

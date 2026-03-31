@@ -54,8 +54,8 @@
 					</div>
 				</div>
 				<div v-if="bot.online && expandedDetails[bot.id] && getConnDetail(bot.id)" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted">
-					<p>{{ $t('bots.conn.localCandidate') }}：{{ getConnDetail(bot.id).localType }} · {{ getConnDetail(bot.id).localProtocol.toUpperCase() }}</p>
-					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ getConnDetail(bot.id).remoteType }} · {{ getConnDetail(bot.id).remoteProtocol.toUpperCase() }}</p>
+					<p>{{ $t('bots.conn.localCandidate') }}：{{ getConnDetail(bot.id).localType }} · {{ getConnDetail(bot.id).localProtocol?.toUpperCase() }}</p>
+					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ getConnDetail(bot.id).remoteType }} · {{ getConnDetail(bot.id).remoteProtocol?.toUpperCase() }}</p>
 					<p>{{ $t('bots.conn.relayProtocol') }}：{{ getConnDetail(bot.id).relayProtocol?.toUpperCase() ?? '—' }}</p>
 				</div>
 
@@ -140,28 +140,24 @@ export default {
 		connLabel(botId) {
 			const id = String(botId);
 			const bot = this.botsStore?.byId[id];
-			if (!bot) return this.$t('bots.conn.ws');
-			const mode = bot.transportMode;
-			if (mode === 'rtc') {
-				if (bot.rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
-				if (bot.rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
-				const info = bot.rtcTransportInfo;
-				if (!info) return this.$t('bots.conn.rtcConnecting');
-				if (info.localType === 'relay') {
-					const rp = (info.relayProtocol ?? 'udp').toLowerCase();
-					return rp === 'udp'
-						? this.$t('bots.conn.rtcRelay')
-						: this.$t('bots.conn.rtcRelayProto', { protocol: rp.toUpperCase() });
-				}
-				const isLan = info.localType === 'host';
-				const proto = (info.localProtocol ?? 'udp').toLowerCase();
-				if (proto === 'udp') {
-					return this.$t(isLan ? 'bots.conn.rtcLan' : 'bots.conn.rtcP2P');
-				}
-				const key = isLan ? 'bots.conn.rtcLanProto' : 'bots.conn.rtcP2PProto';
-				return this.$t(key, { protocol: proto.toUpperCase() });
+			if (!bot) return this.$t('bots.conn.disconnected');
+			if (bot.rtcPhase === 'failed') return this.$t('bots.conn.rtcFailed');
+			if (bot.rtcPhase !== 'ready') return this.$t('bots.conn.rtcConnecting');
+			const info = bot.rtcTransportInfo;
+			if (!info) return this.$t('bots.conn.rtcConnecting');
+			if (info.localType === 'relay') {
+				const rp = (info.relayProtocol ?? 'udp').toLowerCase();
+				return rp === 'udp'
+					? this.$t('bots.conn.rtcRelay')
+					: this.$t('bots.conn.rtcRelayProto', { protocol: rp.toUpperCase() });
 			}
-			return this.$t('bots.conn.ws');
+			const isLan = info.localType === 'host';
+			const proto = (info.localProtocol ?? 'udp').toLowerCase();
+			if (proto === 'udp') {
+				return this.$t(isLan ? 'bots.conn.rtcLan' : 'bots.conn.rtcP2P');
+			}
+			const key = isLan ? 'bots.conn.rtcLanProto' : 'bots.conn.rtcP2PProto';
+			return this.$t(key, { protocol: proto.toUpperCase() });
 		},
 		hasConnDetail(botId) {
 			return !!this.botsStore?.byId[String(botId)]?.rtcTransportInfo;
@@ -193,15 +189,28 @@ export default {
 			});
 		},
 		async loadData() {
+			if (this.loading) return;
 			this.loading = true;
 			try {
-				await this.botsStore?.loadBots();
-				// 并行加载所有 bot 的 dashboard
+				// bot 列表由 SSE 快照维护；等待 fetched 后只加载 dashboard
+				if (!this.botsStore?.fetched) {
+					await new Promise((resolve) => {
+						const timer = setTimeout(() => { unwatch(); resolve(); }, 10_000);
+						const unwatch = this.$watch(
+							() => this.botsStore?.fetched,
+							(val) => {
+								if (val) { clearTimeout(timer); unwatch(); resolve(); }
+							},
+							{ immediate: true },
+						);
+					});
+				}
 				await Promise.allSettled(
 					this.bots.map(bot => this.dashboardStore.loadDashboard(String(bot.id)))
 				);
 			}
 			catch (err) {
+				console.warn('[ManageBotsPage] loadData failed:', err);
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('bots.loadFailed'));
 			}
 			finally {
@@ -218,6 +227,7 @@ export default {
 				this.notify.success(this.$t('bots.unbindSuccess'));
 			}
 			catch (err) {
+				console.warn('[ManageBotsPage] onUnbindByUser failed:', err);
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('bots.unbindFailed'));
 			}
 			finally {

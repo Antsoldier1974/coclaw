@@ -1,5 +1,5 @@
-import { findBotById } from './repos/bot.repo.js';
-import { botStatusEmitter } from './bot-ws-hub.js';
+import { findBotById, listBotsByUserId } from './repos/bot.repo.js';
+import { botStatusEmitter, listOnlineBotIds } from './bot-ws-hub.js';
 
 // userId(string) -> Set<Response>
 const sseClients = new Map();
@@ -26,6 +26,38 @@ export function registerSseClient(userId, res) {
 }
 
 /**
+ * 向单个 SSE 客户端推送全量 bot 快照
+ * @param {string|bigint} userId
+ * @param {import('express').Response} res
+ * @param {{ listBotsByUserIdImpl?: Function, listOnlineBotIdsImpl?: Function }} [deps]
+ */
+export async function sendSnapshot(userId, res, deps = {}) {
+	const {
+		listBotsByUserIdImpl = listBotsByUserId,
+		listOnlineBotIdsImpl = listOnlineBotIds,
+	} = deps;
+	const bots = await listBotsByUserIdImpl(userId);
+	const onlineIds = listOnlineBotIdsImpl();
+	const items = bots.map((b) => {
+		const botId = b.id.toString();
+		return {
+			id: botId,
+			name: b.name,
+			online: onlineIds.has(botId),
+			lastSeenAt: b.lastSeenAt,
+			createdAt: b.createdAt,
+			updatedAt: b.updatedAt,
+		};
+	});
+	const msg = `data: ${JSON.stringify({ event: 'bot.snapshot', items })}\n\n`;
+	try {
+		res.write(msg);
+	} catch (err) {
+		console.warn('[coclaw/sse] snapshot write failed userId=%s: %s', userId, err?.message);
+	}
+}
+
+/**
  * 向指定用户的 SSE 客户端推送数据
  * @param {string} userId
  * @param {object} data
@@ -42,7 +74,9 @@ export function sendToUser(userId, data) {
 		try {
 			res.write(msg);
 		}
-		catch {}
+		catch (err) {
+			console.debug('[coclaw/sse] write failed userId=%s: %s', key, err?.message);
+		}
 	}
 }
 
@@ -60,6 +94,7 @@ botStatusEmitter.on('status', async ({ botId, online }) => {
 	try {
 		const bot = await findBotById(BigInt(botId));
 		if (!bot) {
+			console.debug('[coclaw/sse] status event: bot not found botId=%s (may be deleted)', botId);
 			return;
 		}
 		sendToUser(String(bot.userId), {
@@ -68,8 +103,8 @@ botStatusEmitter.on('status', async ({ botId, online }) => {
 			online,
 		});
 	}
-	catch {
-		// 静默忽略，避免 SSE 推送失败影响主流程
+	catch (err) {
+		console.warn('[coclaw/sse] status event push failed botId=%s: %s', botId, err?.message);
 	}
 });
 
@@ -80,6 +115,7 @@ botStatusEmitter.on('nameUpdated', async ({ botId, name }) => {
 	try {
 		const bot = await findBotById(BigInt(botId));
 		if (!bot) {
+			console.debug('[coclaw/sse] nameUpdated event: bot not found botId=%s (may be deleted)', botId);
 			return;
 		}
 		sendToUser(String(bot.userId), {
@@ -88,7 +124,7 @@ botStatusEmitter.on('nameUpdated', async ({ botId, name }) => {
 			name,
 		});
 	}
-	catch {
-		// 静默忽略
+	catch (err) {
+		console.warn('[coclaw/sse] nameUpdated event push failed botId=%s: %s', botId, err?.message);
 	}
 });

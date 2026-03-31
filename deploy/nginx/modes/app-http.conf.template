@@ -34,7 +34,7 @@ server {
 		try_files $uri $uri/ /index.html;
 	}
 
-	location ~* ^/api/.*/stream$ {
+	location ~* ^/api/.*/(stream|signal)$ {
 		include /etc/nginx/includes/proxy-ws.conf;
 		proxy_pass http://server:3000;
 	}

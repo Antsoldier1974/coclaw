@@ -16,7 +16,7 @@ import {
 	waitBindingResult,
 } from '../binding-wait-hub.js';
 import { createUiWsTicket, listOnlineBotIds, notifyAndDisconnectBot, refreshBotName } from '../bot-ws-hub.js';
-import { registerSseClient, sendToUser } from '../bot-status-sse.js';
+import { registerSseClient, sendSnapshot, sendToUser } from '../bot-status-sse.js';
 
 export const botRouter = Router();
 
@@ -44,6 +44,10 @@ function requireSession(req, res) {
 	return false;
 }
 
+/**
+ * 列出当前用户绑定的所有 bot。
+ * 注：UI 主流程已通过 SSE bot.snapshot 获取 bot 列表，此 HTTP 端点作为后备保留。
+ */
 export async function listBotsHandler(req, res, next, deps = {}) {
 	if (!requireSession(req, res)) {
 		return;
@@ -453,10 +457,17 @@ export async function unbindBotHandler(req, res, next) {
 	}
 }
 
-export function botStatusStreamHandler(req, res) {
+export async function botStatusStreamHandler(req, res, _next, {
+	sendSnapshotImpl = sendSnapshot,
+} = {}) {
 	if (!requireSession(req, res)) {
 		return;
 	}
+
+	const remoteIp = req.headers?.['x-forwarded-for']?.split(',')[0]?.trim()
+		|| req.socket?.remoteAddress
+		|| 'unknown';
+	console.info('[coclaw/sse] stream request userId=%s ip=%s', req.user.id, remoteIp);
 
 	res.writeHead(200, {
 		'Content-Type': 'text/event-stream',
@@ -465,13 +476,19 @@ export function botStatusStreamHandler(req, res) {
 	});
 	res.write('\n');
 
+	// 先推送快照再注册增量事件，避免增量事件被后到的快照覆盖
+	await sendSnapshotImpl(req.user.id, res).catch((err) => {
+		console.warn('[SSE] snapshot failed userId=%s: %s', req.user.id, err?.message);
+	});
 	registerSseClient(req.user.id, res);
 
+	// 应用层心跳（UI 可感知，用于检测 SSE 健康）
 	const hbTimer = setInterval(() => {
 		try {
-			res.write(': heartbeat\n\n');
+			res.write('data: {"event":"heartbeat"}\n\n');
 		}
-		catch {
+		catch (err) {
+			console.debug('[SSE] heartbeat write failed, clearing timer: %s', err?.message);
 			clearInterval(hbTimer);
 		}
 	}, 30_000);

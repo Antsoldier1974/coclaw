@@ -10,6 +10,7 @@ import {
 	buildDeviceAuthPayloadV3,
 } from './device-identity.js';
 import { getRuntime } from './runtime.js';
+import { setSender as setRemoteLogSender, remoteLog } from './remote-log.js';
 
 const DEFAULT_GATEWAY_WS_URL = `ws://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || '18789'}`;
 const RECONNECT_MS = 10_000;
@@ -52,7 +53,8 @@ function defaultResolveGatewayAuthToken() {
 		const token = cfg?.gateway?.auth?.token;
 		return typeof token === 'string' && token.trim() ? token.trim() : '';
 	}
-	catch {
+	catch (err) {
+		console.warn?.(`[coclaw] resolve gateway auth token failed: ${String(err?.message ?? err)}`);
 		return '';
 	}
 }
@@ -72,6 +74,7 @@ export class RealtimeBridge {
 	 * @param {Function} [deps.getBindingsPath] - 获取绑定文件路径
 	 * @param {Function} [deps.resolveGatewayAuthToken] - 获取 gateway 认证 token
 	 * @param {Function} [deps.loadDeviceIdentity] - 加载设备身份
+	 * @param {number} [deps.gatewayReadyTimeoutMs] - __waitGatewayReady 默认超时（测试可注入短值）
 	 */
 	constructor(deps = {}) {
 		this.__readConfig = deps.readConfig ?? readConfig;
@@ -79,7 +82,9 @@ export class RealtimeBridge {
 		this.__getBindingsPath = deps.getBindingsPath ?? getBindingsPath;
 		this.__resolveGatewayAuthToken = deps.resolveGatewayAuthToken ?? defaultResolveGatewayAuthToken;
 		this.__loadDeviceIdentity = deps.loadDeviceIdentity ?? loadOrCreateDeviceIdentity;
+		this.__preloadNdc = deps.preloadNdc ?? null;
 		this.__WebSocket = deps.WebSocket ?? null;
+		this.__gatewayReadyTimeoutMs = deps.gatewayReadyTimeoutMs ?? 1500;
 
 		this.serverWs = null;
 		this.gatewayWs = null;
@@ -100,6 +105,8 @@ export class RealtimeBridge {
 		this.webrtcPeer = null;
 		this.__webrtcPeerReady = null;
 		this.__fileHandler = null;
+		this.__ndcPreloadResult = null;
+		this.__ndcCleanup = null;
 	}
 
 	__resolveWebSocket() {
@@ -149,6 +156,7 @@ export class RealtimeBridge {
 			this.serverHbTimer.unref?.();
 			return;
 		}
+		remoteLog(`ws.hb-timeout peer=server misses=${this.__serverHbMissCount}`);
 		this.logger.warn?.(
 			`[coclaw] server ws heartbeat timeout after ${this.__serverHbMissCount} consecutive misses (~${this.__serverHbMissCount * SERVER_HB_TIMEOUT_MS / 1000}s), closing`
 		);
@@ -198,22 +206,26 @@ export class RealtimeBridge {
 	}
 
 	/** 懒加载 WebRtcPeer（promise 锁防并发重复创建） */
+	/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
 	async __initWebrtcPeer() {
+		const PeerConnection = this.__ndcPreloadResult?.PeerConnection;
+		if (!PeerConnection) {
+			remoteLog('rtc.unavailable reason=no-webrtc-impl');
+			throw new Error('No WebRTC implementation available');
+		}
+
 		const { WebRtcPeer } = await import('./webrtc-peer.js');
 		const { createFileHandler } = await import('./file-manager/handler.js');
-		/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
 		this.__fileHandler = createFileHandler({
 			resolveWorkspace: (agentId) => this.__resolveWorkspace(agentId),
 			logger: this.logger,
 		});
 		this.__fileHandler.scheduleTmpCleanup(() => this.__listAgentWorkspaces());
-		/* c8 ignore stop */
 		this.webrtcPeer = new WebRtcPeer({
 			onSend: (msg) => this.__forwardToServer(msg),
 			onRequest: (dcPayload) => {
 				void this.__handleGatewayRequestFromServer(dcPayload);
 			},
-			/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
 			onFileRpc: (payload, sendFn) => {
 				this.__fileHandler.handleRpcRequest(payload, sendFn)
 					.catch((err) => this.logger.warn?.(`[coclaw/file] rpc error: ${err.message}`));
@@ -221,10 +233,11 @@ export class RealtimeBridge {
 			onFileChannel: (dc) => {
 				this.__fileHandler.handleFileChannel(dc);
 			},
-			/* c8 ignore stop */
+			PeerConnection,
 			logger: this.logger,
 		});
 	}
+	/* c8 ignore stop */
 
 	/* c8 ignore next 7 -- 防御性检查，serverWs 通常在调用时可用 */
 	__forwardToServer(payload) {
@@ -450,8 +463,8 @@ export class RealtimeBridge {
 			try {
 				const ws = await this.__resolveWorkspace(id);
 				workspaces.push(ws);
-			} catch {
-				// 个别 agent 解析失败不阻断
+			} catch (err) {
+				this.__logDebug(`workspace resolve failed for agent=${id}: ${err?.message}`);
 			}
 		}
 		return workspaces;
@@ -523,7 +536,8 @@ export class RealtimeBridge {
 				params,
 			}));
 		}
-		catch {
+		catch (err) {
+			this.logger.warn?.(`[coclaw] gateway connect request failed: ${String(err?.message ?? err)}`);
 			this.gatewayConnectReqId = null;
 		}
 	}
@@ -562,6 +576,7 @@ export class RealtimeBridge {
 			if (payload.type === 'res' && this.gatewayConnectReqId && payload.id === this.gatewayConnectReqId) {
 				if (payload.ok === true) {
 					this.gatewayReady = true;
+					remoteLog('ws.connected peer=gateway');
 					this.__logDebug(`gateway connect ok <- id=${payload.id}`);
 					this.gatewayConnectReqId = null;
 					this.__ensureSessionsPromise = this.__ensureAllAgentSessions();
@@ -569,6 +584,7 @@ export class RealtimeBridge {
 				else {
 					this.gatewayReady = false;
 					this.gatewayConnectReqId = null;
+					remoteLog(`ws.connect-failed peer=gateway msg=${payload?.error?.message ?? 'unknown'}`);
 					this.logger.warn?.(`[coclaw] gateway connect failed: ${payload?.error?.message ?? 'unknown'}`);
 					try { ws.close(1008, 'gateway_connect_failed'); }
 					/* c8 ignore next */
@@ -592,15 +608,18 @@ export class RealtimeBridge {
 				return;
 			}
 			if (payload.type === 'res' || payload.type === 'event') {
+				// TODO: UI 已通过 DataChannel 接收业务消息，待旧版 UI 全部更新后移除此转发
 				this.__forwardToServer(payload);
 				this.webrtcPeer?.broadcast(payload);
 			}
 		});
 
 		ws.addEventListener('open', () => {
-			// wait for connect.challenge
+			this.__logDebug('gateway ws open, waiting for connect.challenge');
 		});
-		ws.addEventListener('close', () => {
+		ws.addEventListener('close', (ev) => {
+			remoteLog(`ws.disconnected peer=gateway code=${ev?.code ?? '?'}`);
+			this.logger.info?.(`[coclaw] gateway ws closed (code=${ev?.code ?? '?'} reason=${ev?.reason ?? 'n/a'})`);
 			this.gatewayWs = null;
 			this.gatewayReady = false;
 			this.gatewayConnectReqId = null;
@@ -610,10 +629,14 @@ export class RealtimeBridge {
 			}
 			this.gatewayPendingRequests.clear();
 		});
-		ws.addEventListener('error', () => {});
+		ws.addEventListener('error', (err) => {
+			/* c8 ignore next -- ?./?? fallback */
+			remoteLog(`ws.error peer=gateway msg=${String(err?.message ?? err)}`);
+			this.logger.warn?.(`[coclaw] gateway ws error: ${String(err?.message ?? err)}`);
+		});
 	}
 
-	async __waitGatewayReady(timeoutMs = 1500) {
+	async __waitGatewayReady(timeoutMs = this.__gatewayReadyTimeoutMs) {
 		this.__ensureGatewayConnection();
 		if (this.gatewayWs && this.gatewayWs.readyState === 1 && this.gatewayReady) {
 			return true;
@@ -711,6 +734,7 @@ export class RealtimeBridge {
 		if (!this.started || this.reconnectTimer) {
 			return;
 		}
+		remoteLog(`ws.reconnecting peer=server delay=${RECONNECT_MS}ms`);
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
 			this.__connectIfNeeded().catch((err) => {
@@ -758,6 +782,7 @@ export class RealtimeBridge {
 				return;
 			}
 			this.logger.warn?.(`[coclaw] realtime bridge connect timeout, will retry: ${maskedTarget}`);
+			remoteLog('ws.connect-timeout peer=server');
 			this.serverWs = null;
 			this.__closeGatewayWs();
 			this.__scheduleReconnect();
@@ -770,6 +795,10 @@ export class RealtimeBridge {
 		sock.addEventListener('open', () => {
 			this.__clearConnectTimer();
 			this.logger.info?.(`[coclaw] realtime bridge connected: ${maskedTarget}`);
+			remoteLog('ws.connected peer=server');
+			setRemoteLogSender((msg) => {
+				if (sock.readyState === 1) sock.send(JSON.stringify(msg));
+			});
 			this.__startServerHeartbeat(sock);
 			this.__ensureGatewayConnection();
 		});
@@ -779,6 +808,7 @@ export class RealtimeBridge {
 			try {
 				const payload = JSON.parse(String(event.data ?? '{}'));
 				if (payload?.type === 'bot.unbound') {
+					remoteLog('ws.bot-unbound');
 					await this.__clearTokenLocal(payload.botId);
 					try { sock.close(4001, 'bot_unbound'); }
 					/* c8 ignore next */
@@ -797,6 +827,7 @@ export class RealtimeBridge {
 						await this.webrtcPeer.handleSignaling(payload);
 					} catch (err) {
 						this.logger.warn?.(`[coclaw/rtc] signaling error (or werift not found): ${err?.message}`);
+						remoteLog(`rtc.signaling-error msg=${err?.message}`);
 					}
 					return;
 				}
@@ -820,6 +851,7 @@ export class RealtimeBridge {
 			if (this.serverWs !== null && this.serverWs !== sock) {
 				return;
 			}
+			setRemoteLogSender(null);
 			const wasIntentional = this.intentionallyClosed;
 			this.serverWs = null;
 			this.intentionallyClosed = false;
@@ -837,6 +869,8 @@ export class RealtimeBridge {
 			}
 
 			if (event?.code === 4001 || event?.code === 4003) {
+				remoteLog(`ws.auth-close peer=server code=${event.code}`);
+				this.logger.warn?.(`[coclaw] server ws auth-close (code=${event.code}), clearing local token`);
 				try {
 					await this.__clearTokenLocal();
 				}
@@ -848,6 +882,7 @@ export class RealtimeBridge {
 			}
 
 			if (!wasIntentional) {
+				remoteLog(`ws.disconnected peer=server code=${event?.code ?? 'unknown'} reason=${event?.reason ?? 'n/a'}`);
 				this.logger.warn?.(`[coclaw] realtime bridge closed (${event?.code ?? 'unknown'}: ${event?.reason ?? 'n/a'}), will retry in ${RECONNECT_MS}ms`);
 				this.__scheduleReconnect();
 			}
@@ -859,6 +894,8 @@ export class RealtimeBridge {
 			}
 			this.__clearServerHeartbeat();
 			this.__clearConnectTimer();
+			setRemoteLogSender(null);
+			remoteLog(`ws.error peer=server msg=${String(err?.message ?? err)}`);
 			this.logger.warn?.(`[coclaw] realtime bridge error, will retry in ${RECONNECT_MS}ms: ${String(err?.message ?? err)}`);
 			this.serverWs = null;
 			this.__closeGatewayWs();
@@ -873,6 +910,27 @@ export class RealtimeBridge {
 		this.logger = logger ?? console;
 		this.pluginConfig = pluginConfig ?? {};
 		this.started = true;
+		// 先完成 WebRTC 实现加载，再建立连接，避免 UI 发来 offer 时 RTC 包未就绪
+		const preloadFn = this.__preloadNdc
+			?? (await import('./ndc-preloader.js')).preloadNdc;
+		const preloadResult = await preloadFn()
+			.catch((err) => {
+				// preloadNdc 设计上永不 throw，此 catch 为纯防御性兜底
+				this.logger.warn?.(`[coclaw] ndc preload unexpected failure: ${err?.message}`);
+				return { PeerConnection: null, cleanup: null, impl: 'none' };
+			});
+		// 竞态保护：若 preload 期间 stop() 已执行，不再赋值，立即释放 cleanup
+		if (!this.started) {
+			if (preloadResult.cleanup) {
+				try { preloadResult.cleanup(); } catch {}
+			}
+			return;
+		}
+		this.__ndcPreloadResult = preloadResult;
+		this.__ndcCleanup = preloadResult.cleanup;
+		const implLabel = preloadResult.impl === 'ndc' ? 'node-datachannel(ndc)' : preloadResult.impl;
+		this.logger.info?.(`[coclaw] WebRTC impl: ${implLabel}`);
+		remoteLog(`bridge.webrtc-impl impl=${implLabel}`);
 		await this.__connectIfNeeded();
 	}
 
@@ -886,6 +944,7 @@ export class RealtimeBridge {
 
 	async stop() {
 		this.started = false;
+		setRemoteLogSender(null);
 		this.__clearServerHeartbeat();
 		this.__clearConnectTimer();
 		if (this.reconnectTimer) {
@@ -898,6 +957,17 @@ export class RealtimeBridge {
 			this.webrtcPeer = null;
 			this.__webrtcPeerReady = null;
 		}
+		// ndc cleanup：node-datachannel 的 native threads 必须通过 cleanup() 释放，
+		// 否则会阻止进程退出（issue #366）。
+		// start() 已 await preload 完成并缓存 cleanup 引用，此处直接使用。
+		// 注意：若进程被 SIGKILL 强杀，此处不会执行，OS 会回收资源。
+		// TODO: 若 OpenClaw 未来提供 graceful shutdown 钩子，应在钩子中也调用 cleanup。
+		if (this.__ndcCleanup) {
+			try { this.__ndcCleanup(); }
+			catch (err) { remoteLog(`ndc.cleanup-failed error=${err?.message}`); }
+		}
+		this.__ndcCleanup = null;
+		this.__ndcPreloadResult = null;
 		if (this.__fileHandler) {
 			this.__fileHandler.cancelCleanup();
 			this.__fileHandler = null;

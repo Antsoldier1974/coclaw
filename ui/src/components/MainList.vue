@@ -169,7 +169,7 @@ export default {
 		/** 跟踪 bot 增删/上线/连接就绪变化，触发 agents 和 topics 重新加载 */
 		botListKey() {
 			return (this.botsStore?.items ?? [])
-				.map((b) => `${b.id}:${b.online}:${b.connState === 'connected'}`)
+				.map((b) => `${b.id}:${b.online}:${b.dcReady}`)
 				.join(',');
 		},
 		botActionItems() {
@@ -268,11 +268,18 @@ export default {
 	},
 	methods: {
 		async loadAllData() {
-			try {
-				await this.botsStore?.loadBots();
-			}
-			catch {
-				this.botsStore?.setBots([]);
+			// 等待 SSE 快照到达
+			if (!this.botsStore?.fetched) {
+				await new Promise((resolve) => {
+					const timer = setTimeout(() => { unwatch(); resolve(); }, 10_000);
+					const unwatch = this.$watch(
+						() => this.botsStore?.fetched,
+						(val) => {
+							if (val) { clearTimeout(timer); unwatch(); resolve(); }
+						},
+						{ immediate: true },
+					);
+				});
 			}
 			await this.agentsStore?.loadAllAgents();
 			await this.topicsStore.loadAllTopics();

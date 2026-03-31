@@ -10,6 +10,10 @@ vi.mock('../stores/sessions.store.js', () => {
 	return { useSessionsStore: () => mockStore };
 });
 
+// mock remote-log（use-bot-status-sse 内部 import）
+const mockRemoteLog = vi.fn();
+vi.mock('../services/remote-log.js', () => ({ remoteLog: (...args) => mockRemoteLog(...args) }));
+
 import { onBeforeUnmount } from 'vue';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { useBotStatusSse } from './use-bot-status-sse.js';
@@ -18,17 +22,17 @@ describe('useBotStatusSse', () => {
 	let store;
 	let MockEventSource;
 	let esInstance;
-	/** 当前测试的 SSE 实例 stop 函数，用于清理 */
 	let currentStop;
 
 	beforeEach(() => {
 		store = {
-			loadBots: vi.fn().mockResolvedValue([]),
+			applySnapshot: vi.fn(),
 			updateBotOnline: vi.fn(),
 			addOrUpdateBot: vi.fn(),
 			removeBotById: vi.fn(),
 		};
 		useSessionsStore().removeSessionsByBotId.mockReset();
+		mockRemoteLog.mockClear();
 
 		esInstance = {
 			onopen: null,
@@ -39,17 +43,17 @@ describe('useBotStatusSse', () => {
 
 		MockEventSource = vi.fn(() => esInstance);
 		vi.stubGlobal('EventSource', MockEventSource);
+		vi.useFakeTimers();
 		vi.mocked(onBeforeUnmount).mockReset();
 		currentStop = null;
 	});
 
 	afterEach(() => {
-		// 清理全局监听器，避免跨测试污染
 		if (currentStop) currentStop();
+		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
 
-	/** 创建 SSE 实例并自动注册 afterEach 清理 */
 	function createSse() {
 		const result = useBotStatusSse(store);
 		currentStop = result.stop;
@@ -66,13 +70,24 @@ describe('useBotStatusSse', () => {
 		expect(onBeforeUnmount).toHaveBeenCalledWith(expect.any(Function));
 	});
 
-	test('should set connected=true and call loadBots on open', async () => {
+	test('should set connected=true on open and emit remoteLog', () => {
 		const { connected } = createSse();
 
 		esInstance.onopen();
 
 		expect(connected.value).toBe(true);
-		expect(store.loadBots).toHaveBeenCalledTimes(1);
+		expect(mockRemoteLog).toHaveBeenCalledWith('sse.connected');
+	});
+
+	test('should handle bot.snapshot event via applySnapshot', () => {
+		createSse();
+
+		const items = [{ id: '1', name: 'a', online: true }];
+		esInstance.onmessage({
+			data: JSON.stringify({ event: 'bot.snapshot', items }),
+		});
+
+		expect(store.applySnapshot).toHaveBeenCalledWith(items);
 	});
 
 	test('should update bot status on message', () => {
@@ -113,7 +128,17 @@ describe('useBotStatusSse', () => {
 		});
 
 		expect(store.removeBotById).toHaveBeenCalledWith('42');
-		// removeSessionsByBotId 由 removeBotById 内部调用，不再重复调用
+	});
+
+	test('should handle heartbeat event silently', () => {
+		createSse();
+
+		esInstance.onmessage({
+			data: JSON.stringify({ event: 'heartbeat' }),
+		});
+
+		expect(store.applySnapshot).not.toHaveBeenCalled();
+		expect(store.updateBotOnline).not.toHaveBeenCalled();
 	});
 
 	test('should ignore messages with unknown event', () => {
@@ -134,7 +159,7 @@ describe('useBotStatusSse', () => {
 		expect(store.updateBotOnline).not.toHaveBeenCalled();
 	});
 
-	test('should set connected=false on error', () => {
+	test('should set connected=false on error and emit remoteLog', () => {
 		const { connected } = createSse();
 
 		esInstance.onopen();
@@ -142,26 +167,65 @@ describe('useBotStatusSse', () => {
 
 		esInstance.onerror();
 		expect(connected.value).toBe(false);
+		expect(mockRemoteLog).toHaveBeenCalledWith('sse.error');
 	});
 
-	test('stop() should close EventSource', () => {
+	test('stop() should close EventSource and clear heartbeat timer', () => {
 		const { stop, connected } = createSse();
 
+		esInstance.onopen(); // 启动心跳计时器
+
 		stop();
-		currentStop = null; // 已手动 stop
+		currentStop = null;
 
 		expect(esInstance.close).toHaveBeenCalled();
 		expect(connected.value).toBe(false);
+
+		// 即使超过超时时间也不应重建（计时器已清理）
+		vi.advanceTimersByTime(70_000);
+		expect(MockEventSource).toHaveBeenCalledTimes(1);
+	});
+
+	test('heartbeat timeout should restart SSE after 65s of silence and emit remoteLog', () => {
+		createSse();
+		esInstance.onopen();
+		mockRemoteLog.mockClear();
+
+		expect(MockEventSource).toHaveBeenCalledTimes(1);
+
+		// 65s 无数据 → 超时重建
+		vi.advanceTimersByTime(65_000);
+
+		expect(esInstance.close).toHaveBeenCalled();
+		expect(MockEventSource).toHaveBeenCalledTimes(2);
+		expect(mockRemoteLog).toHaveBeenCalledWith('sse.hbTimeout');
+	});
+
+	test('heartbeat timeout should be reset by any incoming message', () => {
+		createSse();
+		esInstance.onopen();
+
+		// 40s 后收到心跳
+		vi.advanceTimersByTime(40_000);
+		esInstance.onmessage({
+			data: JSON.stringify({ event: 'heartbeat' }),
+		});
+
+		// 再过 40s（距上次消息 40s < 65s）→ 不应超时
+		vi.advanceTimersByTime(40_000);
+		expect(MockEventSource).toHaveBeenCalledTimes(1);
+
+		// 再过 25s（距上次消息 65s）→ 超时
+		vi.advanceTimersByTime(25_000);
+		expect(MockEventSource).toHaveBeenCalledTimes(2);
 	});
 
 	test('app:foreground 事件触发 SSE 重建', () => {
 		createSse();
 		expect(MockEventSource).toHaveBeenCalledTimes(1);
 
-		// 触发前台恢复
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 
-		// 旧连接被关闭，新连接被创建
 		expect(esInstance.close).toHaveBeenCalled();
 		expect(MockEventSource).toHaveBeenCalledTimes(2);
 	});
@@ -214,5 +278,34 @@ describe('useBotStatusSse', () => {
 		currentStop = null;
 
 		expect(removeSpy).toHaveBeenCalledWith('network:online', expect.any(Function));
+	});
+
+	describe('restart 节流', () => {
+		test('500ms 内连续两次 restart 只创建一个新 EventSource', () => {
+			createSse();
+			expect(MockEventSource).toHaveBeenCalledTimes(1);
+
+			// 第一次 restart（如 app:foreground）
+			window.dispatchEvent(new CustomEvent('app:foreground'));
+			expect(MockEventSource).toHaveBeenCalledTimes(2);
+
+			// 第二次 restart（如 network:online）—— 500ms 内，被节流
+			window.dispatchEvent(new CustomEvent('network:online'));
+			expect(MockEventSource).toHaveBeenCalledTimes(2);
+		});
+
+		test('超过 500ms 后 restart 正常执行', () => {
+			createSse();
+			expect(MockEventSource).toHaveBeenCalledTimes(1);
+
+			window.dispatchEvent(new CustomEvent('app:foreground'));
+			expect(MockEventSource).toHaveBeenCalledTimes(2);
+
+			// 超过节流期
+			vi.advanceTimersByTime(500);
+
+			window.dispatchEvent(new CustomEvent('network:online'));
+			expect(MockEventSource).toHaveBeenCalledTimes(3);
+		});
 	});
 });

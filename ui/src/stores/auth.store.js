@@ -15,9 +15,12 @@ import {
 } from '../i18n/index.js';
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useSignalingConnection } from '../services/signaling-connection.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
+import { useAgentsStore } from './agents.store.js';
+import { useTopicsStore } from './topics.store.js';
 
 function applyUserPreferences(user) {
 	syncThemeModeFromSettings(user?.settings);
@@ -107,7 +110,10 @@ export const useAuthStore = defineStore('auth', {
 			draftStore.onUserChanged();
 			syncThemeModeFromSettings(null);
 			useBotConnections().disconnectAll();
+			useSignalingConnection().disconnect();
 			useSessionsStore().$reset();
+			useAgentsStore().$reset();
+			useTopicsStore().$reset();
 			useBotsStore().$reset();
 			console.log('[auth] logged out');
 			this.loading = false;
@@ -123,6 +129,7 @@ export const useAuthStore = defineStore('auth', {
 				};
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Update profile failed';
+				console.warn('[auth] updateProfile failed:', this.errorMessage);
 			} finally {
 				this.loading = false;
 			}
@@ -134,6 +141,7 @@ export const useAuthStore = defineStore('auth', {
 				return true;
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Change password failed';
+				console.warn('[auth] changePassword failed:', this.errorMessage);
 				return false;
 			}
 		},
@@ -152,6 +160,7 @@ export const useAuthStore = defineStore('auth', {
 				applyUserPreferences(this.user);
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Update settings failed';
+				console.warn('[auth] updateSettings failed:', this.errorMessage);
 			} finally {
 				this.loading = false;
 			}
