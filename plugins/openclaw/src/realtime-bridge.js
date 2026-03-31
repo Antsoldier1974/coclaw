@@ -103,7 +103,7 @@ export class RealtimeBridge {
 		this.webrtcPeer = null;
 		this.__webrtcPeerReady = null;
 		this.__fileHandler = null;
-		this.__ndcPreloadPromise = null;
+		this.__ndcPreloadResult = null;
 		this.__ndcCleanup = null;
 	}
 
@@ -206,14 +206,10 @@ export class RealtimeBridge {
 	/** 懒加载 WebRtcPeer（promise 锁防并发重复创建） */
 	/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
 	async __initWebrtcPeer() {
-		// 等待 ndc 预加载结果，决定使用哪个 RTCPeerConnection 实现
-		let PeerConnection;
-		if (this.__ndcPreloadPromise) {
-			const result = await this.__ndcPreloadPromise;
-			if (result) {
-				PeerConnection = result.PeerConnection;
-				this.__ndcCleanup = result.cleanup;
-			}
+		const PeerConnection = this.__ndcPreloadResult?.PeerConnection;
+		if (!PeerConnection) {
+			remoteLog('rtc.unavailable reason=no-webrtc-impl');
+			throw new Error('No WebRTC implementation available');
 		}
 
 		const { WebRtcPeer } = await import('./webrtc-peer.js');
@@ -912,13 +908,24 @@ export class RealtimeBridge {
 		this.logger = logger ?? console;
 		this.pluginConfig = pluginConfig ?? {};
 		this.started = true;
+		// 先完成 WebRTC 实现加载，再建立连接，避免 UI 发来 offer 时 RTC 包未就绪
 		const preloadFn = this.__preloadNdc
 			?? (await import('./ndc-preloader.js')).preloadNdc;
-		this.__ndcPreloadPromise = preloadFn()
+		const preloadResult = await preloadFn()
 			.catch((err) => {
-				this.logger.warn?.(`[coclaw] ndc preload failed: ${err?.message}`);
-				return null;
+				// preloadNdc 设计上永不 throw，此 catch 为纯防御性兜底
+				this.logger.warn?.(`[coclaw] ndc preload unexpected failure: ${err?.message}`);
+				return { PeerConnection: null, cleanup: null, impl: 'none' };
 			});
+		// 竞态保护：若 preload 期间 stop() 已执行，不再赋值，立即释放 cleanup
+		if (!this.started) {
+			if (preloadResult.cleanup) {
+				try { preloadResult.cleanup(); } catch {}
+			}
+			return;
+		}
+		this.__ndcPreloadResult = preloadResult;
+		this.__ndcCleanup = preloadResult.cleanup;
 		await this.__connectIfNeeded();
 	}
 
@@ -946,21 +953,16 @@ export class RealtimeBridge {
 			this.__webrtcPeerReady = null;
 		}
 		// ndc cleanup：node-datachannel 的 native threads 必须通过 cleanup() 释放，
-		// 否则会阻止进程退出（issue #366）。优先使用已缓存的引用；
-		// 若 __initWebrtcPeer 未调用（无 WebRTC offer），从 preload 结果取。
+		// 否则会阻止进程退出（issue #366）。
+		// start() 已 await preload 完成并缓存 cleanup 引用，此处直接使用。
 		// 注意：若进程被 SIGKILL 强杀，此处不会执行，OS 会回收资源。
 		// TODO: 若 OpenClaw 未来提供 graceful shutdown 钩子，应在钩子中也调用 cleanup。
-		let cleanupFn = this.__ndcCleanup;
-		if (!cleanupFn && this.__ndcPreloadPromise) {
-			const result = await this.__ndcPreloadPromise.catch(() => null);
-			cleanupFn = result?.cleanup;
-		}
-		if (cleanupFn) {
-			try { cleanupFn(); }
+		if (this.__ndcCleanup) {
+			try { this.__ndcCleanup(); }
 			catch (err) { remoteLog(`ndc.cleanup-failed error=${err?.message}`); }
 		}
 		this.__ndcCleanup = null;
-		this.__ndcPreloadPromise = null;
+		this.__ndcPreloadResult = null;
 		if (this.__fileHandler) {
 			this.__fileHandler.cancelCleanup();
 			this.__fileHandler = null;

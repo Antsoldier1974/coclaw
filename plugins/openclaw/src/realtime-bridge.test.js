@@ -69,8 +69,26 @@ function noopLogger() {
 	return { warn() {}, info() {}, debug() {} };
 }
 
-/** 默认 preloadNdc mock：不加载真实 ndc，返回 null（使用 werift 默认） */
-async function noopPreloadNdc() { return null; }
+/** 默认 preloadNdc mock：返回功能完整的 mock PeerConnection（WebRTC 可用但无 cleanup） */
+async function noopPreloadNdc() {
+	function MockPC() {
+		const pc = {
+			onicecandidate: null,
+			onconnectionstatechange: null,
+			ondatachannel: null,
+			connectionState: 'new',
+			setRemoteDescription: async (desc) => {
+				if (!desc?.sdp) throw new Error('Invalid SDP');
+			},
+			createAnswer: async () => ({ sdp: 'mock-sdp-answer' }),
+			setLocalDescription: async () => {},
+			addIceCandidate: async () => {},
+			close: async () => { pc.connectionState = 'closed'; },
+		};
+		return pc;
+	}
+	return { PeerConnection: MockPC, cleanup: null, impl: 'werift' };
+}
 
 function createBridge(overrides = {}) {
 	return new RealtimeBridge({
@@ -2423,7 +2441,7 @@ test('RealtimeBridge should clear remote-log sender on stop', async () => {
 
 // --- ndc preloader 集成测试 ---
 
-test('RealtimeBridge start() should kick off ndc preload', async () => {
+test('RealtimeBridge start() should await ndc preload before connecting', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
 	let preloadCalled = false;
 	const bridge = createBridge({
@@ -2436,7 +2454,9 @@ test('RealtimeBridge start() should kick off ndc preload', async () => {
 	try {
 		await bridge.start({ logger: noopLogger() });
 		assert.ok(preloadCalled, 'preloadNdc should be called during start');
-		assert.ok(bridge.__ndcPreloadPromise instanceof Promise);
+		// start() 完成后结果已就绪（不再是 promise）
+		assert.ok(bridge.__ndcPreloadResult);
+		assert.equal(bridge.__ndcPreloadResult.impl, 'ndc');
 	} finally {
 		await bridge.stop();
 		await fs.rm(dir, { recursive: true, force: true });
@@ -2456,13 +2476,11 @@ test('RealtimeBridge stop() should call ndc cleanup when loaded', async () => {
 
 	try {
 		await bridge.start({ logger: noopLogger() });
-		// 手动设置 __ndcCleanup（模拟 __initWebrtcPeer 已执行）
-		const result = await bridge.__ndcPreloadPromise;
-		bridge.__ndcCleanup = result.cleanup;
+		// start() 已 await preload 并缓存 cleanup
 		await bridge.stop();
 		assert.ok(cleanupCalled, 'cleanup should be called on stop');
 		assert.equal(bridge.__ndcCleanup, null);
-		assert.equal(bridge.__ndcPreloadPromise, null);
+		assert.equal(bridge.__ndcPreloadResult, null);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -2480,9 +2498,7 @@ test('RealtimeBridge stop() should not crash when cleanup throws', async () => {
 
 	try {
 		await bridge.start({ logger: noopLogger() });
-		const result = await bridge.__ndcPreloadPromise;
-		bridge.__ndcCleanup = result.cleanup;
-		// stop 不应抛出
+		// stop 不应抛出（cleanup 异常被内部 catch）
 		await bridge.stop();
 		assert.equal(bridge.__ndcCleanup, null);
 	} finally {
@@ -2523,9 +2539,9 @@ test('RealtimeBridge start() should handle preloadNdc rejection gracefully', asy
 
 	try {
 		await bridge.start({ logger });
-		// preload 失败被 catch，不影响 bridge
-		const result = await bridge.__ndcPreloadPromise;
-		assert.equal(result, null);
+		// preload 失败被 catch 兜底，bridge 仍启动但 WebRTC 不可用
+		assert.equal(bridge.__ndcPreloadResult.impl, 'none');
+		assert.equal(bridge.__ndcPreloadResult.PeerConnection, null);
 		assert.ok(warnings.some((w) => w.includes('preload boom')));
 	} finally {
 		await bridge.stop();
@@ -2533,28 +2549,50 @@ test('RealtimeBridge start() should handle preloadNdc rejection gracefully', asy
 	}
 });
 
-test('RealtimeBridge stop() during in-flight preload should await and cleanup', async () => {
+test('RealtimeBridge start() awaits slow preload before connecting', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	let preloadResolved = false;
+	const bridge = createBridge({
+		preloadNdc: async () => {
+			await new Promise((r) => setTimeout(r, 50));
+			preloadResolved = true;
+			return { PeerConnection: class NdcPC {}, cleanup: () => {}, impl: 'ndc' };
+		},
+	});
+
+	try {
+		// start() 完成时 preload 一定已经完成（因为 await）
+		await bridge.start({ logger: noopLogger() });
+		assert.ok(preloadResolved, 'preload should complete before start returns');
+		assert.equal(bridge.__ndcPreloadResult.impl, 'ndc');
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge start() aborts if stop() called during preload (race protection)', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
 	let cleanupCalled = false;
 	let resolvePreload;
 	const bridge = createBridge({
-		preloadNdc: () => new Promise((resolve) => {
-			resolvePreload = resolve;
-		}),
+		preloadNdc: () => new Promise((resolve) => { resolvePreload = resolve; }),
 	});
 
 	try {
-		await bridge.start({ logger: noopLogger() });
-		// preload 仍在进行中（未 resolve），此时调用 stop
-		const stopPromise = bridge.stop();
-		// 在 stop 等待 preload 期间 resolve
+		const startPromise = bridge.start({ logger: noopLogger() });
+		// preload 仍在进行中，此时调用 stop
+		bridge.started = false; // 模拟 stop 已执行
+		// resolve preload
 		resolvePreload({
 			PeerConnection: class NdcPC {},
 			cleanup: () => { cleanupCalled = true; },
 			impl: 'ndc',
 		});
-		await stopPromise;
-		assert.ok(cleanupCalled, 'cleanup should be called even when stop races with in-flight preload');
+		await startPromise;
+		// start 应检测到 started=false，立即返回并释放 cleanup
+		assert.ok(cleanupCalled, 'cleanup should be called when start detects stopped state');
+		assert.equal(bridge.__ndcPreloadResult, null, 'should not assign result after stop');
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

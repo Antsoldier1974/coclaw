@@ -48,6 +48,7 @@ function successDeps(overrides = {}) {
 				dest: '/fake/node_modules/node-datachannel/build/Release/node_datachannel.node',
 				destDir: '/fake/node_modules/node-datachannel/build/Release',
 			}),
+			importTimeout: 500,
 			...overrides,
 		},
 	};
@@ -82,7 +83,7 @@ test('preloadNdc: happy path — ndc loads successfully (binary already exists)'
 	assert.ok(logs.some((l) => l.includes('ndc.loaded platform=linux-x64')));
 	// 不应有 fallback 日志
 	assert.ok(!logs.some((l) => l.includes('ndc.fallback')));
-	assert.ok(!logs.some((l) => l.includes('ndc.using-werift')));
+	assert.ok(!logs.some((l) => l.includes('ndc.fallback-to-werift')));
 });
 
 test('preloadNdc: happy path — binary needs copy', async () => {
@@ -101,7 +102,7 @@ test('preloadNdc: unsupported platform → werift fallback', async () => {
 	assert.equal(result.impl, 'werift');
 	assert.equal(result.cleanup, null);
 	assert.ok(logs.some((l) => l.includes('ndc.skip reason=unsupported-platform')));
-	assert.ok(logs.some((l) => l.includes('ndc.using-werift')));
+	assert.ok(logs.some((l) => l.includes('ndc.fallback-to-werift')));
 });
 
 test('preloadNdc: vendor binary missing → werift fallback', async () => {
@@ -116,7 +117,7 @@ test('preloadNdc: vendor binary missing → werift fallback', async () => {
 
 	assert.equal(result.impl, 'werift');
 	assert.ok(logs.some((l) => l.includes('ndc.fallback reason=binary-missing')));
-	assert.ok(logs.some((l) => l.includes('ndc.using-werift')));
+	assert.ok(logs.some((l) => l.includes('ndc.fallback-to-werift')));
 });
 
 test('preloadNdc: copy fails → werift fallback', async () => {
@@ -256,9 +257,87 @@ test('preloadNdc: uses default deps when none injected (integration)', async () 
 	// 覆盖所有 ?? 右侧默认分支
 	const result = await preloadNdc();
 	// 结果取决于当前环境（是否有 vendor binary），但不应抛出
-	assert.ok(result.impl === 'ndc' || result.impl === 'werift');
+	assert.ok(result.impl === 'ndc' || result.impl === 'werift' || result.impl === 'none');
 	// 如果加载了 ndc，必须调用 cleanup 防止进程挂起（issue #366）
 	result.cleanup?.();
+});
+
+// --- timeout 测试 ---
+
+test('preloadNdc: ndc import timeout → werift fallback', async () => {
+	const { deps, logs } = successDeps({
+		importTimeout: 50,
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') {
+				// 模拟 ndc 加载卡住（超过 timeout 才返回）
+				await new Promise((r) => setTimeout(r, 200));
+				return { RTCPeerConnection: createMockRTCPeerConnection() };
+			}
+			if (spec === 'werift') return { RTCPeerConnection: class WeriftPC {} };
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	const result = await preloadNdc(deps);
+
+	assert.equal(result.impl, 'werift');
+	assert.ok(logs.some((l) => l.includes('ndc.fallback reason=import-failed')));
+	assert.ok(logs.some((l) => l.includes('timed out')));
+	assert.ok(logs.some((l) => l.includes('ndc.fallback-to-werift')));
+});
+
+test('preloadNdc: ndc and werift both timeout → impl=none', async () => {
+	const { deps, logs } = successDeps({
+		importTimeout: 50,
+		dynamicImport: async () => {
+			// 所有 import 都卡住
+			await new Promise((r) => setTimeout(r, 200));
+			return {};
+		},
+	});
+	const result = await preloadNdc(deps);
+
+	assert.equal(result.impl, 'none');
+	assert.equal(result.PeerConnection, null);
+	assert.equal(result.cleanup, null);
+	assert.ok(logs.some((l) => l.includes('ndc.all-unavailable')));
+});
+
+test('preloadNdc: ndc and werift both fail (not timeout) → impl=none', async () => {
+	const { deps, logs } = successDeps({
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') throw new Error('ndc broken');
+			if (spec === 'werift') throw new Error('werift broken');
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	const result = await preloadNdc(deps);
+
+	assert.equal(result.impl, 'none');
+	assert.equal(result.PeerConnection, null);
+	assert.ok(logs.some((l) => l.includes('ndc.fallback reason=import-failed')));
+	assert.ok(logs.some((l) => l.includes('ndc.all-unavailable')));
+	assert.ok(logs.some((l) => l.includes('werift broken')));
+});
+
+test('preloadNdc: background import rejection after timeout is silently caught', async () => {
+	// 验证超时后，原 promise 最终 reject 不会成为 unhandled rejection
+	const { deps } = successDeps({
+		importTimeout: 50,
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') {
+				await new Promise((r) => setTimeout(r, 100));
+				// 超时后这个 rejection 应被 withTimeout 内的 .catch(() => {}) 吞掉
+				throw new Error('delayed ndc failure');
+			}
+			if (spec === 'werift') return { RTCPeerConnection: class WeriftPC {} };
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	const result = await preloadNdc(deps);
+	assert.equal(result.impl, 'werift');
+	// 等一会儿让后台 promise 有时间 reject
+	await new Promise((r) => setTimeout(r, 150));
+	// 如果 unhandled rejection 未被兜住，进程会被 node --test 标记为失败
 });
 
 // --- defaultResolvePaths 测试 ---

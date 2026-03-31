@@ -12,6 +12,28 @@ const SUPPORTED_PLATFORMS = new Set([
 	'win32-x64',
 ]);
 
+const DEFAULT_IMPORT_TIMEOUT_MS = 10_000;
+
+/**
+ * 给 promise 加超时保护。超时后 reject，但原 promise 仍在后台执行——
+ * JS 无法取消 pending 的 import()，超时只是让调用方不再等待。
+ * @param {Promise} promise
+ * @param {number} ms
+ * @param {string} label - 用于错误信息
+ */
+function withTimeout(promise, ms, label) {
+	// 超时后原 promise 仍在后台执行（JS 无法取消 pending 的 import()）。
+	// 必须 .catch 兜住原 promise 的潜在 rejection，否则超时场景下
+	// 原 promise 最终 reject 会成为 unhandled rejection，导致进程终止。
+	promise.catch(() => {});
+	let timer;
+	const timeout = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+		timer.unref?.();
+	});
+	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * 解析 vendor 源和部署目标路径。
  * @param {string} platformKey - 如 'linux-x64'
@@ -39,10 +61,10 @@ export function defaultResolvePaths(platformKey, pluginRoot) {
 }
 
 /**
- * 预加载 node-datachannel，失败时回退到 werift。
+ * 预加载 WebRTC 实现：优先 node-datachannel，失败回退 werift，全部失败返回 null。
  *
- * 所有异常内部捕获，仅通过 remoteLog 报告，不向外抛出。
- * 唯一可能抛出的情况：werift 回退也失败（不可恢复）。
+ * **此函数永不 throw**——所有异常内部捕获，通过 remoteLog 报告。
+ * 返回值始终为 { PeerConnection, cleanup, impl } 结构。
  *
  * @param {object} [deps] - 可注入依赖（测试用）
  * @param {object} [deps.fs] - { access, copyFile, mkdir }
@@ -52,7 +74,8 @@ export function defaultResolvePaths(platformKey, pluginRoot) {
  * @param {string} [deps.arch] - 覆盖 process.arch
  * @param {string} [deps.pluginRoot] - 覆盖插件根目录
  * @param {Function} [deps.resolvePaths] - (platformKey, pluginRoot) => { src, dest, destDir }
- * @returns {Promise<{ PeerConnection: Function, cleanup: Function|null, impl: string }>}
+ * @param {number} [deps.importTimeout] - 动态 import 超时（ms），默认 10s
+ * @returns {Promise<{ PeerConnection: Function|null, cleanup: Function|null, impl: string }>}
  */
 export async function preloadNdc(deps = {}) {
 	const fs = deps.fs ?? fsPromises;
@@ -62,6 +85,7 @@ export async function preloadNdc(deps = {}) {
 	const arch = deps.arch ?? process.arch;
 	const pluginRoot = deps.pluginRoot ?? nodePath.resolve(import.meta.dirname, '..');
 	const resolvePaths = deps.resolvePaths ?? defaultResolvePaths;
+	const importTimeout = deps.importTimeout ?? DEFAULT_IMPORT_TIMEOUT_MS;
 
 	const platformKey = `${platform}-${arch}`;
 	log(`ndc.preload platform=${platformKey}`);
@@ -70,7 +94,7 @@ export async function preloadNdc(deps = {}) {
 		// 平台检查
 		if (!SUPPORTED_PLATFORMS.has(platformKey)) {
 			log(`ndc.skip reason=unsupported-platform platform=${platformKey}`);
-			return weriftFallback(dynamicImport, log);
+			return weriftFallback(dynamicImport, log, importTimeout);
 		}
 		const { src, dest, destDir } = resolvePaths(platformKey, pluginRoot);
 
@@ -89,7 +113,7 @@ export async function preloadNdc(deps = {}) {
 				await fs.access(src);
 			} catch {
 				log('ndc.fallback reason=binary-missing');
-				return weriftFallback(dynamicImport, log);
+				return weriftFallback(dynamicImport, log, importTimeout);
 			}
 
 			// 部署 binary
@@ -99,18 +123,26 @@ export async function preloadNdc(deps = {}) {
 				log('ndc.binary-deployed');
 			} catch (err) {
 				log(`ndc.fallback reason=copy-failed error=${err.message}`);
-				return weriftFallback(dynamicImport, log);
+				return weriftFallback(dynamicImport, log, importTimeout);
 			}
 		}
 
-		// 加载模块
+		// 加载模块（带超时保护，防止 native binding dlopen 卡住）
 		let polyfill, ndc;
 		try {
-			polyfill = await dynamicImport('node-datachannel/polyfill');
-			ndc = await dynamicImport('node-datachannel');
+			polyfill = await withTimeout(
+				dynamicImport('node-datachannel/polyfill'),
+				importTimeout,
+				'import(node-datachannel/polyfill)',
+			);
+			ndc = await withTimeout(
+				dynamicImport('node-datachannel'),
+				importTimeout,
+				'import(node-datachannel)',
+			);
 		} catch (err) {
 			log(`ndc.fallback reason=import-failed error=${err.message}`);
-			return weriftFallback(dynamicImport, log);
+			return weriftFallback(dynamicImport, log, importTimeout);
 		}
 
 		const { RTCPeerConnection } = polyfill;
@@ -119,7 +151,7 @@ export async function preloadNdc(deps = {}) {
 		// 验证 RTCPeerConnection 可用（不创建实例，避免 native thread 阻止进程退出）
 		if (typeof RTCPeerConnection !== 'function') {
 			log('ndc.fallback reason=smoke-failed error=RTCPeerConnection is not a function');
-			return weriftFallback(dynamicImport, log);
+			return weriftFallback(dynamicImport, log, importTimeout);
 		}
 
 		// 重要：调用方在不再需要 node-datachannel 时（如 bridge stop），必须调用 cleanup()。
@@ -132,17 +164,28 @@ export async function preloadNdc(deps = {}) {
 	} catch (err) {
 		// resolvePaths 或其他未预期异常的兜底
 		log(`ndc.fallback reason=unexpected error=${err.message}`);
-		return weriftFallback(dynamicImport, log);
+		return weriftFallback(dynamicImport, log, importTimeout);
 	}
 }
 
 /**
- * 回退到 werift。
+ * 回退到 werift。加载也带超时保护。
+ * werift 也失败时返回 PeerConnection: null（WebRTC 不可用但不影响 gateway）。
  * @param {Function} dynamicImport
  * @param {Function} log
+ * @param {number} importTimeout
  */
-async function weriftFallback(dynamicImport, log) {
-	const { RTCPeerConnection } = await dynamicImport('werift');
-	log('ndc.using-werift');
-	return { PeerConnection: RTCPeerConnection, cleanup: null, impl: 'werift' };
+async function weriftFallback(dynamicImport, log, importTimeout) {
+	try {
+		const { RTCPeerConnection } = await withTimeout(
+			dynamicImport('werift'),
+			importTimeout,
+			'import(werift)',
+		);
+		log('ndc.fallback-to-werift');
+		return { PeerConnection: RTCPeerConnection, cleanup: null, impl: 'werift' };
+	} catch (err) {
+		log(`ndc.all-unavailable error=${err.message}`);
+		return { PeerConnection: null, cleanup: null, impl: 'none' };
+	}
 }

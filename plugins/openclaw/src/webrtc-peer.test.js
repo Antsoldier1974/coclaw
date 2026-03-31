@@ -55,6 +55,13 @@ function makeOffer(connId, sdp = 'mock-sdp-offer', turnCreds = null) {
 
 // --- tests ---
 
+test('WebRtcPeer: constructor throws when PeerConnection is not provided', () => {
+	assert.throws(
+		() => new WebRtcPeer({ onSend: () => {} }),
+		{ message: 'PeerConnection constructor is required' },
+	);
+});
+
 test('WebRtcPeer: offer → answer 流程', async () => {
 	const sent = [];
 	const PC = MockPCFactory();

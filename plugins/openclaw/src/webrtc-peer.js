@@ -1,4 +1,3 @@
-import { RTCPeerConnection as WeriftRTCPeerConnection } from 'werift';
 import { chunkAndSend, createReassembler } from './utils/dc-chunking.js';
 import { remoteLog } from './remote-log.js';
 
@@ -14,15 +13,18 @@ export class WebRtcPeer {
 	 * @param {function} [opts.onFileRpc] - rpc DC 上 coclaw.files.* 请求的回调 (payload, sendFn, connId) => void
 	 * @param {function} [opts.onFileChannel] - file:<transferId> DataChannel 的回调 (dc, connId) => void
 	 * @param {object} [opts.logger] - pino 风格 logger
-	 * @param {function} [opts.PeerConnection] - 可替换的构造函数（测试用）
+	 * @param {function} opts.PeerConnection - RTCPeerConnection 构造函数（由 ndc-preloader 提供）
 	 */
 	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection }) {
+		if (!PeerConnection) {
+			throw new Error('PeerConnection constructor is required');
+		}
 		this.__onSend = onSend;
 		this.__onRequest = onRequest;
 		this.__onFileRpc = onFileRpc;
 		this.__onFileChannel = onFileChannel;
 		this.logger = logger ?? console;
-		this.__PeerConnection = PeerConnection ?? WeriftRTCPeerConnection;
+		this.__PeerConnection = PeerConnection;
 		/** @type {Map<string, { pc: object, rpcChannel: object|null, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
 	}
