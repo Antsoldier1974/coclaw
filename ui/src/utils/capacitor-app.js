@@ -12,8 +12,13 @@ import { hasOpenDialog, closeCurrentDialog } from './dialog-history.js';
 export const isNative = Capacitor.isNativePlatform();
 
 // Web 端：桥接浏览器原生 online 事件为统一的 network:online
+// 追踪是否经历过 offline，防止无前置 offline 的 spurious online 事件
 if (!isNative && typeof window !== 'undefined') {
+	let wasOffline = !navigator.onLine;
+	window.addEventListener('offline', () => { wasOffline = true; });
 	window.addEventListener('online', () => {
+		if (!wasOffline) return;
+		wasOffline = false;
 		console.log('[network] browser online → dispatch network:online');
 		window.dispatchEvent(new CustomEvent('network:online'));
 	});

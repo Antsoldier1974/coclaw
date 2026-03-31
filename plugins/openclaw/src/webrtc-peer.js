@@ -241,6 +241,12 @@ export class WebRtcPeer {
 	__setupDataChannel(connId, dc) {
 		const reassembler = createReassembler((jsonStr) => {
 			const payload = JSON.parse(jsonStr);
+			// DC 探测：立即回复，不走 gateway
+			if (payload.type === 'probe') {
+				try { dc.send(JSON.stringify({ type: 'probe-ack' })); }
+				catch { /* DC 已关闭，忽略 */ }
+				return;
+			}
 			if (payload.type === 'req') {
 				// coclaw.files.* 方法本地处理，不转发 gateway
 				if (payload.method?.startsWith('coclaw.files.') && this.__onFileRpc) {

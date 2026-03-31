@@ -6,6 +6,7 @@
  * 无 Vue 依赖，纯 JS。
  */
 import { resolveApiBaseUrl } from './http.js';
+import { isCapacitorApp } from '../utils/platform.js';
 
 const HB_PING_MS = 25_000;
 const HB_TIMEOUT_MS = 45_000;
@@ -35,7 +36,7 @@ function resolveSignalingWsUrl(httpBaseUrl) {
  * 事件:
  * - `state`             — WS 状态变更 (data: 'connecting' | 'connected' | 'disconnected')
  * - `rtc`               — 入站 RTC 信令 (data: { botId, type, payload })
- * - `foreground-resume`  — 前台恢复，通知 RTC 层检查 PC 状态
+ * - `foreground-resume`  — 前台恢复 / 网络切换 (data: { source, elapsed })，仅移动端或 network:online
  */
 export class SignalingConnection {
 	/**
@@ -428,7 +429,8 @@ export class SignalingConnection {
 
 	/**
 	 * 前台恢复统一入口（visibilitychange / app:foreground / network:online 共用）
-	 * @param {string} source - 触发来源（日志用）
+	 * WS 恢复全平台执行；foreground-resume 事件仅在移动端或 network:online 时发射
+	 * @param {string} source - 触发来源
 	 */
 	__handleForegroundResume(source) {
 		if (this.__intentionalClose) return;
@@ -437,13 +439,18 @@ export class SignalingConnection {
 		if (now - this.__lastForegroundAt < FOREGROUND_THROTTLE_MS) return;
 		this.__lastForegroundAt = now;
 
+		// RTC 恢复事件仅对移动端 visibility/app:foreground 或全平台 network:online 有意义
+		// 桌面 visibilitychange 不触发（WebRTC 在桌面后台持续运行）
+		const shouldEmitForRtc = source === 'network:online' || isCapacitorApp;
+
 		if (this.__state === 'disconnected') {
 			console.debug('[SigConn] %s → immediate reconnect', source);
 			this.__clearReconnect();
 			this.__reconnectDelay = INITIAL_RECONNECT_MS;
 			this.__doConnect();
-			// 通知 RTC 层检查 PC 状态（NAT 映射可能已过期）
-			this.__emit('foreground-resume');
+			if (shouldEmitForRtc) {
+				this.__emit('foreground-resume', { source, elapsed: Infinity });
+			}
 			return;
 		}
 
@@ -459,8 +466,9 @@ export class SignalingConnection {
 			this.probe();
 		}
 
-		// 通知 RTC 层检查 PC 状态（与 WS probe 并行，不串行依赖）
-		this.__emit('foreground-resume');
+		if (shouldEmitForRtc) {
+			this.__emit('foreground-resume', { source, elapsed });
+		}
 	}
 
 	/** 探测连接存活性 */

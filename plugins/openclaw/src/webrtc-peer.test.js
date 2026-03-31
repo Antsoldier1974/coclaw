@@ -267,6 +267,56 @@ test('WebRtcPeer: DataChannel onmessage 非 req 类型 → debug 日志', async 
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: DC probe → 回复 probe-ack，不触发 onRequest', async () => {
+	const PC = MockPCFactory();
+	const requests = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onRequest: (payload) => requests.push(payload),
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_probe1'));
+	const pc = PC.instances[0];
+	const sent = [];
+	const fakeChannel = {
+		label: 'rpc', onopen: null, onclose: null, onmessage: null,
+		send: (data) => sent.push(JSON.parse(data)),
+	};
+	pc.ondatachannel({ channel: fakeChannel });
+
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'probe' }) });
+
+	assert.equal(sent.length, 1);
+	assert.deepEqual(sent[0], { type: 'probe-ack' });
+	assert.equal(requests.length, 0, 'probe should not trigger onRequest');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: DC probe 回复失败（DC 已关闭）不抛异常', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_probe2'));
+	const pc = PC.instances[0];
+	const fakeChannel = {
+		label: 'rpc', onopen: null, onclose: null, onmessage: null,
+		send: () => { throw new Error('DC closed'); },
+	};
+	pc.ondatachannel({ channel: fakeChannel });
+
+	// 应不抛异常
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'probe' }) });
+
+	await peer.closeAll();
+});
+
 test('WebRtcPeer: DataChannel onmessage 无效 JSON → warn', async () => {
 	const PC = MockPCFactory();
 	const warns = [];

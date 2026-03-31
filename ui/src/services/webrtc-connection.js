@@ -2,16 +2,18 @@
  * WebRTC DataChannel 连接管理（UI 侧）
  * DataChannel 是唯一的业务 RPC 通道，WS 仅用于信令和保活哨兵。
  *
- * 连接恢复策略（§7.2）：
- * - disconnected → 等待 ICE 自动恢复（短暂网络抖动自愈）
- * - failed → ICE restart（iceRestart: true），不重建 PeerConnection
- * - ICE restart 也失败 → 关闭 PeerConnection，全新重建
+ * 连接恢复策略：
+ * - disconnected → 等待 ICE 自动恢复（短暂网络抖动自愈），10s 超时后升级
+ * - failed → 全新重建 PeerConnection（最多 3 次）
+ * - 前台恢复 / 网络切换 → DC probe 探测存活性，超时则 rebuild
+ *
+ * 注：ICE restart 已移除 — werift 的实现不完整且可能产生僵尸连接
+ * 详见 docs/study/webrtc-connection-research.md
  */
 import { httpClient } from './http.js';
 import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
 import { useSignalingConnection } from './signaling-connection.js';
 
-const MAX_ICE_RESTARTS = 5;
 const MAX_FULL_REBUILDS = 3;
 /** disconnected 状态超时：超过此时间仍未恢复则升级到 failed 恢复链 */
 const DISCONNECTED_TIMEOUT_MS = 10_000;
@@ -138,7 +140,6 @@ export class WebRtcConnection {
 		this.__transportInfo = null;
 		this.__onRtcMsg = null;
 		this.__turnCreds = null;
-		this.__iceRestartCount = 0;
 		this.__rebuildCount = 0;
 		/** @type {{ data: string, resolve: Function, reject: Function }[]} */
 		this.__sendQueue = [];
@@ -149,8 +150,10 @@ export class WebRtcConnection {
 		this.__nextMsgId = 1;
 		/** @type {{ feed: Function, reset: Function }|null} */
 		this.__reassembler = null;
-		/** 外部接管恢复时为 true，抑制 __onIceFailed 内部级联 */
-		this.__externalRecovery = false;
+		/** DC probe 状态 */
+		this.__probeResolve = null;
+		this.__probeTimer = null;
+		this.__probePromise = null;
 		/** disconnected 状态超时定时器 */
 		this.__disconnectedTimer = null;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
@@ -168,7 +171,6 @@ export class WebRtcConnection {
 	async connect(turnCreds) {
 		if (this.__state !== 'idle' && this.__state !== 'closed' && this.__state !== 'failed') return;
 		this.__turnCreds = turnCreds;
-		this.__iceRestartCount = 0;
 		this.__rebuildCount = 0;
 		await this.__buildPeerConnection(turnCreds, false);
 	}
@@ -176,6 +178,7 @@ export class WebRtcConnection {
 	/** 关闭连接（主动关闭，不再自动恢复） */
 	close() {
 		this.__clearDisconnectedTimer();
+		this.__settleProbe(false);
 		this.__removeRtcListener();
 		this.__rejectSendQueue('connection closed');
 		if (this.__pc) {
@@ -289,66 +292,37 @@ export class WebRtcConnection {
 	}
 
 	/**
-	 * 前台恢复时主动 ICE restart（仅在 PC 处于 disconnected 时触发）
-	 * ICE restart 是安全的：旧连接保持可用直到新路径建立
-	 * @returns {boolean} 是否触发了 restart
+	 * 通过 DC 发送探测消息验证连接是否存活
+	 * @param {number} [timeoutMs=3000] - 超时毫秒数
+	 * @returns {Promise<boolean>} true=连接存活
 	 */
-	tryIceRestart() {
-		const pc = this.__pc;
-		if (!pc || pc.connectionState !== 'disconnected') return false;
-		this.__log('info', 'proactive ICE restart on foreground resume');
-		// 不递增 __iceRestartCount：前台恢复是外部触发，不消耗自动恢复预算
-		this.__doIceRestart();
-		return true;
+	probe(timeoutMs = 3000) {
+		// 已有 probe 进行中 → 复用其 promise
+		if (this.__probePromise) return this.__probePromise;
+		const dc = this.__rpcChannel;
+		if (!dc || dc.readyState !== 'open') return Promise.resolve(false);
+		this.__probePromise = new Promise((resolve) => {
+			this.__probeResolve = resolve;
+			this.__probeTimer = setTimeout(() => this.__settleProbe(false), timeoutMs);
+			try {
+				dc.send(JSON.stringify({ type: 'probe' }));
+			} catch {
+				this.__settleProbe(false);
+			}
+		});
+		return this.__probePromise;
 	}
 
-	/**
-	 * 外部调用的一次性 ICE restart 尝试（供 __ensureRtc 使用）。
-	 * 抑制内部 __onIceFailed 级联，由调用方决定后续动作。
-	 * @param {number} [timeoutMs=5000] - 等待恢复的超时
-	 * @returns {Promise<boolean>} true = connected, false = 失败或超时
-	 */
-	attemptIceRestart(timeoutMs = 5000) {
-		this.__clearDisconnectedTimer();
-		const pc = this.__pc;
-		if (!pc || this.__state === 'closed') return Promise.resolve(false);
-		// PC 已 connected → 无需 restart，直接视为成功
-		if (pc.connectionState === 'connected') return Promise.resolve(true);
-
-		this.__externalRecovery = true;
-		this.__log('info', 'external ICE restart attempt');
-
-		return new Promise((resolve) => {
-			let timer = null;
-			let cleaned = false;
-			const origHandler = pc.onconnectionstatechange;
-
-			const cleanup = (result) => {
-				if (cleaned) return;
-				cleaned = true;
-				if (timer) clearTimeout(timer);
-				pc.onconnectionstatechange = origHandler;
-				this.__externalRecovery = false;
-				resolve(result);
-			};
-
-			pc.onconnectionstatechange = () => {
-				if (this.__pc !== pc) { cleanup(false); return; }
-				const s = pc.connectionState;
-				this.__log('info', `connectionState: ${s} (external ICE restart)`);
-				if (s === 'connected') {
-					this.__setState('connected');
-					this.__resolveCandidateType(pc);
-					cleanup(true);
-				} else if (s === 'failed') {
-					cleanup(false);
-				}
-				// disconnected/connecting → 继续等待
-			};
-
-			timer = setTimeout(() => { timer = null; cleanup(false); }, timeoutMs);
-			this.__doIceRestart().catch(() => cleanup(false));
-		});
+	/** @private 结算 probe（统一出口：超时/ack/send 失败/close） */
+	__settleProbe(result) {
+		if (this.__probeTimer) {
+			clearTimeout(this.__probeTimer);
+			this.__probeTimer = null;
+		}
+		const resolve = this.__probeResolve;
+		this.__probeResolve = null;
+		this.__probePromise = null;
+		resolve?.(result);
 	}
 
 	// --- 内部：建连 ---
@@ -424,7 +398,6 @@ export class WebRtcConnection {
 
 			if (s === 'connected') {
 				this.__clearDisconnectedTimer();
-				this.__iceRestartCount = 0; // 连接成功，重置 ICE restart 计数
 				this.__setState('connected');
 				this.__resolveCandidateType(pc);
 			} else if (s === 'disconnected') {
@@ -452,6 +425,10 @@ export class WebRtcConnection {
 		this.__reassembler = createReassembler((jsonStr) => {
 			try {
 				const payload = JSON.parse(jsonStr);
+				if (payload.type === 'probe-ack') {
+					this.__settleProbe(true);
+					return;
+				}
 				this.__botConn.__onRtcMessage(payload);
 			} catch (err) {
 				console.warn('[rtc] DataChannel 消息解析失败:', err);
@@ -576,51 +553,16 @@ export class WebRtcConnection {
 
 	// --- 内部：恢复 ---
 
-	/**
-	 * @private ICE failed 时的恢复策略。
-	 * __doIceRestart 是纯函数（无内部 catch），所有异常在此统一处理：
-	 * - 成功 → 消耗配额（iceRestartCount++）
-	 * - 失败 → 不消耗配额，不升级（PC 停留在 failed，等 __ensureRtc 接管恢复）
-	 */
+	/** @private ICE failed → 直接 full rebuild（配额内） */
 	async __onIceFailed() {
-		if (this.__externalRecovery) return; // 外部接管恢复，跳过内部级联
-		if (this.__iceRestartCount < MAX_ICE_RESTARTS) {
-			this.__log('info', `ICE failed, attempting ICE restart (${this.__iceRestartCount + 1}/${MAX_ICE_RESTARTS})`);
-			try {
-				await this.__doIceRestart();
-				this.__iceRestartCount++;
-			} catch (err) {
-				// ensureConnected 超时/intentionalClose 或 createOffer 失败 → 不消耗配额
-				// PC 停留在 failed 状态，后续由 __ensureRtc（resumed/bot-online 触发）接管恢复
-				this.__log('warn', 'ICE restart skipped: %s', err?.message);
-			}
-			return;
-		} else if (this.__rebuildCount < MAX_FULL_REBUILDS) {
+		if (this.__rebuildCount < MAX_FULL_REBUILDS) {
 			this.__rebuildCount++;
-			this.__log('info', `ICE restart exhausted, full rebuild (${this.__rebuildCount}/${MAX_FULL_REBUILDS})`);
+			this.__log('info', `ICE failed, full rebuild (${this.__rebuildCount}/${MAX_FULL_REBUILDS})`);
 			this.__doFullRebuild();
 		} else {
 			this.__log('warn', 'all recovery attempts exhausted, giving up');
 			this.__setState('failed');
 		}
-	}
-
-	/**
-	 * @private ICE restart：不重建 PeerConnection，仅重新协商路径。
-	 * 所有异常（ensureConnected / createOffer）均直接抛出，
-	 * 由调用方（__onIceFailed / attemptIceRestart）统一决策后续恢复。
-	 * @returns {Promise<void>}
-	 */
-	async __doIceRestart() {
-		const pc = this.__pc;
-		if (!pc) throw new Error('no PeerConnection');
-		await useSignalingConnection().ensureConnected({ verify: true });
-		const offer = await pc.createOffer({ iceRestart: true });
-		await pc.setLocalDescription(offer);
-		useSignalingConnection().sendSignaling(
-			this.botId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true },
-		);
-		this.__log('info', 'ICE restart offer sent');
 	}
 
 	/** @private 全新重建 PeerConnection */

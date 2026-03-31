@@ -17,6 +17,10 @@ const _bridgedConns = new Map();
 const _rtcInitInProgress = new Map();
 
 const RTC_BUILD_MAX_RETRIES = 3;
+/** werift consent 过期时限 — 超过此时长 PC 必定已死，无需 probe */
+const CONSENT_EXPIRY_MS = 30_000;
+/** DC probe 超时 */
+const DC_PROBE_TIMEOUT_MS = 3_000;
 
 /** @internal 仅供测试重置 */
 export function __resetBotStoreInternals() {
@@ -192,13 +196,10 @@ export const useBotsStore = defineStore('bots', {
 				}
 			});
 
-			// 前台恢复 → 触发 ICE restart 检查
-			sigConn.on('foreground-resume', () => {
+			// 前台恢复 / 网络切换 → DC probe 探测存活性
+			sigConn.on('foreground-resume', ({ elapsed }) => {
 				for (const id of Object.keys(this.byId)) {
-					const conn = useBotConnections().get(id);
-					if (conn?.rtc?.tryIceRestart()) {
-						console.debug('[bots] foreground-resume → ICE restart botId=%s', id);
-					}
+					this.__checkAndRecover(id, elapsed);
 				}
 			});
 		},
@@ -282,10 +283,12 @@ export const useBotsStore = defineStore('bots', {
 
 		/**
 		 * 统一 RTC 建立/恢复入口。
-		 * 触发点：bot offline→online、WS 重连且 bot 在线。
-		 * 流程：ICE restart(5s) → close → build(retries)。
+		 * 触发点：bot offline→online、WS 重连且 bot 在线、probe 失败。
+		 * @param {string} id - botId
+		 * @param {object} [opts]
+		 * @param {boolean} [opts.forceRebuild] - 跳过 connected 检查，强制 rebuild
 		 */
-		async __ensureRtc(id) {
+		async __ensureRtc(id, { forceRebuild = false } = {}) {
 			if (_rtcInitInProgress.get(id)) return;
 			_rtcInitInProgress.set(id, true);
 
@@ -294,26 +297,14 @@ export const useBotsStore = defineStore('bots', {
 
 			try {
 				const rtc = conn.rtc;
-				// RTC 已连接且健康 → 确保 dcReady 正确
-				if (rtc && rtc.state === 'connected') {
+				// RTC 已连接且健康（非强制 rebuild）→ 确保 dcReady
+				if (!forceRebuild && rtc && rtc.state === 'connected') {
 					const bot = this.byId[id];
 					if (bot && rtc.isReady) bot.dcReady = true;
 					return;
 				}
-				// 已有 RTC 但未关闭（disconnected 等）→ 尝试 ICE restart 快速恢复
-				if (rtc && rtc.state !== 'closed' && rtc.state !== 'failed') {
-					console.debug('[bots] ensureRtc: attempting ICE restart botId=%s', id);
-					const ok = await rtc.attemptIceRestart(5000);
-					if (ok) {
-						console.debug('[bots] ensureRtc: ICE restart succeeded botId=%s', id);
-						const bot = this.byId[id];
-						if (bot) bot.dcReady = true;
-						return;
-					}
-					console.debug('[bots] ensureRtc: ICE restart failed, will rebuild botId=%s', id);
-				}
 
-				// 释放旧 RTC
+				// 释放旧 RTC → rebuild
 				closeRtcForBot(id);
 				conn.clearRtc();
 
@@ -368,6 +359,39 @@ export const useBotsStore = defineStore('bots', {
 			useSessionsStore().loadAllSessions();
 			useTopicsStore().loadAllTopics();
 			useDashboardStore().loadDashboard(id).catch(() => {});
+		},
+
+		/**
+		 * DC 健康检查 + 恢复（前台恢复 / 网络切换时调用）
+		 * @param {string} id - botId
+		 * @param {number} elapsed - 距上次 WS 存活消息的时长
+		 */
+		async __checkAndRecover(id, elapsed) {
+			try {
+				const bot = this.byId[id];
+				if (!bot?.dcReady) return; // 无活跃 DC，由其它路径处理
+				const conn = useBotConnections().get(id);
+				const rtc = conn?.rtc;
+				if (!rtc) return;
+
+				// PC 已 failed/closed → 直接 rebuild
+				if (rtc.state === 'failed' || rtc.state === 'closed') {
+					this.__ensureRtc(id).catch(() => {});
+					return;
+				}
+				// elapsed > 30s → werift consent 已过期，直接 rebuild
+				if (elapsed > CONSENT_EXPIRY_MS) {
+					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
+					return;
+				}
+				// probe DC 探测存活性
+				const alive = await rtc.probe(DC_PROBE_TIMEOUT_MS);
+				if (!alive && this.byId[id]) {
+					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
+				}
+			} catch (err) {
+				console.warn('[bots] checkAndRecover failed botId=%s: %s', id, err?.message);
+			}
 		},
 	},
 });

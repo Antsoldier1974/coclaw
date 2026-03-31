@@ -1,4 +1,9 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// mock platform 检测（默认非 Capacitor）
+vi.mock('../utils/platform.js', () => ({ isCapacitorApp: false }));
+import * as platformMod from '../utils/platform.js';
+
 import {
 	SignalingConnection,
 	useSignalingConnection,
@@ -305,14 +310,41 @@ describe('SignalingConnection – 重连', () => {
 });
 
 describe('SignalingConnection – 前台恢复', () => {
-	test('foreground-resume 事件被发出', () => {
+	afterEach(() => {
+		platformMod.isCapacitorApp = false;
+	});
+
+	test('Capacitor + visibility → 发出 foreground-resume（含 payload）', () => {
+		platformMod.isCapacitorApp = true;
+		const { conn } = makeConnected();
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		vi.advanceTimersByTime(1000);
+		conn.__handleForegroundResume('visibility');
+		expect(events.length).toBe(1);
+		expect(events[0]).toHaveProperty('source', 'visibility');
+		expect(events[0]).toHaveProperty('elapsed');
+	});
+
+	test('桌面 visibility → 不发出 foreground-resume', () => {
+		platformMod.isCapacitorApp = false;
 		const { conn } = makeConnected();
 		const events = [];
 		conn.on('foreground-resume', () => events.push(true));
-		// 模拟 visibilitychange（需要 500ms 后才不被节流）
 		vi.advanceTimersByTime(1000);
-		conn.__handleForegroundResume('test');
+		conn.__handleForegroundResume('visibility');
+		expect(events.length).toBe(0);
+	});
+
+	test('network:online → 全平台发出 foreground-resume', () => {
+		platformMod.isCapacitorApp = false;
+		const { conn } = makeConnected();
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		vi.advanceTimersByTime(1000);
+		conn.__handleForegroundResume('network:online');
 		expect(events.length).toBe(1);
+		expect(events[0].source).toBe('network:online');
 	});
 
 	test('disconnected 状态下前台恢复触发即时重连', () => {
@@ -320,9 +352,21 @@ describe('SignalingConnection – 前台恢复', () => {
 		ws.simulateClose(1006);
 		expect(conn.state).toBe('disconnected');
 		vi.advanceTimersByTime(600); // 过节流期
-		conn.__handleForegroundResume('test');
+		conn.__handleForegroundResume('network:online');
 		// 应创建新 WS
 		expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+	});
+
+	test('disconnected + Capacitor → 发出 foreground-resume（elapsed=Infinity）', () => {
+		platformMod.isCapacitorApp = true;
+		const { conn, ws } = makeConnected();
+		ws.simulateClose(1006);
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		vi.advanceTimersByTime(600);
+		conn.__handleForegroundResume('app:foreground');
+		expect(events.length).toBe(1);
+		expect(events[0].elapsed).toBe(Infinity);
 	});
 });
 
