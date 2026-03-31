@@ -306,6 +306,7 @@ export default {
 		},
 
 		async loadDir() {
+			if (this.loading) return;
 			const botConn = useBotConnections().get(this.botId);
 			if (!botConn) return; // connReady watcher 会在连接就绪后重新触发
 			const gen = ++this.__loadGen;
