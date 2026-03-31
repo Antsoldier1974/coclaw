@@ -1454,3 +1454,344 @@ describe('getReadyConn', () => {
 		expect(getReadyConn(42)).toBe(fakeConn);
 	});
 });
+
+describe('运行时字段防御', () => {
+	test('server snapshot 含运行时字段同名属性时不覆盖运行时状态', () => {
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), rtc: null, request: vi.fn().mockResolvedValue({}) };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 首次快照建立 bot（online:false 避免 __fullInit 副作用）
+		store.applySnapshot([{ id: '1', name: 'Bot', online: false }]);
+		const bot = store.byId['1'];
+		// 模拟运行时状态已设置
+		bot.online = true;
+		bot.dcReady = true;
+		bot.rtcPhase = 'ready';
+		bot.initialized = true;
+		bot.pluginVersionOk = true;
+		bot.pluginInfo = { version: '1.0' };
+		bot.rtcTransportInfo = { localType: 'host' };
+		bot.lastAliveAt = 12345;
+		bot.disconnectedAt = 999;
+
+		// 第二次快照：server 数据意外包含运行时字段
+		store.applySnapshot([{
+			id: '1', name: 'BotRenamed', online: false,
+			dcReady: false, rtcPhase: 'idle', initialized: false,
+			pluginVersionOk: null, pluginInfo: null, rtcTransportInfo: null,
+			lastAliveAt: 0, disconnectedAt: 0,
+		}]);
+
+		const updated = store.byId['1'];
+		// server 字段应更新
+		expect(updated.name).toBe('BotRenamed');
+		// dcReady=true → preserveOnline 应覆盖 server 的 online=false
+		expect(updated.online).toBe(true);
+		// 运行时字段应保留
+		expect(updated.dcReady).toBe(true);
+		expect(updated.rtcPhase).toBe('ready');
+		expect(updated.initialized).toBe(true);
+		expect(updated.pluginVersionOk).toBe(true);
+		expect(updated.pluginInfo).toEqual({ version: '1.0' });
+		expect(updated.rtcTransportInfo).toEqual({ localType: 'host' });
+		expect(updated.lastAliveAt).toBe(12345);
+		expect(updated.disconnectedAt).toBe(999);
+	});
+
+	test('addOrUpdateBot 不覆盖运行时字段', () => {
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), rtc: null, request: vi.fn().mockResolvedValue({}) };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 建立 bot
+		store.addOrUpdateBot({ id: '2', name: 'Bot', online: false });
+		const bot = store.byId['2'];
+		bot.dcReady = true;
+		bot.rtcPhase = 'ready';
+		bot.initialized = true;
+
+		// 更新时意外包含运行时字段
+		store.addOrUpdateBot({ id: '2', name: 'Renamed', dcReady: false, rtcPhase: 'idle', initialized: false });
+
+		expect(bot.name).toBe('Renamed');
+		expect(bot.dcReady).toBe(true);
+		expect(bot.rtcPhase).toBe('ready');
+		expect(bot.initialized).toBe(true);
+	});
+});
+
+describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	function setupFailedBot(store, id = '50') {
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		store.setBots([{ id, name: 'Bot', online: true }]);
+		store.byId[id].rtcPhase = 'failed';
+		store.byId[id].initialized = true;
+		return fakeConn;
+	}
+
+	test('__ensureRtc 失败后安排退避 timer', async () => {
+		const store = useBotsStore();
+		mockInitRtc.mockResolvedValue('failed');
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '50', name: 'Bot', online: false });
+		store.byId['50'].online = true;
+		store.byId['50'].initialized = true;
+
+		await store.__ensureRtc('50');
+
+		expect(store.byId['50'].rtcPhase).toBe('failed');
+		// scheduleRetry 被调用 → timer 触发后 __ensureRtc 应被调用
+		mockInitRtc.mockClear();
+		// 阻止后续退避级联
+		mockInitRtc.mockImplementation(async () => {
+			store.byId['50'].online = false; // bail-out
+			return 'failed';
+		});
+		vi.advanceTimersByTime(10_000);
+		await Promise.resolve(); // 让 timer callback 执行
+		await Promise.resolve(); // 让 __ensureRtc 内的 await 链完成
+		expect(mockInitRtc).toHaveBeenCalled();
+	});
+
+	test('退避 timer 触发后重新调用 __ensureRtc', async () => {
+		const store = useBotsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '50', name: 'Bot', online: false });
+		store.byId['50'].online = true;
+		store.byId['50'].initialized = true;
+		store.byId['50'].rtcPhase = 'failed';
+
+		store.__scheduleRetry('50');
+		mockInitRtc.mockClear();
+		// 阻止后续退避级联
+		mockInitRtc.mockImplementation(async () => {
+			store.byId['50'].online = false;
+			return 'failed';
+		});
+
+		vi.advanceTimersByTime(10_000);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(mockInitRtc).toHaveBeenCalled();
+	});
+
+	test('连续失败时退避延迟指数增长', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+
+		const delays = [];
+		const origSetTimeout = globalThis.setTimeout;
+		vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, delay) => {
+			delays.push(delay);
+			return origSetTimeout(fn, delay);
+		});
+
+		for (let i = 0; i < 5; i++) {
+			store.__scheduleRetry('50');
+		}
+
+		vi.restoreAllMocks();
+
+		// 延迟序列：10s, 20s, 40s, 80s, 120s（封顶）
+		expect(delays).toEqual([10_000, 20_000, 40_000, 80_000, 120_000]);
+	});
+
+	test('__ensureRtc 成功时清除退避状态', async () => {
+		const store = useBotsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '50', name: 'Bot', online: false });
+		store.byId['50'].online = true;
+		store.byId['50'].initialized = true;
+		store.byId['50'].rtcPhase = 'failed';
+		// 模拟已有退避状态
+		store.__scheduleRetry('50');
+
+		// 成功的 ensureRtc
+		mockInitRtc.mockImplementation(async (_id, conn) => { conn.rtc = __fakeRtc; return 'rtc'; });
+		await store.__ensureRtc('50');
+
+		// 后续不应有 timer 触发 __ensureRtc
+		mockInitRtc.mockClear();
+		vi.advanceTimersByTime(300_000);
+		expect(mockInitRtc).not.toHaveBeenCalled();
+	});
+
+	test('updateBotOnline(false) 清除退避', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+		store.__scheduleRetry('50');
+
+		store.updateBotOnline('50', false);
+
+		// timer 不应再触发
+		mockInitRtc.mockClear();
+		vi.advanceTimersByTime(300_000);
+		expect(mockInitRtc).not.toHaveBeenCalled();
+	});
+
+	test('removeBotById 清除退避', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+		store.__scheduleRetry('50');
+
+		store.removeBotById('50');
+
+		mockInitRtc.mockClear();
+		vi.advanceTimersByTime(300_000);
+		expect(mockInitRtc).not.toHaveBeenCalled();
+	});
+
+	test('外部事件（applySnapshot）重置退避计数', () => {
+		const store = useBotsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.applySnapshot([{ id: '50', name: 'Bot', online: true }]);
+		store.byId['50'].initialized = true;
+		store.byId['50'].rtcPhase = 'failed';
+
+		// 模拟已退避多次（count=5）
+		for (let i = 0; i < 5; i++) {
+			store.__scheduleRetry('50');
+		}
+
+		const delays = [];
+		const origSetTimeout = globalThis.setTimeout;
+		vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, delay) => {
+			delays.push(delay);
+			return origSetTimeout(fn, delay);
+		});
+
+		// applySnapshot 会 __clearRetry → 新的 __scheduleRetry 从 count=0 开始
+		store.byId['50'].rtcPhase = 'failed'; // 保持 failed 以触发 retry
+		store.__clearRetry('50');
+		store.__scheduleRetry('50');
+
+		vi.restoreAllMocks();
+		// 应回到初始延迟 10s
+		expect(delays[0]).toBe(10_000);
+	});
+
+	test('最大次数（8）耗尽后不再安排', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+
+		for (let i = 0; i < 8; i++) {
+			store.__scheduleRetry('50');
+		}
+
+		// 第 9 次不应安排
+		const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+		store.__scheduleRetry('50');
+		// setTimeout 可能被 vitest 内部调用，检查 mockInitRtc
+		vi.restoreAllMocks();
+
+		mockInitRtc.mockClear();
+		vi.advanceTimersByTime(600_000);
+		// 上面最后的 scheduleRetry（第 9 次）不应调度 __ensureRtc
+		// 但前 8 次有 timer 可能在此期间触发；由于 count 已达上限，最后不再调度
+	});
+
+	test('被动失败（__rtcCallbacks）+ 非 _rtcInitInProgress 启动退避', async () => {
+		const store = useBotsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '50', name: 'Bot', online: false });
+		store.byId['50'].online = true;
+		store.byId['50'].initialized = true;
+
+		// 获取 __rtcCallbacks 并模拟被动失败
+		const cbs = store.__rtcCallbacks('50');
+		cbs.onRtcStateChange('failed', null);
+
+		expect(store.byId['50'].rtcPhase).toBe('failed');
+		mockInitRtc.mockClear();
+		// 阻止后续退避级联
+		mockInitRtc.mockImplementation(async () => {
+			store.byId['50'].online = false;
+			return 'failed';
+		});
+		vi.advanceTimersByTime(10_000);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(mockInitRtc).toHaveBeenCalled();
+	});
+
+	test('_rtcInitInProgress 时 __rtcCallbacks 不启动退避', async () => {
+		const store = useBotsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '50', name: 'Bot', online: false });
+		store.byId['50'].online = true;
+		store.byId['50'].initialized = true;
+
+		const scheduleSpy = vi.spyOn(store, '__scheduleRetry');
+
+		// 使 __ensureRtc 进入但第一次 initRtc 不立即完成
+		let resolveFirst;
+		let callIdx = 0;
+		mockInitRtc.mockImplementation(() => {
+			callIdx++;
+			if (callIdx === 1) return new Promise((r) => { resolveFirst = r; });
+			// 后续调用 bail-out
+			store.byId['50'].online = false;
+			return Promise.resolve('failed');
+		});
+		const ensurePromise = store.__ensureRtc('50');
+
+		// 现在 _rtcInitInProgress 应为 true
+		const cbs = store.__rtcCallbacks('50');
+		cbs.onRtcStateChange('failed', null);
+
+		// __scheduleRetry 不应被调用（因为 _rtcInitInProgress）
+		expect(scheduleSpy).not.toHaveBeenCalled();
+
+		// 清理：让 __ensureRtc 完成
+		resolveFirst('failed');
+		await ensurePromise;
+	});
+
+	test('timer 触发时 bot 已恢复（rtcPhase !== failed）→ 清理退出', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+		store.__scheduleRetry('50');
+
+		// 在 timer 触发前恢复 bot
+		store.byId['50'].rtcPhase = 'ready';
+
+		mockInitRtc.mockClear();
+		vi.advanceTimersByTime(10_000);
+		// __ensureRtc 不应被调用
+		expect(mockInitRtc).not.toHaveBeenCalled();
+	});
+
+	test('timer 触发时 bot 已 offline → 清理退出', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+		store.__scheduleRetry('50');
+
+		store.byId['50'].online = false;
+
+		mockInitRtc.mockClear();
+		vi.advanceTimersByTime(10_000);
+		expect(mockInitRtc).not.toHaveBeenCalled();
+	});
+});

@@ -271,4 +271,33 @@ describe('useBotStatusSse', () => {
 
 		expect(removeSpy).toHaveBeenCalledWith('network:online', expect.any(Function));
 	});
+
+	describe('restart 节流', () => {
+		test('500ms 内连续两次 restart 只创建一个新 EventSource', () => {
+			createSse();
+			expect(MockEventSource).toHaveBeenCalledTimes(1);
+
+			// 第一次 restart（如 app:foreground）
+			window.dispatchEvent(new CustomEvent('app:foreground'));
+			expect(MockEventSource).toHaveBeenCalledTimes(2);
+
+			// 第二次 restart（如 network:online）—— 500ms 内，被节流
+			window.dispatchEvent(new CustomEvent('network:online'));
+			expect(MockEventSource).toHaveBeenCalledTimes(2);
+		});
+
+		test('超过 500ms 后 restart 正常执行', () => {
+			createSse();
+			expect(MockEventSource).toHaveBeenCalledTimes(1);
+
+			window.dispatchEvent(new CustomEvent('app:foreground'));
+			expect(MockEventSource).toHaveBeenCalledTimes(2);
+
+			// 超过节流期
+			vi.advanceTimersByTime(500);
+
+			window.dispatchEvent(new CustomEvent('network:online'));
+			expect(MockEventSource).toHaveBeenCalledTimes(3);
+		});
+	});
 });

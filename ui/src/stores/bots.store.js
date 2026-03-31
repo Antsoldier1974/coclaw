@@ -21,11 +21,26 @@ const RTC_BUILD_MAX_RETRIES = 3;
 const CONSENT_EXPIRY_MS = 30_000;
 /** DC probe 超时 */
 const DC_PROBE_TIMEOUT_MS = 3_000;
+/** 退避重试：初始间隔 */
+const RETRY_BACKOFF_BASE_MS = 10_000;
+/** 退避重试：最大间隔 */
+const RETRY_BACKOFF_MAX_MS = 120_000;
+/** 退避重试：最大次数 */
+const MAX_BACKOFF_RETRIES = 8;
+/** 退避重试状态（botId → { count: number, timer: number|null }） */
+const _rtcRetryState = new Map();
+/** 运行时字段（server snapshot / SSE 事件不应覆盖） */
+const RUNTIME_FIELDS = new Set([
+	'dcReady', 'rtcPhase', 'lastAliveAt', 'disconnectedAt',
+	'initialized', 'pluginVersionOk', 'pluginInfo', 'rtcTransportInfo',
+]);
 
 /** @internal 仅供测试重置 */
 export function __resetBotStoreInternals() {
 	_bridgedConns.clear();
 	_rtcInitInProgress.clear();
+	for (const state of _rtcRetryState.values()) clearTimeout(state.timer);
+	_rtcRetryState.clear();
 }
 // 保留旧名兼容测试导入
 export { __resetBotStoreInternals as __resetAwaitingConnIds };
@@ -86,10 +101,10 @@ export const useBotsStore = defineStore('bots', {
 			const id = String(bot.id);
 			console.debug('[bots] upsert id=%s', id);
 			if (this.byId[id]) {
-				// 更新已有 bot（保留运行时状态）
+				// 更新已有 bot（保留运行时状态，跳过 server 不应覆盖的字段）
 				const existing = this.byId[id];
 				for (const [k, v] of Object.entries(bot)) {
-					if (k === 'id') continue;
+					if (k === 'id' || RUNTIME_FIELDS.has(k)) continue;
 					existing[k] = v;
 				}
 			} else {
@@ -114,6 +129,7 @@ export const useBotsStore = defineStore('bots', {
 				// bot 离线 → 立即清除 DC 状态，避免 applySnapshot preserveOnline 误判
 				bot.dcReady = false;
 				bot.rtcPhase = 'idle';
+				this.__clearRetry(id);
 			} else if (!bot.initialized) {
 				// bot 上线且未初始化 → fullInit（ensureConnected 内部处理 WS）
 				bot.initialized = true;
@@ -126,7 +142,8 @@ export const useBotsStore = defineStore('bots', {
 					});
 				}
 			} else if (prev === false) {
-				// bot offline→online → 恢复 RTC + 刷新
+				// bot offline→online → 恢复 RTC + 刷新（外部事件，重置退避）
+				this.__clearRetry(id);
 				useDashboardStore().loadDashboard(id).catch(() => {});
 				this.__ensureRtc(id).catch(() => {});
 			}
@@ -138,6 +155,7 @@ export const useBotsStore = defineStore('bots', {
 			useBotConnections().disconnect(id);
 			useSessionsStore().removeSessionsByBotId(id);
 			useAgentRunsStore().removeByBot(id);
+			this.__clearRetry(id);
 			_bridgedConns.delete(id);
 			delete this.byId[id];
 		},
@@ -154,7 +172,10 @@ export const useBotsStore = defineStore('bots', {
 				const existing = this.byId[id];
 				if (existing) {
 					const preserveOnline = existing.dcReady;
-					Object.assign(existing, b, { id });
+					// 保留运行时状态（server snapshot 不应覆盖这些字段）
+					const runtime = {};
+					for (const k of RUNTIME_FIELDS) runtime[k] = existing[k];
+					Object.assign(existing, b, { id }, runtime);
 					if (preserveOnline) existing.online = true;
 					newById[id] = existing;
 				} else {
@@ -168,6 +189,7 @@ export const useBotsStore = defineStore('bots', {
 					useAgentsStore().removeByBot(oldId);
 					useSessionsStore().removeSessionsByBotId(oldId);
 					useAgentRunsStore().removeByBot(oldId);
+					this.__clearRetry(oldId);
 					_bridgedConns.delete(oldId);
 				}
 			}
@@ -186,6 +208,7 @@ export const useBotsStore = defineStore('bots', {
 			for (const id of botIds) {
 				const bot = this.byId[id];
 				if (bot?.online && bot.initialized && bot.rtcPhase === 'failed') {
+					this.__clearRetry(id); // 外部事件，重置退避
 					this.__ensureRtc(id).catch(() => {});
 				}
 			}
@@ -257,6 +280,10 @@ export const useBotsStore = defineStore('bots', {
 						bot.dcReady = false;
 						bot.disconnectedAt = Date.now();
 						bot.rtcPhase = 'failed';
+						// 被动失败（非 __ensureRtc 主动管理）→ 启动退避重试
+						if (!_rtcInitInProgress.get(botId)) {
+							this.__scheduleRetry(botId);
+						}
 					}
 				},
 			};
@@ -332,6 +359,7 @@ export const useBotsStore = defineStore('bots', {
 						bot.dcReady = true;
 						bot.rtcPhase = 'ready';
 					}
+					this.__clearRetry(id);
 					this.__refreshIfStale(id);
 				} else if (bailedOut) {
 					const bot = this.byId[id];
@@ -340,6 +368,7 @@ export const useBotsStore = defineStore('bots', {
 					const bot = this.byId[id];
 					if (bot) bot.rtcPhase = 'failed';
 					console.warn('[bots] ensureRtc: all attempts exhausted, bot unreachable botId=%s', id);
+					this.__scheduleRetry(id);
 				}
 			} finally {
 				_rtcInitInProgress.delete(id);
@@ -375,6 +404,46 @@ export const useBotsStore = defineStore('bots', {
 			useDashboardStore().loadDashboard(id).catch(() => {});
 		},
 
+		/** 安排退避重试（__ensureRtc 失败或被动失败后调用） */
+		__scheduleRetry(id) {
+			const bot = this.byId[id];
+			if (!bot?.online) return;
+			let state = _rtcRetryState.get(id);
+			if (!state) {
+				state = { count: 0, timer: null };
+				_rtcRetryState.set(id, state);
+			}
+			state.count++;
+			if (state.count > MAX_BACKOFF_RETRIES) {
+				console.warn('[bots] backoff retries exhausted (%d) botId=%s', MAX_BACKOFF_RETRIES, id);
+				_rtcRetryState.delete(id);
+				return;
+			}
+			const delay = Math.min(
+				RETRY_BACKOFF_BASE_MS * 2 ** (state.count - 1),
+				RETRY_BACKOFF_MAX_MS,
+			);
+			clearTimeout(state.timer);
+			console.debug('[bots] scheduling backoff retry %d/%d in %dms botId=%s',
+				state.count, MAX_BACKOFF_RETRIES, delay, id);
+			state.timer = setTimeout(() => {
+				state.timer = null;
+				if (!this.byId[id]?.online || this.byId[id]?.rtcPhase !== 'failed') {
+					_rtcRetryState.delete(id);
+					return;
+				}
+				this.__ensureRtc(id).catch(() => {});
+			}, delay);
+		},
+
+		/** 清除退避重试（成功 / bot 离线 / 外部事件重置时调用） */
+		__clearRetry(id) {
+			const state = _rtcRetryState.get(id);
+			if (!state) return;
+			clearTimeout(state.timer);
+			_rtcRetryState.delete(id);
+		},
+
 		/**
 		 * DC 健康检查 + 恢复（前台恢复 / 网络切换时调用）
 		 * @param {string} id - botId
@@ -389,15 +458,17 @@ export const useBotsStore = defineStore('bots', {
 				const rtc = conn?.rtc;
 				if (!rtc) return;
 
-				// PC 已 failed/closed → 直接 rebuild
+				// PC 已 failed/closed → 直接 rebuild（外部事件，重置退避）
 				if (rtc.state === 'failed' || rtc.state === 'closed') {
 					bot.rtcPhase = 'recovering';
+					this.__clearRetry(id);
 					this.__ensureRtc(id).catch(() => {});
 					return;
 				}
 				// elapsed > 30s → werift consent 已过期，直接 rebuild
 				if (elapsed > CONSENT_EXPIRY_MS) {
 					bot.rtcPhase = 'recovering';
+					this.__clearRetry(id);
 					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
 					return;
 				}
@@ -405,6 +476,7 @@ export const useBotsStore = defineStore('bots', {
 				const alive = await rtc.probe(DC_PROBE_TIMEOUT_MS);
 				if (!alive && this.byId[id]) {
 					this.byId[id].rtcPhase = 'recovering';
+					this.__clearRetry(id);
 					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
 				}
 			} catch (err) {

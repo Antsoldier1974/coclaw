@@ -1,6 +1,7 @@
 import { onBeforeUnmount, ref } from 'vue';
 
 const HB_TIMEOUT_MS = 65_000; // server 30s 间隔，留 ~2x 余量
+const RESTART_THROTTLE_MS = 500; // restart 节流，防 app:foreground + network:online 同时触发
 
 /**
  * 通过 SSE 实时接收 bot 快照、状态变更及解绑通知。
@@ -14,6 +15,7 @@ export function useBotStatusSse(botsStore) {
 	let es = null;
 	let stopped = false;
 	let hbTimer = null;
+	let lastRestartAt = 0;
 
 	function resetHbTimer() {
 		clearTimeout(hbTimer);
@@ -79,6 +81,9 @@ export function useBotStatusSse(botsStore) {
 	/** 强制重建 SSE 连接（前台恢复 / 心跳超时时调用） */
 	function restart() {
 		if (stopped) return;
+		const now = Date.now();
+		if (now - lastRestartAt < RESTART_THROTTLE_MS) return;
+		lastRestartAt = now;
 		console.debug('[SSE] restart');
 		if (es) {
 			es.close();
