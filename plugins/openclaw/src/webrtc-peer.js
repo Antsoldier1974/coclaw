@@ -130,6 +130,11 @@ export class WebRtcPeer {
 			}
 		}
 
+		// 记录 ICE 服务器配置（脱敏，不含 credential）
+		const stunUrl = iceServers.find((s) => s.urls?.startsWith('stun:'))?.urls ?? 'none';
+		const turnUrl = iceServers.find((s) => s.urls?.startsWith('turn:'))?.urls ?? 'none';
+		remoteLog(`rtc.ice-config conn=${connId} stun=${stunUrl} turn=${turnUrl}`);
+
 		const pc = new this.__PeerConnection({ iceServers });
 
 		// 从 SDP 解析对端 maxMessageSize（用于分片决策）
@@ -139,9 +144,19 @@ export class WebRtcPeer {
 		const session = { pc, rpcChannel: null, remoteMaxMessageSize, nextMsgId: 1 };
 		this.__sessions.set(connId, session);
 
-		// ICE candidate → 发给 UI
+		// ICE candidate → 发给 UI，并统计各类型 candidate 数量
+		const candidateCounts = { host: 0, srflx: 0, relay: 0 };
 		pc.onicecandidate = ({ candidate }) => {
-			if (!candidate) return;
+			if (!candidate) {
+				// gathering 完成，输出汇总
+				remoteLog(`rtc.ice-gathered conn=${connId} host=${candidateCounts.host} srflx=${candidateCounts.srflx} relay=${candidateCounts.relay}`);
+				return;
+			}
+			// 从 candidate 字符串中提取类型（typ host / typ srflx / typ relay）
+			const typMatch = candidate.candidate?.match(/typ (\w+)/);
+			if (typMatch && candidateCounts[typMatch[1]] !== undefined) {
+				candidateCounts[typMatch[1]]++;
+			}
 			this.__onSend({
 				type: 'rtc:ice',
 				toConnId: connId,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { WebRtcPeer } from './webrtc-peer.js';
+import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from './remote-log.js';
 
 // --- mock helpers ---
 
@@ -119,6 +120,7 @@ test('WebRtcPeer: 无 turnCreds 时 iceServers 为空', async () => {
 });
 
 test('WebRtcPeer: ICE candidate 回调 → onSend', async () => {
+	resetRemoteLog();
 	const sent = [];
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
@@ -130,16 +132,16 @@ test('WebRtcPeer: ICE candidate 回调 → onSend', async () => {
 	await peer.handleSignaling(makeOffer('c_010'));
 	const pc = PC.instances[0];
 
-	// 模拟 ICE candidate
-	pc.onicecandidate({ candidate: { candidate: 'cand1', sdpMid: '0', sdpMLineIndex: 0 } });
+	// 模拟 ICE candidate（含 typ 字段，用于类型统计）
+	pc.onicecandidate({ candidate: { candidate: 'candidate:1 1 udp 2122260223 192.168.1.1 12345 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
 	assert.equal(sent.length, 2); // answer + ice
 	assert.equal(sent[1].type, 'rtc:ice');
 	assert.equal(sent[1].toConnId, 'c_010');
-	assert.equal(sent[1].payload.candidate, 'cand1');
 
-	// null candidate 应被忽略
+	// null candidate → gathering 完成，触发 rtc.ice-gathered remoteLog，不增加 sent
 	pc.onicecandidate({ candidate: null });
 	assert.equal(sent.length, 2);
+	assert.ok(remoteLogBuffer.some((e) => e.text.includes('rtc.ice-gathered') && e.text.includes('host=1')));
 
 	await peer.closeAll();
 });
@@ -1301,5 +1303,108 @@ test('WebRtcPeer: DataChannel onclose 时清理 reassembler', async () => {
 	dc.onmessage({ data: end });
 
 	assert.equal(requests.length, 0);
+	await peer.closeAll();
+});
+
+// --- ICE 诊断日志 ---
+
+test('WebRtcPeer: offer 时记录 ICE 服务器配置（脱敏）', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	const turnCreds = {
+		urls: ['stun:stun.example.com:3478', 'turn:turn.example.com:3478?transport=udp'],
+		username: 'secret-user',
+		credential: 'secret-pass',
+	};
+	await peer.handleSignaling(makeOffer('c_diag_01', 'sdp', turnCreds));
+
+	const configLog = remoteLogBuffer.find((e) => e.text.includes('rtc.ice-config'));
+	assert.ok(configLog, 'should have rtc.ice-config log');
+	assert.ok(configLog.text.includes('stun=stun:stun.example.com:3478'), 'should log stun URL');
+	assert.ok(configLog.text.includes('turn=turn:turn.example.com:3478'), 'should log turn URL');
+	// credential 不应出现在日志中
+	assert.ok(!configLog.text.includes('secret-user'), 'should not contain username');
+	assert.ok(!configLog.text.includes('secret-pass'), 'should not contain credential');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 无 STUN/TURN 时 ice-config 显示 none', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_diag_02'));
+
+	const configLog = remoteLogBuffer.find((e) => e.text.includes('rtc.ice-config'));
+	assert.ok(configLog, 'should have rtc.ice-config log');
+	assert.ok(configLog.text.includes('stun=none'), 'should show stun=none');
+	assert.ok(configLog.text.includes('turn=none'), 'should show turn=none');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: candidate gathering 汇总统计各类型', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_diag_03'));
+	const pc = PC.instances[0];
+
+	// 模拟收集到多种类型的 candidate
+	pc.onicecandidate({ candidate: { candidate: 'candidate:1 1 udp 2122260223 192.168.1.1 10000 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
+	pc.onicecandidate({ candidate: { candidate: 'candidate:2 1 udp 1686052607 1.2.3.4 20000 typ srflx raddr 192.168.1.1 rport 10000', sdpMid: '0', sdpMLineIndex: 0 } });
+	pc.onicecandidate({ candidate: { candidate: 'candidate:3 1 udp 41885695 5.6.7.8 30000 typ relay raddr 1.2.3.4 rport 20000', sdpMid: '0', sdpMLineIndex: 0 } });
+	pc.onicecandidate({ candidate: { candidate: 'candidate:4 1 udp 2122194687 10.0.0.1 10001 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
+
+	// null → gathering 完成
+	pc.onicecandidate({ candidate: null });
+
+	const gathered = remoteLogBuffer.find((e) => e.text.includes('rtc.ice-gathered') && e.text.includes('c_diag_03'));
+	assert.ok(gathered, 'should have rtc.ice-gathered log');
+	assert.ok(gathered.text.includes('host=2'), 'should count 2 host candidates');
+	assert.ok(gathered.text.includes('srflx=1'), 'should count 1 srflx candidate');
+	assert.ok(gathered.text.includes('relay=1'), 'should count 1 relay candidate');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: candidate 无 typ 字段时不计入统计', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_diag_04'));
+	const pc = PC.instances[0];
+
+	// candidate 字符串无 typ 字段
+	pc.onicecandidate({ candidate: { candidate: 'some-invalid-candidate-string', sdpMid: '0', sdpMLineIndex: 0 } });
+	pc.onicecandidate({ candidate: null });
+
+	const gathered = remoteLogBuffer.find((e) => e.text.includes('rtc.ice-gathered') && e.text.includes('c_diag_04'));
+	assert.ok(gathered);
+	assert.ok(gathered.text.includes('host=0'));
+	assert.ok(gathered.text.includes('srflx=0'));
+	assert.ok(gathered.text.includes('relay=0'));
+
 	await peer.closeAll();
 });

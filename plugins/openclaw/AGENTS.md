@@ -59,6 +59,14 @@
 - 插件代码中所有日志调用必须使用 `.info?.()` / `.warn?.()` / `.error?.()` 等带可选链的调用，**禁止使用 `.log()`**，也禁止将 logger 当函数直接调用（如 `logger('msg')`）。
 - 可选链 `?.()` 确保即使 logger 缺少某方法或 logger 本身为 undefined，也不会抛异常中断正常流程。
 
+## remoteLog 远程日志
+
+- `remoteLog(text)` 函数（`src/remote-log.js`）用于将**重要诊断信息**推送到 CoClaw server，供开发者远程排查问题。
+- 仅用于输出对远程诊断有价值的关键事件（如连接状态变更、ICE 候选汇总、认证失败等），**禁止用于高频/冗余日志**（如逐条消息收发、心跳计数等）。
+- 工作原理：以 fire-and-forget 方式写入内存环形缓冲区，后台微任务通过 `RealtimeBridge` 的 WebSocket 连接发送到 server。
+- **禁止在 auto-upgrade worker 进程中使用**：worker 是独立 spawn 的子进程，没有 bridge 连接。
+- 日志格式约定：`<模块>.<事件> key=value key=value`，如 `rtc.state conn=abc123 connected`。
+
 ## 文件 I/O 安全规范
 
 - **禁止裸 `fs.writeFile`**：写入插件自管文件时，必须使用 `atomicWriteFile` 或 `atomicWriteJsonFile`（`src/utils/atomic-write.js`），防止写入过程中崩溃导致文件损坏。
