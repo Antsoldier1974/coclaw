@@ -110,6 +110,7 @@ export function createChatStore(storeKey, opts = {}) {
 			__slashCommandReject: null,
 			__silentLoadPromise: null,
 			__loadPromise: null,
+			__historyListPromise: null,
 		}),
 		getters: {
 			currentSessionKey() {
@@ -894,25 +895,33 @@ export function createChatStore(storeKey, opts = {}) {
 			 */
 			async __loadChatHistory() {
 				if (this.topicMode || !this.chatSessionKey) return;
+				if (this.__historyListPromise) return this.__historyListPromise;
 				const conn = getReadyConn(this.botId);
 				if (!conn) return;
-				try {
-					const agentId = this.__resolveAgentId();
-					const result = await conn.request('coclaw.chatHistory.list', {
-						agentId,
-						sessionKey: this.chatSessionKey,
-					});
-					this.historySessionIds = Array.isArray(result?.history) ? result.history : [];
-					this.historyExhausted = this.historySessionIds.length === 0;
-					this.__historyLoadedCount = 0;
-					console.debug('[chat] loadChatHistory: %d orphan sessions, exhausted=%s',
-						this.historySessionIds.length, this.historyExhausted);
-				}
-				catch (err) {
-					console.warn('[chat] loadChatHistory failed:', err?.message);
-					this.historySessionIds = [];
-					this.historyExhausted = true;
-				}
+				const p = (async () => {
+					try {
+						const agentId = this.__resolveAgentId();
+						const result = await conn.request('coclaw.chatHistory.list', {
+							agentId,
+							sessionKey: this.chatSessionKey,
+						});
+						this.historySessionIds = Array.isArray(result?.history) ? result.history : [];
+						this.historyExhausted = this.historySessionIds.length === 0;
+						this.__historyLoadedCount = 0;
+						console.debug('[chat] loadChatHistory: %d orphan sessions, exhausted=%s',
+							this.historySessionIds.length, this.historyExhausted);
+					}
+					catch (err) {
+						console.warn('[chat] loadChatHistory failed:', err?.message);
+						this.historySessionIds = [];
+						this.historyExhausted = true;
+					}
+					finally {
+						this.__historyListPromise = null;
+					}
+				})();
+				this.__historyListPromise = p;
+				return p;
 			},
 
 			/**

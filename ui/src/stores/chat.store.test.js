@@ -1853,6 +1853,29 @@ describe('useChatStore', () => {
 				sessionKey: 'agent:ops:main',
 			});
 		});
+
+		test('并发调用复用同一 promise，仅发起一次 RPC', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({ history: [{ sessionId: 'h1', archivedAt: 100 }] });
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const p1 = store.__loadChatHistory();
+			// 飞行中守卫：第二次调用应复用已有 promise，不再发起新请求
+			const p2 = store.__loadChatHistory();
+			await Promise.all([p1, p2]);
+
+			expect(conn.request).toHaveBeenCalledTimes(1);
+			expect(store.historySessionIds).toHaveLength(1);
+			// promise 完成后 guard 已清理，可再次调用
+			expect(store.__historyListPromise).toBeNull();
+		});
 	});
 
 	// =====================================================================
