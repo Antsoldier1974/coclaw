@@ -182,10 +182,10 @@ async function weriftFallback(dynamicImport, log, importTimeout) {
 			importTimeout,
 			'import(werift)',
 		);
-		log('ndc.fallback-to-werift');
+		log('webrtc.fallback-to-werift');
 		return { PeerConnection: RTCPeerConnection, cleanup: null, impl: 'werift' };
 	} catch (err) {
-		log(`ndc.all-unavailable error=${err.message}`);
+		log(`webrtc.all-unavailable error=${err.message}`);
 		return { PeerConnection: null, cleanup: null, impl: 'none' };
 	}
 }

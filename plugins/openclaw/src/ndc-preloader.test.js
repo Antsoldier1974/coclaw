@@ -83,7 +83,7 @@ test('preloadNdc: happy path — ndc loads successfully (binary already exists)'
 	assert.ok(logs.some((l) => l.includes('ndc.loaded platform=linux-x64')));
 	// 不应有 fallback 日志
 	assert.ok(!logs.some((l) => l.includes('ndc.fallback')));
-	assert.ok(!logs.some((l) => l.includes('ndc.fallback-to-werift')));
+	assert.ok(!logs.some((l) => l.includes('webrtc.fallback-to-werift')));
 });
 
 test('preloadNdc: happy path — binary needs copy', async () => {
@@ -102,7 +102,7 @@ test('preloadNdc: unsupported platform → werift fallback', async () => {
 	assert.equal(result.impl, 'werift');
 	assert.equal(result.cleanup, null);
 	assert.ok(logs.some((l) => l.includes('ndc.skip reason=unsupported-platform')));
-	assert.ok(logs.some((l) => l.includes('ndc.fallback-to-werift')));
+	assert.ok(logs.some((l) => l.includes('webrtc.fallback-to-werift')));
 });
 
 test('preloadNdc: vendor binary missing → werift fallback', async () => {
@@ -117,7 +117,7 @@ test('preloadNdc: vendor binary missing → werift fallback', async () => {
 
 	assert.equal(result.impl, 'werift');
 	assert.ok(logs.some((l) => l.includes('ndc.fallback reason=binary-missing')));
-	assert.ok(logs.some((l) => l.includes('ndc.fallback-to-werift')));
+	assert.ok(logs.some((l) => l.includes('webrtc.fallback-to-werift')));
 });
 
 test('preloadNdc: copy fails → werift fallback', async () => {
@@ -282,7 +282,7 @@ test('preloadNdc: ndc import timeout → werift fallback', async () => {
 	assert.equal(result.impl, 'werift');
 	assert.ok(logs.some((l) => l.includes('ndc.fallback reason=import-failed')));
 	assert.ok(logs.some((l) => l.includes('timed out')));
-	assert.ok(logs.some((l) => l.includes('ndc.fallback-to-werift')));
+	assert.ok(logs.some((l) => l.includes('webrtc.fallback-to-werift')));
 });
 
 test('preloadNdc: ndc and werift both timeout → impl=none', async () => {
@@ -299,7 +299,7 @@ test('preloadNdc: ndc and werift both timeout → impl=none', async () => {
 	assert.equal(result.impl, 'none');
 	assert.equal(result.PeerConnection, null);
 	assert.equal(result.cleanup, null);
-	assert.ok(logs.some((l) => l.includes('ndc.all-unavailable')));
+	assert.ok(logs.some((l) => l.includes('webrtc.all-unavailable')));
 });
 
 test('preloadNdc: ndc and werift both fail (not timeout) → impl=none', async () => {
@@ -315,7 +315,7 @@ test('preloadNdc: ndc and werift both fail (not timeout) → impl=none', async (
 	assert.equal(result.impl, 'none');
 	assert.equal(result.PeerConnection, null);
 	assert.ok(logs.some((l) => l.includes('ndc.fallback reason=import-failed')));
-	assert.ok(logs.some((l) => l.includes('ndc.all-unavailable')));
+	assert.ok(logs.some((l) => l.includes('webrtc.all-unavailable')));
 	assert.ok(logs.some((l) => l.includes('werift broken')));
 });
 
