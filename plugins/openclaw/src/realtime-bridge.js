@@ -74,6 +74,7 @@ export class RealtimeBridge {
 	 * @param {Function} [deps.getBindingsPath] - 获取绑定文件路径
 	 * @param {Function} [deps.resolveGatewayAuthToken] - 获取 gateway 认证 token
 	 * @param {Function} [deps.loadDeviceIdentity] - 加载设备身份
+	 * @param {number} [deps.gatewayReadyTimeoutMs] - __waitGatewayReady 默认超时（测试可注入短值）
 	 */
 	constructor(deps = {}) {
 		this.__readConfig = deps.readConfig ?? readConfig;
@@ -83,6 +84,7 @@ export class RealtimeBridge {
 		this.__loadDeviceIdentity = deps.loadDeviceIdentity ?? loadOrCreateDeviceIdentity;
 		this.__preloadNdc = deps.preloadNdc ?? null;
 		this.__WebSocket = deps.WebSocket ?? null;
+		this.__gatewayReadyTimeoutMs = deps.gatewayReadyTimeoutMs ?? 1500;
 
 		this.serverWs = null;
 		this.gatewayWs = null;
@@ -634,7 +636,7 @@ export class RealtimeBridge {
 		});
 	}
 
-	async __waitGatewayReady(timeoutMs = 1500) {
+	async __waitGatewayReady(timeoutMs = this.__gatewayReadyTimeoutMs) {
 		this.__ensureGatewayConnection();
 		if (this.gatewayWs && this.gatewayWs.readyState === 1 && this.gatewayReady) {
 			return true;

@@ -95,6 +95,7 @@ function createBridge(overrides = {}) {
 		WebSocket: FakeWebSocket,
 		resolveGatewayAuthToken: () => '',
 		preloadNdc: noopPreloadNdc,
+		gatewayReadyTimeoutMs: 50,
 		...overrides,
 	});
 }
@@ -297,7 +298,7 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		// rpc.req when gateway offline -> GATEWAY_OFFLINE
 		gateway.readyState = 0;
 		server.emit('message', { data: JSON.stringify({ type: 'rpc.req', id: '3', method: 'm3' }) });
-		await new Promise((r) => setTimeout(r, 1600));
+		await new Promise((r) => setTimeout(r, 100));
 		assert.equal(server.sent.some((x) => String(x).includes('GATEWAY_OFFLINE')), true);
 
 		// bot.unbound branch (no botId in payload — clears config)
@@ -2118,8 +2119,8 @@ test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequest
 		const reqPayload = { type: 'req', id: 'ui-dc-1', method: 'agent', params: { text: 'hi' } };
 		bridge.webrtcPeer.__onRequest(reqPayload, 'c_req1');
 
-		// 等待 __waitGatewayReady 超时 + 处理完成
-		await new Promise((r) => setTimeout(r, 2000));
+		// 等待 __waitGatewayReady 超时（已注入 50ms）+ 处理完成
+		await new Promise((r) => setTimeout(r, 100));
 
 		// gateway 未连接，应产生 GATEWAY_OFFLINE 错误响应 → __forwardToServer
 		const offlineMsg = server.sent.find((s) => {
