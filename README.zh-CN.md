@@ -111,7 +111,7 @@ pnpm dev
 
 ```bash
 pnpm check      # 静态检查（lint + typecheck）
-pnpm coverage   # 测试 + 覆盖率检查（lines/functions/statements >= 70%，branches >= 60%）
+pnpm test       # 测试 + 覆盖率检查（lines/functions/statements >= 70%，branches >= 60%）
 ```
 
 ### 开发流程

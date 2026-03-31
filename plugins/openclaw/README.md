@@ -195,10 +195,8 @@ openclaw logs --limit 300 --plain | rg -n "ui->server req|bot->server res|bot->s
 ## 测试门禁
 
 ```bash
-pnpm check       # lint + typecheck
-pnpm test         # 全部单测
-pnpm coverage     # 覆盖率检查
-pnpm verify       # 完整验证（check → test:standalone → test:plugin → test → coverage）
+pnpm check        # lint + typecheck
+pnpm test         # 测试 + 覆盖率检查
 ```
 
 覆盖率阈值：lines/statements/functions 100%，branches ≥ 95%。未通过禁止接入 gateway。

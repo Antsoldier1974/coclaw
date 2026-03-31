@@ -114,9 +114,9 @@
 
 执行顺序：
 1. `pnpm check`（静态检查）
-2. `pnpm coverage`（测试 + 覆盖率，已包含完整测试执行，无需单独 `pnpm test`）
+2. `pnpm test`（测试 + 覆盖率）
 
-> `pnpm verify` = check + coverage，仅由 release 脚本内部调用，日常开发不要使用——避免与上述两步产生重复执行。
+> `pnpm verify` = check + test，仅由 release 脚本内部调用，日常开发分步执行上述两条即可。
 
 覆盖率阈值：
 - lines 100%
@@ -128,7 +128,7 @@
 
 ### 执行约束
 
-- `pnpm coverage` **禁止以后台模式执行**，必须前台运行并设置充足超时（≥ 360s）
+- `pnpm test` **禁止以后台模式执行**，必须前台运行并设置充足超时（≥ 360s）
 - 发起新一轮测试前，必须确认上一轮已结束；若超时，先 `ps aux | grep -E 'node.*test|vitest'` 检查并 kill 残留进程，再重试
 - 禁止并发启动多个 test runner——并发执行会因资源竞争导致进程堆积、主机卡顿
 

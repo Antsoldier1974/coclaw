@@ -107,7 +107,7 @@ To run individually: `pnpm dev:server` or `pnpm dev:ui`.
 
 ```bash
 pnpm check      # Lint + type check
-pnpm coverage   # Unit tests + coverage check (lines/functions/statements >= 70%, branches >= 60%)
+pnpm test       # Unit tests + coverage check (lines/functions/statements >= 70%, branches >= 60%)
 ```
 
 ### Developer Workflow
@@ -115,7 +115,7 @@ pnpm coverage   # Unit tests + coverage check (lines/functions/statements >= 70%
 ```bash
 pnpm install
 # Make changes + update tests/docs
-pnpm check && pnpm coverage
+pnpm check && pnpm test
 git commit -m "feat(scope): short summary"
 ```
 

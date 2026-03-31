@@ -15,7 +15,7 @@
   - CLI（`openclaw coclaw bind/unbind/enroll`）
 - 绑定信息存储在 `~/.openclaw/coclaw/bindings.json`（独立于 `openclaw.json`）。
 - 升级状态存储在 `~/.openclaw/coclaw/upgrade-state.json`，升级日志在 `upgrade-log.jsonl`。
-- 测试门禁：`pnpm verify` 通过，覆盖率 lines/statements/functions 100%，branches ≥ 95%。
+- 测试门禁：`pnpm check` + `pnpm test` 通过，覆盖率 lines/statements/functions 100%，branches ≥ 95%。
 
 ## 关键里程碑
 
@@ -162,4 +162,4 @@
 ## 风险控制提醒
 
 - 插件运行在 gateway 进程内，接入前必须先完成离线验证与全量单测。
-- `pnpm verify` 未通过时，禁止安装到 OpenClaw gateway。
+- `pnpm check` + `pnpm test` 未通过时，禁止安装到 OpenClaw gateway。
